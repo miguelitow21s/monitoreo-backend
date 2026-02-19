@@ -399,8 +399,20 @@ create table if not exists public.shift_health_forms (
 -- =========================================================
 
 -- Bloquea invocacion directa de funciones internas sensibles
-revoke execute on function public.start_shift(uuid, integer, double precision, double precision) from anon, authenticated;
-revoke execute on function public.end_shift(integer, double precision, double precision) from anon, authenticated;
+do $$
+declare
+  v_fn regprocedure;
+begin
+  for v_fn in
+    select p.oid::regprocedure
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public'
+      and p.proname in ('start_shift', 'end_shift')
+  loop
+    execute format('revoke execute on function %s from anon, authenticated', v_fn);
+  end loop;
+end $$;
 
 create or replace function public.start_shift(
   lat double precision,
