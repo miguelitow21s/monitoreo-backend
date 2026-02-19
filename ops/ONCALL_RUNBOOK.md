@@ -1,13 +1,13 @@
 # On-Call And Escalation Runbook
 
 ## Ownership (required before production GO)
-- Primary on-call: `TBD`
-- Secondary on-call: `TBD`
-- Escalation manager: `TBD`
+- Primary on-call: `miguelopsal@gmail.com` (super_admin)
+- Secondary on-call: `migue22lopsal@gmail.com` (supervisora)
+- Escalation manager: `miguel.lopez81@correo.tdea.edu.co`
 
 ## Incident channels
-- Primary channel: `TBD` (Slack/Teams/WhatsApp/PagerDuty)
-- Backup channel: `TBD`
+- Primary channel: `WhatsApp - Monitoreo Backend OnCall`
+- Backup channel: `Email group: miguelopsal@gmail.com, migue22lopsal@gmail.com, miguel.lopez81@correo.tdea.edu.co`
 
 ## Severity and response SLA
 - Sev-1 (service down/security incident): acknowledge in <= 5 min
@@ -38,4 +38,3 @@
 ### Frontend rollback
 1. Promote previous successful Vercel deployment.
 2. Confirm API base URL still maps to correct Supabase environment.
-
