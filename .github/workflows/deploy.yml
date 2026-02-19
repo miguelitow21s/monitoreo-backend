@@ -1,0 +1,65 @@
+name: Deploy Backend + Supabase + Vercel
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Target environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - staging
+          - prod
+      run_frontend_hook:
+        description: Trigger frontend deploy hook
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout backend
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install CLIs
+        run: |
+          npm i -g supabase vercel
+
+      - name: Export env vars
+        shell: bash
+        run: |
+          echo "SUPABASE_URL=${{ secrets.SUPABASE_URL }}" >> $GITHUB_ENV
+          echo "SUPABASE_ANON_KEY=${{ secrets.SUPABASE_ANON_KEY }}" >> $GITHUB_ENV
+          echo "SUPABASE_SERVICE_ROLE_KEY=${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}" >> $GITHUB_ENV
+          echo "SUPABASE_PROJECT_REF=${{ secrets.SUPABASE_PROJECT_REF }}" >> $GITHUB_ENV
+          echo "SUPABASE_DB_PASSWORD=${{ secrets.SUPABASE_DB_PASSWORD }}" >> $GITHUB_ENV
+          echo "SUPABASE_ACCESS_TOKEN=${{ secrets.SUPABASE_ACCESS_TOKEN }}" >> $GITHUB_ENV
+          echo "VERCEL_TOKEN=${{ secrets.VERCEL_TOKEN }}" >> $GITHUB_ENV
+          echo "VERCEL_PROJECT_ID=${{ secrets.VERCEL_PROJECT_ID }}" >> $GITHUB_ENV
+          echo "VERCEL_TEAM_ID=${{ secrets.VERCEL_TEAM_ID }}" >> $GITHUB_ENV
+          echo "VERCEL_DEPLOY_HOOK_URL=${{ secrets.VERCEL_DEPLOY_HOOK_URL }}" >> $GITHUB_ENV
+          echo "HEALTH_EMPLOYEE_JWT=${{ secrets.HEALTH_EMPLOYEE_JWT }}" >> $GITHUB_ENV
+          echo "HEALTH_SUPERVISOR_JWT=${{ secrets.HEALTH_SUPERVISOR_JWT }}" >> $GITHUB_ENV
+          echo "HEALTH_ADMIN_JWT=${{ secrets.HEALTH_ADMIN_JWT }}" >> $GITHUB_ENV
+
+      - name: Configure Vercel + Supabase secrets
+        shell: pwsh
+        run: ./ops/set-secrets.ps1 -Environment "${{ inputs.environment }}"
+
+      - name: Deploy pipeline
+        shell: pwsh
+        run: |
+          if ("${{ inputs.run_frontend_hook }}" -eq "true") {
+            ./ops/deploy.ps1 -Environment "${{ inputs.environment }}" -RunFrontendHook
+          } else {
+            ./ops/deploy.ps1 -Environment "${{ inputs.environment }}"
+          }
