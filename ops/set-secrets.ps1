@@ -71,6 +71,4 @@ foreach ($item in $vars) {
 }
 
 $env:SUPABASE_ACCESS_TOKEN = $supabaseAccessToken
-supabase secrets set SUPABASE_URL=$supabaseUrl SUPABASE_ANON_KEY=$supabaseAnon SUPABASE_SERVICE_ROLE_KEY=$supabaseService --project-ref $supabaseProjectRef
-
-Write-Host "[SUPABASE] secrets updated for project $supabaseProjectRef"
+Write-Host "[SUPABASE] skipping reserved SUPABASE_* secret updates; manage those in Supabase project settings."
