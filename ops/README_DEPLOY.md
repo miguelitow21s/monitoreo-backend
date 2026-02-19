@@ -48,3 +48,8 @@ Set environment-level secrets in GitHub for each target environment:
 - `HEALTH_SUPERVISOR_PASSWORD` (recommended)
 - `HEALTH_ADMIN_EMAIL` (recommended)
 - `HEALTH_ADMIN_PASSWORD` (recommended)
+
+## Security constraints
+- `SUPABASE_SERVICE_ROLE_KEY` must never be exposed to frontend runtime/client bundles.
+- `ops/set-secrets.ps1` intentionally does not sync `SUPABASE_SERVICE_ROLE_KEY` into Vercel env vars.
+- Keep `SUPABASE_SERVICE_ROLE_KEY` only in trusted backend runtimes (Supabase Edge Functions secrets / secure CI contexts).

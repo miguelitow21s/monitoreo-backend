@@ -26,7 +26,6 @@ $vercelTeamId = [Environment]::GetEnvironmentVariable('VERCEL_TEAM_ID')
 
 $supabaseUrl = Require-Env 'SUPABASE_URL'
 $supabaseAnon = Require-Env 'SUPABASE_ANON_KEY'
-$supabaseService = Require-Env 'SUPABASE_SERVICE_ROLE_KEY'
 $supabaseProjectRef = Require-Env 'SUPABASE_PROJECT_REF'
 $supabaseAccessToken = Require-Env 'SUPABASE_ACCESS_TOKEN'
 
@@ -40,7 +39,6 @@ $vars = @(
   @{ key = 'NEXT_PUBLIC_SUPABASE_ANON_KEY'; value = $supabaseAnon; type = 'encrypted' },
   @{ key = 'SUPABASE_URL'; value = $supabaseUrl; type = 'encrypted' },
   @{ key = 'SUPABASE_ANON_KEY'; value = $supabaseAnon; type = 'encrypted' },
-  @{ key = 'SUPABASE_SERVICE_ROLE_KEY'; value = $supabaseService; type = 'encrypted' },
   @{ key = 'SUPABASE_PROJECT_REF'; value = $supabaseProjectRef; type = 'encrypted' }
 )
 
@@ -71,4 +69,5 @@ foreach ($item in $vars) {
 }
 
 $env:SUPABASE_ACCESS_TOKEN = $supabaseAccessToken
+Write-Host "[SECURITY] SUPABASE_SERVICE_ROLE_KEY is intentionally NOT synced to Vercel env."
 Write-Host "[SUPABASE] skipping reserved SUPABASE_* secret updates; manage those in Supabase project settings."
