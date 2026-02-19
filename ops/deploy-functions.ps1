@@ -20,4 +20,7 @@ $functions = @(
 foreach ($fn in $functions) {
   Write-Host "[DEPLOY] supabase function: $fn"
   supabase functions deploy $fn --project-ref $ProjectRef
+  if ($LASTEXITCODE -ne 0) {
+    throw "Failed deploying function $fn with exit code $LASTEXITCODE"
+  }
 }

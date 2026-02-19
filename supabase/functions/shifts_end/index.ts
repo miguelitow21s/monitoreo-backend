@@ -1,5 +1,5 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { z } from "jsr:@zod/zod@3.23.8";
+import { z } from "npm:zod@3.23.8";
 import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { geoValidatorByShift } from "../_shared/geoValidator.ts";

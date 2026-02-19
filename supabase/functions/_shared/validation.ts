@@ -1,4 +1,4 @@
-import { z } from "jsr:@zod/zod@3.23.8";
+import { z } from "npm:zod@3.23.8";
 
 export function requireMethod(req: Request, allowed: string[]) {
   if (!allowed.includes(req.method)) {

@@ -20,10 +20,18 @@ $supabaseAccessToken = Require-Env 'SUPABASE_ACCESS_TOKEN'
 $env:SUPABASE_ACCESS_TOKEN = $supabaseAccessToken
 
 Write-Host "[STEP] Applying ordered migrations"
-supabase db push --project-ref $supabaseProjectRef --password $supabaseDbPassword --include-all
+$encodedPassword = [System.Uri]::EscapeDataString($supabaseDbPassword)
+$dbUrl = "postgresql://postgres:$encodedPassword@db.$supabaseProjectRef.supabase.co:5432/postgres"
+supabase db push --db-url $dbUrl --include-all
+if ($LASTEXITCODE -ne 0) {
+  throw "supabase db push failed with code $LASTEXITCODE"
+}
 
 Write-Host "[STEP] Deploying edge functions"
 & "$PSScriptRoot/deploy-functions.ps1" -ProjectRef $supabaseProjectRef
+if ($LASTEXITCODE -ne 0) {
+  throw "supabase functions deploy failed with code $LASTEXITCODE"
+}
 
 if ($RunFrontendHook) {
   $hook = Require-Env 'VERCEL_DEPLOY_HOOK_URL'
@@ -33,5 +41,8 @@ if ($RunFrontendHook) {
 
 Write-Host "[STEP] Running health checks"
 & "$PSScriptRoot/health-check.ps1"
+if ($LASTEXITCODE -ne 0) {
+  throw "health-check failed with code $LASTEXITCODE"
+}
 
 Write-Host "[DONE] Deploy pipeline completed for $Environment"
