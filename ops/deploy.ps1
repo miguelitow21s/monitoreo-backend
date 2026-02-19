@@ -20,9 +20,12 @@ $supabaseAccessToken = Require-Env 'SUPABASE_ACCESS_TOKEN'
 $env:SUPABASE_ACCESS_TOKEN = $supabaseAccessToken
 
 Write-Host "[STEP] Applying ordered migrations"
-$encodedPassword = [System.Uri]::EscapeDataString($supabaseDbPassword)
-$dbUrl = "postgresql://postgres:$encodedPassword@db.$supabaseProjectRef.supabase.co:5432/postgres"
-supabase db push --db-url $dbUrl --include-all
+supabase link --project-ref $supabaseProjectRef --password $supabaseDbPassword
+if ($LASTEXITCODE -ne 0) {
+  throw "supabase link failed with code $LASTEXITCODE"
+}
+
+supabase db push --linked --include-all
 if ($LASTEXITCODE -ne 0) {
   throw "supabase db push failed with code $LASTEXITCODE"
 }
