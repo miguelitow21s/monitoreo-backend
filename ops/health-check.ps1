@@ -15,6 +15,27 @@ function Assert-Status([int]$actual, [int]$expected, [string]$label) {
   Write-Host "[OK] $label -> $actual"
 }
 
+function Invoke-HttpGet([string]$uri, [hashtable]$headers) {
+  $handler = [System.Net.Http.HttpClientHandler]::new()
+  $handler.AllowAutoRedirect = $false
+  $client = [System.Net.Http.HttpClient]::new($handler)
+  try {
+    $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $uri)
+    foreach ($key in $headers.Keys) {
+      [void]$req.Headers.TryAddWithoutValidation($key, [string]$headers[$key])
+    }
+    $resp = $client.Send($req)
+    $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    return [pscustomobject]@{
+      StatusCode = [int]$resp.StatusCode
+      Content = $body
+    }
+  } finally {
+    $client.Dispose()
+    $handler.Dispose()
+  }
+}
+
 $supabaseUrl = (Require-Env 'SUPABASE_URL').TrimEnd('/')
 $anon = Require-Env 'SUPABASE_ANON_KEY'
 $employeeJwt = Require-Env 'HEALTH_EMPLOYEE_JWT'
@@ -25,7 +46,7 @@ $baseFn = "$supabaseUrl/functions/v1"
 $baseRest = "$supabaseUrl/rest/v1"
 
 # 1) Health endpoint
-$health = Invoke-WebRequest -Method Get -Uri "$baseFn/health_ping" -Headers @{ Authorization = "Bearer $employeeJwt"; apikey = $anon } -SkipHttpErrorCheck -UseBasicParsing
+$health = Invoke-HttpGet -Uri "$baseFn/health_ping" -Headers @{ authorization = "Bearer $employeeJwt"; apikey = $anon }
 Assert-Status $health.StatusCode 200 'health_ping'
 
 # 2) Method hardening for POST endpoint
