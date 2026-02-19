@@ -1,4 +1,4 @@
-﻿-- 02_cleanup.sql
+-- 02_cleanup.sql
 -- FASE 2: LIMPIEZA SEGURA (SIN BORRADO DE DATOS CRITICOS)
 
 begin;

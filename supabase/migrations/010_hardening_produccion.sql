@@ -1,4 +1,4 @@
-﻿-- HARDENING PRODUCCION (PostgreSQL/Supabase)
+-- HARDENING PRODUCCION (PostgreSQL/Supabase)
 -- Basado en esquema actual + compatibility_supabase.sql
 -- Fecha: 2026-02-19
 -- Idempotente y orientado a no romper datos existentes

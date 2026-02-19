@@ -1,4 +1,4 @@
-﻿-- Compatibility layer for current frontend contract
+-- Compatibility layer for current frontend contract
 -- Date: 2026-02-12
 
 begin;

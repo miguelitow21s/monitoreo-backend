@@ -1,4 +1,4 @@
-﻿-- 06_triggers.sql
+-- 06_triggers.sql
 -- FASE 6: TRIGGERS (AUDITORIA, INMUTABILIDAD, SINCRONIZACION)
 
 begin;

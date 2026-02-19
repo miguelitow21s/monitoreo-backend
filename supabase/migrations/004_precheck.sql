@@ -1,4 +1,4 @@
-﻿-- 01_precheck.sql
+-- 01_precheck.sql
 -- FASE 1: SOLO DIAGNOSTICO (NO MODIFICA DATOS)
 
 begin;

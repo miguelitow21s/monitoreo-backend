@@ -25,7 +25,7 @@ if ($LASTEXITCODE -ne 0) {
   throw "supabase link failed with code $LASTEXITCODE"
 }
 
-supabase db push --linked --include-all
+supabase db push --linked --include-all --yes
 if ($LASTEXITCODE -ne 0) {
   throw "supabase db push failed with code $LASTEXITCODE"
 }

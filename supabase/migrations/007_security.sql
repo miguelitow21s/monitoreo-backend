@@ -1,4 +1,4 @@
-﻿-- 04_security.sql
+-- 04_security.sql
 -- FASE 4: SEGURIDAD (RLS, REVOKES, GRANTS MINIMOS, POLICIES)
 
 begin;

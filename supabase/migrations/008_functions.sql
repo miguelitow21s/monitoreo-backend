@@ -1,4 +1,4 @@
-﻿-- 05_functions.sql
+-- 05_functions.sql
 -- FASE 5: FUNCIONES (SECURITY DEFINER ENDURECIDO, VALIDACIONES, SIN OVERLOADS PELIGROSOS)
 
 begin;

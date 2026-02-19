@@ -1,4 +1,4 @@
-﻿-- 03_structure.sql
+-- 03_structure.sql
 -- FASE 3: ESTRUCTURA (CONSTRAINTS, INDICES, ENUMS, COLUMNAS ANTIFRAUDE)
 
 begin;
