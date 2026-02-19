@@ -25,7 +25,7 @@ $baseFn = "$supabaseUrl/functions/v1"
 $baseRest = "$supabaseUrl/rest/v1"
 
 # 1) Health endpoint
-$health = Invoke-WebRequest -Method Get -Uri "$baseFn/health_ping" -UseBasicParsing
+$health = Invoke-WebRequest -Method Get -Uri "$baseFn/health_ping" -Headers @{ Authorization = "Bearer $employeeJwt"; apikey = $anon } -SkipHttpErrorCheck -UseBasicParsing
 Assert-Status $health.StatusCode 200 'health_ping'
 
 # 2) Method hardening for POST endpoint
