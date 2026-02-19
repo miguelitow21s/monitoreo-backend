@@ -42,3 +42,9 @@ Set environment-level secrets in GitHub for each target environment:
 - `HEALTH_EMPLOYEE_JWT`
 - `HEALTH_SUPERVISOR_JWT`
 - `HEALTH_ADMIN_JWT`
+- `HEALTH_EMPLOYEE_EMAIL` (recommended)
+- `HEALTH_EMPLOYEE_PASSWORD` (recommended)
+- `HEALTH_SUPERVISOR_EMAIL` (recommended)
+- `HEALTH_SUPERVISOR_PASSWORD` (recommended)
+- `HEALTH_ADMIN_EMAIL` (recommended)
+- `HEALTH_ADMIN_PASSWORD` (recommended)

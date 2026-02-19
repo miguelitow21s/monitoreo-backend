@@ -8,6 +8,14 @@ function Require-Env([string]$name) {
   return $value
 }
 
+function Get-OptionalEnv([string]$name) {
+  $value = [Environment]::GetEnvironmentVariable($name)
+  if ([string]::IsNullOrWhiteSpace($value)) {
+    return $null
+  }
+  return $value
+}
+
 function Assert-Status([int]$actual, [int]$expected, [string]$label) {
   if ($actual -ne $expected) {
     throw "[$label] expected HTTP $expected but got $actual"
@@ -36,17 +44,43 @@ function Invoke-HttpGet([string]$uri, [hashtable]$headers) {
   }
 }
 
+function Get-AuthToken([string]$supabaseUrl, [string]$anonKey, [string]$email, [string]$password, [string]$label) {
+  $url = "$($supabaseUrl.TrimEnd('/'))/auth/v1/token?grant_type=password"
+  $headers = @{ apikey = $anonKey; 'Content-Type' = 'application/json' }
+  $body = @{ email = $email; password = $password } | ConvertTo-Json
+  $resp = Invoke-RestMethod -Method Post -Uri $url -Headers $headers -Body $body
+  if ([string]::IsNullOrWhiteSpace($resp.access_token)) {
+    throw "[$label] could not obtain access token"
+  }
+  return [string]$resp.access_token
+}
+
+function Resolve-HealthJwt([string]$label, [string]$jwtEnv, [string]$emailEnv, [string]$passwordEnv, [string]$supabaseUrl, [string]$anonKey) {
+  $email = Get-OptionalEnv $emailEnv
+  $password = Get-OptionalEnv $passwordEnv
+  if ($email -and $password) {
+    return Get-AuthToken -supabaseUrl $supabaseUrl -anonKey $anonKey -email $email -password $password -label $label
+  }
+
+  $jwt = Get-OptionalEnv $jwtEnv
+  if ($jwt) {
+    return $jwt
+  }
+
+  throw "Missing auth source for $label. Provide either [$jwtEnv] or [$emailEnv + $passwordEnv]."
+}
+
 $supabaseUrl = (Require-Env 'SUPABASE_URL').TrimEnd('/')
 $anon = Require-Env 'SUPABASE_ANON_KEY'
-$employeeJwt = Require-Env 'HEALTH_EMPLOYEE_JWT'
-$supervisorJwt = Require-Env 'HEALTH_SUPERVISOR_JWT'
-$adminJwt = Require-Env 'HEALTH_ADMIN_JWT'
+$employeeJwt = Resolve-HealthJwt -label 'employee' -jwtEnv 'HEALTH_EMPLOYEE_JWT' -emailEnv 'HEALTH_EMPLOYEE_EMAIL' -passwordEnv 'HEALTH_EMPLOYEE_PASSWORD' -supabaseUrl $supabaseUrl -anonKey $anon
+$supervisorJwt = Resolve-HealthJwt -label 'supervisor' -jwtEnv 'HEALTH_SUPERVISOR_JWT' -emailEnv 'HEALTH_SUPERVISOR_EMAIL' -passwordEnv 'HEALTH_SUPERVISOR_PASSWORD' -supabaseUrl $supabaseUrl -anonKey $anon
+$adminJwt = Resolve-HealthJwt -label 'admin' -jwtEnv 'HEALTH_ADMIN_JWT' -emailEnv 'HEALTH_ADMIN_EMAIL' -passwordEnv 'HEALTH_ADMIN_PASSWORD' -supabaseUrl $supabaseUrl -anonKey $anon
 
 $baseFn = "$supabaseUrl/functions/v1"
 $baseRest = "$supabaseUrl/rest/v1"
 
-# 1) Health endpoint
-$health = Invoke-HttpGet -Uri "$baseFn/health_ping" -Headers @{ authorization = "Bearer $employeeJwt"; apikey = $anon }
+# 1) Health endpoint (no depende de JWT de usuario)
+$health = Invoke-HttpGet -Uri "$baseFn/health_ping" -Headers @{ authorization = "Bearer $anon"; apikey = $anon }
 Assert-Status $health.StatusCode 200 'health_ping'
 
 # 2) Method hardening for POST endpoint

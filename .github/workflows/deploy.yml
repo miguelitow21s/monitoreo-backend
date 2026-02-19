@@ -55,6 +55,12 @@ jobs:
           echo "HEALTH_EMPLOYEE_JWT=${{ secrets.HEALTH_EMPLOYEE_JWT }}" >> $GITHUB_ENV
           echo "HEALTH_SUPERVISOR_JWT=${{ secrets.HEALTH_SUPERVISOR_JWT }}" >> $GITHUB_ENV
           echo "HEALTH_ADMIN_JWT=${{ secrets.HEALTH_ADMIN_JWT }}" >> $GITHUB_ENV
+          echo "HEALTH_EMPLOYEE_EMAIL=${{ secrets.HEALTH_EMPLOYEE_EMAIL }}" >> $GITHUB_ENV
+          echo "HEALTH_EMPLOYEE_PASSWORD=${{ secrets.HEALTH_EMPLOYEE_PASSWORD }}" >> $GITHUB_ENV
+          echo "HEALTH_SUPERVISOR_EMAIL=${{ secrets.HEALTH_SUPERVISOR_EMAIL }}" >> $GITHUB_ENV
+          echo "HEALTH_SUPERVISOR_PASSWORD=${{ secrets.HEALTH_SUPERVISOR_PASSWORD }}" >> $GITHUB_ENV
+          echo "HEALTH_ADMIN_EMAIL=${{ secrets.HEALTH_ADMIN_EMAIL }}" >> $GITHUB_ENV
+          echo "HEALTH_ADMIN_PASSWORD=${{ secrets.HEALTH_ADMIN_PASSWORD }}" >> $GITHUB_ENV
 
       - name: Configure Vercel + Supabase secrets
         shell: pwsh
