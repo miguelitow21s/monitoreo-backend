@@ -1,0 +1,7 @@
+# Local Supabase CLI metadata
+supabase/.temp/
+
+# Local env files
+.env
+.env.*
+ops/.env.*
