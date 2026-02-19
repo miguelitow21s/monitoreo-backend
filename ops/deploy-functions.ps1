@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 
 $functions = @(
   'health_ping',
+  'legal_consent',
   'audit_log',
   'shifts_start',
   'shifts_end',

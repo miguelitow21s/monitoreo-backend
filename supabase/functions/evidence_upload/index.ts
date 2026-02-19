@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { z } from "npm:zod@3.23.8";
 import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
+import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
 import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { getOwnedShift, ensureShiftState, ensureEvidenceNotDuplicate } from "../_shared/stateValidator.ts";
 import { geoValidatorByShift } from "../_shared/geoValidator.ts";
@@ -94,6 +95,7 @@ serve(async (req) => {
     userId = user.id;
     userRole = user.role;
     roleGuard(user, ["empleado"]);
+    await requireAcceptedActiveLegalTerm(user.id);
 
     const payload = await parseBody(req, payloadSchema);
     idempotencyKey = requireIdempotencyKey(req);

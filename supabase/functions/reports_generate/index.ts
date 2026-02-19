@@ -2,6 +2,7 @@ import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { z } from "npm:zod@3.23.8";
 import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
+import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
 import { ensureSupervisorRestaurantAccess } from "../_shared/scopeGuard.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp, commonSchemas } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
@@ -36,6 +37,7 @@ serve(async (req) => {
     userId = user.id;
     userRole = user.role;
     roleGuard(user, ["supervisora", "super_admin"]);
+    await requireAcceptedActiveLegalTerm(user.id);
 
     const payload = await parseBody(req, payloadSchema);
     idempotencyKey = requireIdempotencyKey(req);

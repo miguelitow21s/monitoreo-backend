@@ -4,6 +4,7 @@ import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { geoValidatorByRestaurant } from "../_shared/geoValidator.ts";
 import { ensureNoActiveShift } from "../_shared/stateValidator.ts";
+import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp, commonSchemas } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
 import { claimIdempotency, replayIdempotentResponse, safeFinalizeIdempotency } from "../_shared/idempotency.ts";
@@ -18,6 +19,8 @@ const payloadSchema = z.object({
   restaurant_id: commonSchemas.restaurantId,
   lat: commonSchemas.lat,
   lng: commonSchemas.lng,
+  fit_for_work: z.boolean(),
+  declaration: z.string().trim().max(500).optional().nullable(),
 });
 
 serve(async (req) => {
@@ -37,6 +40,7 @@ serve(async (req) => {
     userId = user.id;
     userRole = user.role;
     roleGuard(user, ["empleado"]);
+    await requireAcceptedActiveLegalTerm(user.id);
 
     const payload = await parseBody(req, payloadSchema);
     idempotencyKey = requireIdempotencyKey(req);
@@ -50,7 +54,7 @@ serve(async (req) => {
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 20, window_seconds: 60 });
 
-    const { restaurant_id, lat, lng } = payload;
+    const { restaurant_id, lat, lng, fit_for_work, declaration } = payload;
 
     await ensureNoActiveShift(clientUser, user.id);
     await geoValidatorByRestaurant(clientUser, restaurant_id, lat, lng);
@@ -72,10 +76,28 @@ serve(async (req) => {
       throw { code: 409, message: "No se pudo iniciar turno", category: "BUSINESS", details: error };
     }
 
+    const { error: healthError } = await clientUser
+      .from("shift_health_forms")
+      .upsert(
+        {
+          shift_id: data.id,
+          phase: "start",
+          fit_for_work,
+          declaration: declaration ?? null,
+          recorded_at: new Date().toISOString(),
+          recorded_by: user.id,
+        },
+        { onConflict: "shift_id,phase" }
+      );
+
+    if (healthError) {
+      throw { code: 409, message: "No se pudo registrar formulario de ingreso", category: "BUSINESS", details: healthError };
+    }
+
     await safeWriteAudit({
       user_id: user.id,
       action: "SHIFT_START",
-      context: { shift_id: data.id, restaurant_id, lat, lng },
+      context: { shift_id: data.id, restaurant_id, lat, lng, fit_for_work },
       request_id,
     });
 
