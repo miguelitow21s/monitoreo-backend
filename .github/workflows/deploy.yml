@@ -30,9 +30,14 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install CLIs
+      - name: Setup Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Install Vercel CLI
         run: |
-          npm i -g supabase vercel
+          npm i -g vercel@latest
 
       - name: Export env vars
         shell: bash
