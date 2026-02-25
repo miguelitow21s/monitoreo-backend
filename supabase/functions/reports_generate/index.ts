@@ -8,7 +8,7 @@ import { requireMethod, parseBody, requireIdempotencyKey, getClientIp, commonSch
 import { rateLimiter } from "../_shared/rateLimiter.ts";
 import { claimIdempotency, replayIdempotentResponse, safeFinalizeIdempotency } from "../_shared/idempotency.ts";
 import { errorHandler } from "../_shared/errorHandler.ts";
-import { response } from "../_shared/response.ts";
+import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
@@ -21,6 +21,9 @@ const payloadSchema = z.object({
 });
 
 serve(async (req) => {
+  const preflight = handleCorsPreflight(req);
+  if (preflight) return preflight;
+
   const request_id = crypto.randomUUID();
   const startedAt = Date.now();
   const ip = getClientIp(req);
@@ -113,3 +116,4 @@ serve(async (req) => {
     });
   }
 });
+

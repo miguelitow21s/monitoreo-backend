@@ -6,7 +6,7 @@ import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp } from "../_shared/validation.ts";
 import { claimIdempotency, replayIdempotentResponse, safeFinalizeIdempotency } from "../_shared/idempotency.ts";
 import { errorHandler } from "../_shared/errorHandler.ts";
-import { response } from "../_shared/response.ts";
+import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
@@ -25,6 +25,9 @@ const acceptSchema = z.object({
 const payloadSchema = z.discriminatedUnion("action", [statusSchema, acceptSchema]);
 
 serve(async (req) => {
+  const preflight = handleCorsPreflight(req);
+  if (preflight) return preflight;
+
   const request_id = crypto.randomUUID();
   const startedAt = Date.now();
   const ip = getClientIp(req);
