@@ -124,11 +124,25 @@ if ([string]::IsNullOrWhiteSpace($allowOrigin)) {
 }
 Write-Host "[OK] legal_consent CORS preflight -> $($corsProbe.StatusCode) (origin: $allowOrigin)"
 
-# 3) Method hardening for POST endpoint
+# 3) legal_consent must reach function authGuard (not fail at gateway JWT verifier)
+$consentAnon = Invoke-WebRequest -Method Post -Uri "$baseFn/legal_consent" -Headers @{
+  Authorization = "Bearer $anon"
+  apikey = $anon
+  'Content-Type' = 'application/json'
+} -Body '{"action":"status"}' -SkipHttpErrorCheck -UseBasicParsing
+if ($consentAnon.StatusCode -ne 401) {
+  throw "[legal_consent auth guard] expected HTTP 401 but got $($consentAnon.StatusCode)"
+}
+if (-not ($consentAnon.Content -match '"success"\s*:\s*false')) {
+  throw '[legal_consent auth guard] did not return function JSON envelope (possible gateway JWT rejection)'
+}
+Write-Host "[OK] legal_consent auth guard reached -> 401 (function-level AUTH)"
+
+# 4) Method hardening for POST endpoint
 $methodProbe = Invoke-WebRequest -Method Get -Uri "$baseFn/shifts_start" -Headers @{ Authorization = "Bearer $anon"; apikey = $anon } -SkipHttpErrorCheck -UseBasicParsing
 Assert-Status $methodProbe.StatusCode 405 'shifts_start method guard'
 
-# 4) Idempotency required
+# 5) Idempotency required
 $idempotencyProbe = Invoke-WebRequest -Method Post -Uri "$baseFn/shifts_start" -Headers @{ Authorization = "Bearer $anon"; apikey = $anon; 'Content-Type' = 'application/json' } -Body '{"restaurant_id":1,"lat":0,"lng":0}' -SkipHttpErrorCheck -UseBasicParsing
 if ($idempotencyProbe.StatusCode -eq 422) {
   Write-Host "[OK] shifts_start idempotency guard -> 422"
@@ -140,7 +154,7 @@ if ($idempotencyProbe.StatusCode -eq 422) {
 
 $hasRoleTokens = $employeeJwt -and $supervisorJwt -and $adminJwt
 if ($hasRoleTokens) {
-  # 5) RLS smoke by token context
+  # 6) RLS smoke by token context
   $employeeRls = Invoke-WebRequest -Method Get -Uri "$baseRest/shifts?select=id&limit=1" -Headers @{ Authorization = "Bearer $employeeJwt"; apikey = $anon } -SkipHttpErrorCheck -UseBasicParsing
   Assert-Status $employeeRls.StatusCode 200 'RLS employee shifts select'
 
@@ -150,11 +164,11 @@ if ($hasRoleTokens) {
   $adminRls = Invoke-WebRequest -Method Get -Uri "$baseRest/shifts?select=id&limit=1" -Headers @{ Authorization = "Bearer $adminJwt"; apikey = $anon } -SkipHttpErrorCheck -UseBasicParsing
   Assert-Status $adminRls.StatusCode 200 'RLS admin shifts select'
 
-  # 6) RPC critical smoke
+  # 7) RPC critical smoke
   $rpc = Invoke-WebRequest -Method Post -Uri "$baseRest/rpc/get_my_active_shift" -Headers @{ Authorization = "Bearer $employeeJwt"; apikey = $anon; 'Content-Type' = 'application/json' } -Body '{}' -SkipHttpErrorCheck -UseBasicParsing
   Assert-Status $rpc.StatusCode 200 'RPC get_my_active_shift'
 
-  # 7) Audit permission boundary
+  # 8) Audit permission boundary
   $auditForbidden = Invoke-WebRequest -Method Post -Uri "$baseFn/audit_log" -Headers @{ Authorization = "Bearer $supervisorJwt"; 'Content-Type' = 'application/json'; 'Idempotency-Key' = [guid]::NewGuid().ToString() } -Body '{"action":"SEC_TEST","context":{"probe":true}}' -SkipHttpErrorCheck -UseBasicParsing
   if ($auditForbidden.StatusCode -eq 403) {
     Write-Host "[OK] audit_log supervisor forbidden -> 403"
@@ -167,7 +181,7 @@ if ($hasRoleTokens) {
   Write-Host '[WARN] Skipping role-dependent health checks (RLS/RPC/audit). Configure HEALTH_*_EMAIL/PASSWORD secrets.'
 }
 
-# 8) Evidence endpoint guards
+# 9) Evidence endpoint guards
 $evMethod = Invoke-WebRequest -Method Get -Uri "$baseFn/evidence_upload" -Headers @{ Authorization = "Bearer $anon"; apikey = $anon } -SkipHttpErrorCheck -UseBasicParsing
 Assert-Status $evMethod.StatusCode 405 'evidence_upload method guard'
 

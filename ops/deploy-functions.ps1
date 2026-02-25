@@ -20,7 +20,12 @@ $functions = @(
 
 foreach ($fn in $functions) {
   Write-Host "[DEPLOY] supabase function: $fn"
-  supabase functions deploy $fn --project-ref $ProjectRef
+  if ($fn -eq 'health_ping') {
+    supabase functions deploy $fn --project-ref $ProjectRef
+  } else {
+    # Auth is handled in-function via authGuard (supports current Auth JWT signing mode).
+    supabase functions deploy $fn --project-ref $ProjectRef --no-verify-jwt
+  }
   if ($LASTEXITCODE -ne 0) {
     throw "Failed deploying function $fn with exit code $LASTEXITCODE"
   }

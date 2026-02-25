@@ -23,8 +23,11 @@ function readJwtPayload(token: string): Record<string, unknown> | null {
 }
 
 export async function authGuard(req: Request): Promise<{ user: InternalUser; token: string; clientUser: ReturnType<typeof createUserClient> }> {
-  const rawAuth = req.headers.get("Authorization")?.replace("Bearer ", "").trim() ?? "";
-  if (!rawAuth || rawAuth === "undefined" || rawAuth === "null") {
+  const authHeader = req.headers.get("Authorization")?.trim() ?? "";
+  const bearerMatch = /^Bearer\s+(.+)$/i.exec(authHeader);
+  const rawAuth = (bearerMatch?.[1] ?? authHeader).trim();
+
+  if (!rawAuth || rawAuth.toLowerCase() === "undefined" || rawAuth.toLowerCase() === "null") {
     throw { code: 401, message: "No autenticado", category: "AUTH" };
   }
 
