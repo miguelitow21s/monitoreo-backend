@@ -20,12 +20,10 @@ $functions = @(
 
 foreach ($fn in $functions) {
   Write-Host "[DEPLOY] supabase function: $fn"
-  if ($fn -eq 'health_ping') {
-    supabase functions deploy $fn --project-ref $ProjectRef
-  } else {
-    # Auth is handled in-function via authGuard (supports current Auth JWT signing mode).
-    supabase functions deploy $fn --project-ref $ProjectRef --no-verify-jwt
-  }
+  # Auth is handled in-function via authGuard where required.
+  # Keep gateway JWT verification disabled to support current Auth JWT signing mode
+  # and allow public endpoints (e.g., health_ping) without Authorization header.
+  supabase functions deploy $fn --project-ref $ProjectRef --no-verify-jwt
   if ($LASTEXITCODE -ne 0) {
     throw "Failed deploying function $fn with exit code $LASTEXITCODE"
   }
