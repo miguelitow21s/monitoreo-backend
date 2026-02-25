@@ -18,6 +18,9 @@ const payloadSchema = z.object({
   restaurant_id: commonSchemas.restaurantId,
   period_start: commonSchemas.dateYmd,
   period_end: commonSchemas.dateYmd,
+  filtros_json: z.record(z.any()).optional(),
+  columns: z.array(z.string().min(1).max(64)).max(100).optional(),
+  export_format: z.enum(["csv", "pdf", "both"]).optional(),
 });
 
 serve(async (req) => {
@@ -63,6 +66,17 @@ serve(async (req) => {
       await ensureSupervisorRestaurantAccess(user.id, restaurant_id);
     }
 
+    const generatedAt = new Date().toISOString();
+    const filtros_json = {
+      period_start,
+      period_end,
+      filters: payload.filtros_json ?? {},
+      columns: payload.columns ?? [],
+      export_format: payload.export_format ?? "both",
+    };
+    const hash_documento = await hashCanonicalJson(filtros_json);
+    const file_path = `reports/${restaurant_id}/${period_start}_${period_end}/${request_id}.json`;
+
     const { data, error } = await clientUser
       .from("reports")
       .insert({
@@ -70,10 +84,15 @@ serve(async (req) => {
         period_start,
         period_end,
         generated_by: user.id,
+        generado_por: user.id,
+        generated_at: generatedAt,
+        filtros_json,
+        file_path,
+        hash_documento,
         url_pdf: "",
         url_excel: "",
       })
-      .select("id")
+      .select("id, generated_at, file_path, hash_documento")
       .single();
 
     if (error || !data) {
@@ -83,14 +102,31 @@ serve(async (req) => {
     await safeWriteAudit({
       user_id: user.id,
       action: "REPORT_GENERATE",
-      context: { report_id: data.id, restaurant_id, period_start, period_end },
+      context: {
+        report_id: data.id,
+        restaurant_id,
+        period_start,
+        period_end,
+        file_path: data.file_path ?? file_path,
+        hash_documento: data.hash_documento ?? hash_documento,
+      },
       request_id,
     });
 
-    const successPayload = { success: true, data: { report_id: data.id }, error: null, request_id };
+    const successPayload = {
+      success: true,
+      data: {
+        report_id: data.id,
+        generated_at: data.generated_at ?? generatedAt,
+        file_path: data.file_path ?? file_path,
+        hash_documento: data.hash_documento ?? hash_documento,
+      },
+      error: null,
+      request_id,
+    };
     await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
 
-    return response(true, { report_id: data.id }, null, request_id);
+    return response(true, successPayload.data, null, request_id);
   } catch (err) {
     const apiError = errorHandler(err, request_id);
     status = apiError.code;
