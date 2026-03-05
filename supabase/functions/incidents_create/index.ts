@@ -13,6 +13,9 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
+import { requireTrustedDevice } from "../_shared/deviceTrust.ts";
+import { requireShiftOtpSession } from "../_shared/otp.ts";
+import { notifyIncidentCreated, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
 
 const endpoint = "incidents_create";
 const payloadSchema = z.object({
@@ -41,6 +44,8 @@ serve(async (req) => {
     userRole = user.role;
     roleGuard(user, ["empleado", "supervisora", "super_admin"]);
     await requireAcceptedActiveLegalTerm(user.id);
+    const trustedDevice = await requireTrustedDevice({ userId: user.id, req });
+    await requireShiftOtpSession({ req, userId: user.id, trustedDeviceId: trustedDevice.id });
 
     const payload = await parseBody(req, payloadSchema);
     idempotencyKey = requireIdempotencyKey(req);
@@ -84,6 +89,13 @@ serve(async (req) => {
       context: { incident_id: data.id, shift_id },
       request_id,
     });
+
+    await notifyIncidentCreated({
+      incidentId: data.id,
+      shiftId: shift_id,
+      actorUserId: user.id,
+    });
+    await safeDispatchPendingEmailNotifications({ limit: 25, maxAttempts: 5 });
 
     const successPayload = { success: true, data: { incident_id: data.id }, error: null, request_id };
     await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });

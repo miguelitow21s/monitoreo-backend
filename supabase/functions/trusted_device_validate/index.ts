@@ -1,11 +1,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { z } from "npm:zod@3.23.8";
 import { authGuard } from "../_shared/authGuard.ts";
-import { roleGuard } from "../_shared/roleGuard.ts";
-import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
-import { ensureShiftFinalized } from "../_shared/stateValidator.ts";
-import { ensureSupervisorShiftAccess } from "../_shared/scopeGuard.ts";
-import { requireMethod, parseBody, requireIdempotencyKey, getClientIp, commonSchemas } from "../_shared/validation.ts";
+import { requireMethod, parseBody, requireIdempotencyKey, getClientIp } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
 import { claimIdempotency, replayIdempotentResponse, safeFinalizeIdempotency } from "../_shared/idempotency.ts";
 import { errorHandler } from "../_shared/errorHandler.ts";
@@ -13,12 +9,13 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
-import { requireTrustedDevice } from "../_shared/deviceTrust.ts";
-import { requireShiftOtpSession } from "../_shared/otp.ts";
-import { notifyShiftEvent, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
+import { getTrustedDeviceStatus } from "../_shared/deviceTrust.ts";
 
-const endpoint = "shifts_reject";
-const payloadSchema = z.object({ shift_id: commonSchemas.shiftId });
+const endpoint = "trusted_device_validate";
+
+const payloadSchema = z.object({
+  device_fingerprint: z.string().trim().min(16).max(256).optional(),
+});
 
 serve(async (req) => {
   const preflight = handleCorsPreflight(req);
@@ -36,13 +33,9 @@ serve(async (req) => {
 
   try {
     requireMethod(req, ["POST"]);
-    const { user, clientUser } = await authGuard(req);
+    const { user } = await authGuard(req);
     userId = user.id;
     userRole = user.role;
-    roleGuard(user, ["supervisora", "super_admin"]);
-    await requireAcceptedActiveLegalTerm(user.id);
-    const trustedDevice = await requireTrustedDevice({ userId: user.id, req });
-    await requireShiftOtpSession({ req, userId: user.id, trustedDeviceId: trustedDevice.id });
 
     const payload = await parseBody(req, payloadSchema);
     idempotencyKey = requireIdempotencyKey(req);
@@ -54,50 +47,41 @@ serve(async (req) => {
       return replayIdempotentResponse(claim.stored, request_id);
     }
 
-    await rateLimiter({ user_id: user.id, ip, endpoint, limit: 30, window_seconds: 60 });
+    await rateLimiter({ user_id: user.id, ip, endpoint, limit: 60, window_seconds: 60 });
 
-    const { shift_id } = payload;
-    if (user.role === "supervisora") {
-      await ensureSupervisorShiftAccess(user.id, shift_id);
-    }
+    const trusted = await getTrustedDeviceStatus({
+      userId: user.id,
+      req,
+      bodyFingerprint: payload.device_fingerprint,
+    });
 
-    await ensureShiftFinalized(clientUser, shift_id);
-
-    const { data, error } = await clientUser
-      .from("shifts")
-      .update({
-        state: "rechazado",
-        rejected_by: user.id,
-        approved_by: null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", shift_id)
-      .eq("state", "finalizado")
-      .select("id")
-      .single();
-
-    if (error || !data) {
-      throw { code: 409, message: "No se pudo rechazar turno", category: "BUSINESS", details: error };
-    }
+    const result = {
+      trusted: trusted.trusted,
+      first_login_binding: trusted.first_login_binding,
+      registration_required: !trusted.trusted,
+      trusted_devices_count: trusted.trusted_devices_count,
+      device_id: trusted.device?.id ?? null,
+      trusted_at: trusted.device?.trusted_at ?? null,
+      last_seen_at: trusted.device?.last_seen_at ?? null,
+    };
 
     await safeWriteAudit({
       user_id: user.id,
-      action: "SHIFT_REJECT",
-      context: { shift_id },
+      action: "DEVICE_TRUST_VALIDATE",
+      context: {
+        trusted: result.trusted,
+        first_login_binding: result.first_login_binding,
+        registration_required: result.registration_required,
+        trusted_devices_count: result.trusted_devices_count,
+        device_id: result.device_id,
+      },
       request_id,
     });
 
-    await notifyShiftEvent({
-      eventType: "shift_rejected",
-      shiftId: shift_id,
-      actorUserId: user.id,
-    });
-    await safeDispatchPendingEmailNotifications({ limit: 25, maxAttempts: 5 });
-
-    const successPayload = { success: true, data: {}, error: null, request_id };
+    const successPayload = { success: true, data: result, error: null, request_id };
     await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
 
-    return response(true, {}, null, request_id);
+    return response(true, result, null, request_id);
   } catch (err) {
     const apiError = errorHandler(err, request_id);
     status = apiError.code;
@@ -123,4 +107,3 @@ serve(async (req) => {
     });
   }
 });
-

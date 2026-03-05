@@ -14,6 +14,8 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
+import { requireTrustedDevice } from "../_shared/deviceTrust.ts";
+import { requireShiftOtpSession } from "../_shared/otp.ts";
 
 const endpoint = "evidence_upload";
 const bucket = "shift-evidence";
@@ -99,6 +101,8 @@ serve(async (req) => {
     userRole = user.role;
     roleGuard(user, ["empleado"]);
     await requireAcceptedActiveLegalTerm(user.id);
+    const trustedDevice = await requireTrustedDevice({ userId: user.id, req });
+    await requireShiftOtpSession({ req, userId: user.id, trustedDeviceId: trustedDevice.id });
 
     const payload = await parseBody(req, payloadSchema);
     idempotencyKey = requireIdempotencyKey(req);

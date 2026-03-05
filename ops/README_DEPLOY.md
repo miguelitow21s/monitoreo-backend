@@ -48,6 +48,16 @@ Set environment-level secrets in GitHub for each target environment:
 - `HEALTH_SUPERVISOR_PASSWORD` (recommended)
 - `HEALTH_ADMIN_EMAIL` (recommended)
 - `HEALTH_ADMIN_PASSWORD` (recommended)
+- `TWILIO_ACCOUNT_SID` (OTP celular)
+- `TWILIO_AUTH_TOKEN` (OTP celular)
+- `TWILIO_MESSAGING_SERVICE_SID` or `TWILIO_FROM_NUMBER` (OTP celular)
+- `OTP_HASH_PEPPER` (OTP celular)
+- `OTP_TTL_SECONDS` (optional, default `300`)
+- `SHIFT_OTP_SESSION_MINUTES` (optional, default `720`)
+- `OTP_DEBUG_MODE` (optional, only non-prod)
+- `OTP_SMS_TEMPLATE` (optional)
+- `RESEND_API_KEY` (notificaciones email)
+- `EMAIL_FROM` (notificaciones email)
 
 ## Security constraints
 - `SUPABASE_SERVICE_ROLE_KEY` must never be exposed to frontend runtime/client bundles.

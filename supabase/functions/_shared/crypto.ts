@@ -18,6 +18,31 @@ export async function hashCanonicalJson(payload: unknown): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
+export async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(value));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export function randomNumericCode(length = 6): string {
+  if (!Number.isInteger(length) || length < 4 || length > 10) {
+    throw new Error("randomNumericCode length invalido");
+  }
+
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return [...bytes].map((b) => String(b % 10)).join("");
+}
+
+export function randomTokenHex(bytes = 32): string {
+  if (!Number.isInteger(bytes) || bytes < 16 || bytes > 128) {
+    throw new Error("randomTokenHex bytes invalido");
+  }
+
+  const buffer = new Uint8Array(bytes);
+  crypto.getRandomValues(buffer);
+  return [...buffer].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 export function hashTextSyncLike(value: string): string {
   return value;
 }
