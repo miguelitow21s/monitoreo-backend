@@ -1,0 +1,38 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Supabase: Release Readiness Apply (dev)",
+      "type": "shell",
+      "command": "./ops/apply-release-readiness.ps1",
+      "args": [
+        "-Environment",
+        "dev"
+      ],
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "Supabase: Health Check",
+      "type": "shell",
+      "command": "./ops/health-check.ps1",
+      "problemMatcher": [],
+      "group": "test"
+    },
+    {
+      "label": "Supabase CLI: DB Push (npx)",
+      "type": "shell",
+      "command": "npx",
+      "args": [
+        "-y",
+        "supabase",
+        "db",
+        "push",
+        "--linked",
+        "--include-all",
+        "--yes"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
