@@ -21,6 +21,15 @@ const endpoint = "incidents_create";
 const payloadSchema = z.object({
   shift_id: commonSchemas.shiftId,
   description: z.string().trim().min(5).max(5000),
+  task: z
+    .object({
+      assigned_employee_id: z.string().uuid(),
+      title: z.string().trim().min(3).max(200),
+      description: z.string().trim().min(5).max(5000),
+      priority: z.enum(["low", "normal", "high", "critical"]).default("normal"),
+      due_at: z.string().datetime().optional().nullable(),
+    })
+    .optional(),
 });
 
 serve(async (req) => {
@@ -59,13 +68,17 @@ serve(async (req) => {
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 25, window_seconds: 60 });
 
-    const { shift_id, description } = payload;
+    const { shift_id, description, task } = payload;
 
     if (user.role === "empleado") {
       await getOwnedShift(clientUser, user.id, shift_id);
     }
     if (user.role === "supervisora") {
       await ensureSupervisorShiftAccess(user.id, shift_id);
+    }
+
+    if (task && user.role === "empleado") {
+      throw { code: 403, message: "Empleado no puede crear tareas operativas", category: "PERMISSION" };
     }
 
     const { data, error } = await clientUser
@@ -83,10 +96,28 @@ serve(async (req) => {
       throw { code: 409, message: "No se pudo registrar incidencia", category: "BUSINESS", details: error };
     }
 
+    let taskId: number | null = null;
+    if (task) {
+      const { data: taskRpc, error: taskError } = await clientUser.rpc("create_operational_task", {
+        p_shift_id: shift_id,
+        p_assigned_employee_id: task.assigned_employee_id,
+        p_title: task.title,
+        p_description: task.description,
+        p_priority: task.priority,
+        p_due_at: task.due_at ?? null,
+      });
+
+      if (taskError || !taskRpc) {
+        throw { code: 409, message: "Incidencia creada, pero no se pudo crear tarea", category: "BUSINESS", details: taskError };
+      }
+
+      taskId = Number(taskRpc);
+    }
+
     await safeWriteAudit({
       user_id: user.id,
       action: "INCIDENT_CREATE",
-      context: { incident_id: data.id, shift_id },
+      context: { incident_id: data.id, shift_id, task_id: taskId },
       request_id,
     });
 
@@ -97,10 +128,10 @@ serve(async (req) => {
     });
     await safeDispatchPendingEmailNotifications({ limit: 25, maxAttempts: 5 });
 
-    const successPayload = { success: true, data: { incident_id: data.id }, error: null, request_id };
+    const successPayload = { success: true, data: { incident_id: data.id, task_id: taskId }, error: null, request_id };
     await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
 
-    return response(true, { incident_id: data.id }, null, request_id);
+    return response(true, { incident_id: data.id, task_id: taskId }, null, request_id);
   } catch (err) {
     const apiError = errorHandler(err, request_id);
     status = apiError.code;
