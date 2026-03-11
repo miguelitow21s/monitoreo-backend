@@ -10,6 +10,19 @@ Use `ops/.env.template` as the source of truth and define values per environment
 3. Run ordered pipeline:
    `pwsh ./ops/deploy.ps1 -Environment dev -RunFrontendHook`
 
+## Release readiness quick run (2026-03-10)
+Use this when you need to apply only DB changes for delivery readiness and then run smoke checks.
+
+1. Export required env vars:
+   `SUPABASE_PROJECT_REF`, `SUPABASE_DB_PASSWORD`, `SUPABASE_ACCESS_TOKEN`
+2. Run:
+   `pwsh ./ops/apply-release-readiness.ps1 -Environment dev`
+3. Execute SQL smoke validation in Supabase SQL editor:
+   `ops/release-readiness-smoke.sql`
+
+Migration included in this release path:
+- `supabase/migrations/018_release_readiness_restaurants_supplies.sql`
+
 ## Pipeline stages
 1. SQL migrations (`supabase db push --include-all`)
 2. Edge Functions deploy (canonical list)
