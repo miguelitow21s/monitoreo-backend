@@ -214,26 +214,24 @@ serve(async (req: Request) => {
     let query = clientUser
       .from("restaurants")
       .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, created_at, updated_at")
-      .order("name", { ascending: true })
-      .limit(payload.limit);
+      .order("name", { ascending: true });
 
     if (payload.is_active !== undefined) query = query.eq("is_active", payload.is_active);
+
+    const searchRaw = payload.search?.trim();
+    if (searchRaw) {
+      const term = searchRaw.replace(/,/g, " ");
+      query = query.or(`name.ilike.%${term}%,city.ilike.%${term}%,state.ilike.%${term}%`);
+    }
+
+    query = query.limit(payload.limit);
 
     const { data, error } = await query;
     if (error) {
       throw { code: 409, message: "No se pudo listar restaurantes", category: "BUSINESS", details: error };
     }
 
-    let items = (data ?? []) as Array<Record<string, unknown>>;
-    if (payload.search) {
-      const term = payload.search.toLowerCase();
-      items = items.filter((item) => {
-        const name = String(item.name ?? "").toLowerCase();
-        const city = String(item.city ?? "").toLowerCase();
-        const state = String(item.state ?? "").toLowerCase();
-        return name.includes(term) || city.includes(term) || state.includes(term);
-      });
-    }
+    const items = (data ?? []) as Array<Record<string, unknown>>;
 
     const successPayload = { success: true, data: { items }, error: null, request_id };
     await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });

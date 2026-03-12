@@ -250,26 +250,28 @@ serve(async (req: Request) => {
     if (payload.action === "complete") {
       roleGuard(user, ["empleado", "supervisora", "super_admin"]);
 
-      if (user.role !== "super_admin") {
-        const { data: task, error: taskError } = await clientUser
-          .from("operational_tasks")
-          .select("id, restaurant_id")
-          .eq("id", payload.task_id)
-          .single();
+      const { data: task, error: taskError } = await clientUser
+        .from("operational_tasks")
+        .select("id, restaurant_id, assigned_employee_id")
+        .eq("id", payload.task_id)
+        .single();
 
-        if (taskError || !task) {
-          throw { code: 404, message: "Tarea operativa no encontrada", category: "BUSINESS", details: taskError };
-        }
-
-        if (user.role === "supervisora") {
-          await ensureSupervisorRestaurantAccess(user.id, task.restaurant_id as number);
-        }
+      if (taskError || !task) {
+        throw { code: 404, message: "Tarea operativa no encontrada", category: "BUSINESS", details: taskError };
       }
 
-      const expectedManifestPrefix = `users/${user.id}/task-manifest/`;
-      const expectedEvidencePrefix = `users/${user.id}/task-evidence/`;
-      if (user.role === "empleado" && !payload.evidence_path.startsWith(expectedManifestPrefix) && !payload.evidence_path.startsWith(expectedEvidencePrefix)) {
-        throw { code: 403, message: "Ruta de evidencia invalida para el empleado", category: "PERMISSION" };
+      if (user.role === "empleado" && String(task.assigned_employee_id) !== user.id) {
+        throw { code: 403, message: "Tarea no asignada a este empleado", category: "PERMISSION" };
+      }
+
+      if (user.role === "supervisora") {
+        await ensureSupervisorRestaurantAccess(user.id, task.restaurant_id as number);
+      }
+
+      const expectedManifestPrefix = `users/${task.assigned_employee_id}/task-manifest/${payload.task_id}/`;
+      const expectedEvidencePrefix = `users/${task.assigned_employee_id}/task-evidence/${payload.task_id}/`;
+      if (!payload.evidence_path.startsWith(expectedManifestPrefix) && !payload.evidence_path.startsWith(expectedEvidencePrefix)) {
+        throw { code: 403, message: "Ruta de evidencia invalida para la tarea", category: "PERMISSION" };
       }
 
       const { data: fileBlob, error: downloadError } = await clientAdmin.storage.from(evidenceBucket).download(payload.evidence_path);

@@ -52,11 +52,6 @@ type SupplyRow = {
   unit_cost: number | null;
 };
 
-function isWithinRange(iso: string | null, fromIso: string, toIso: string) {
-  if (!iso) return false;
-  return iso >= fromIso && iso <= toIso;
-}
-
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
   if (preflight) return preflight;
@@ -115,7 +110,11 @@ serve(async (req: Request) => {
       throw { code: 409, message: "No se pudieron cargar restaurantes", category: "BUSINESS", details: restaurantsError };
     }
 
-    let shiftsQuery = clientAdmin.from("shifts").select("id, restaurant_id, start_time, end_time, state");
+    let shiftsQuery = clientAdmin
+      .from("shifts")
+      .select("id, restaurant_id, start_time, end_time, state")
+      .gte("start_time", fromIso)
+      .lte("start_time", toIso);
     if (payload.restaurant_id) shiftsQuery = shiftsQuery.eq("restaurant_id", payload.restaurant_id);
     const { data: shiftsRaw, error: shiftsError } = await shiftsQuery;
 
@@ -123,7 +122,11 @@ serve(async (req: Request) => {
       throw { code: 409, message: "No se pudieron cargar turnos", category: "BUSINESS", details: shiftsError };
     }
 
-    let tasksQuery = clientAdmin.from("operational_tasks").select("id, restaurant_id, status, updated_at");
+    let tasksQuery = clientAdmin
+      .from("operational_tasks")
+      .select("id, restaurant_id, status, updated_at")
+      .gte("updated_at", fromIso)
+      .lte("updated_at", toIso);
     if (payload.restaurant_id) tasksQuery = tasksQuery.eq("restaurant_id", payload.restaurant_id);
     const { data: tasksRaw, error: tasksError } = await tasksQuery;
 
@@ -131,7 +134,11 @@ serve(async (req: Request) => {
       throw { code: 409, message: "No se pudieron cargar tareas operativas", category: "BUSINESS", details: tasksError };
     }
 
-    let deliveriesQuery = clientAdmin.from("supply_deliveries").select("id, restaurant_id, quantity, delivered_at, supply_id");
+    let deliveriesQuery = clientAdmin
+      .from("supply_deliveries")
+      .select("id, restaurant_id, quantity, delivered_at, supply_id")
+      .gte("delivered_at", fromIso)
+      .lte("delivered_at", toIso);
     if (payload.restaurant_id) deliveriesQuery = deliveriesQuery.eq("restaurant_id", payload.restaurant_id);
     const { data: deliveriesRaw, error: deliveriesError } = await deliveriesQuery;
 
@@ -139,7 +146,7 @@ serve(async (req: Request) => {
       throw { code: 409, message: "No se pudieron cargar entregas de insumos", category: "BUSINESS", details: deliveriesError };
     }
 
-    let incidentsQuery = clientAdmin.from("incidents").select("id, shift_id, created_at");
+    let incidentsQuery = clientAdmin.from("incidents").select("id, shift_id, created_at").gte("created_at", fromIso).lte("created_at", toIso);
     const { data: incidentsRaw, error: incidentsError } = await incidentsQuery;
 
     if (incidentsError) {
@@ -157,10 +164,10 @@ serve(async (req: Request) => {
     const incidents = incidentsRaw ?? [];
     const supplies = (suppliesRaw ?? []) as SupplyRow[];
 
-    const shiftsInRange = shifts.filter((s) => isWithinRange(s.start_time, fromIso, toIso));
-    const tasksInRange = tasks.filter((t) => isWithinRange(t.updated_at, fromIso, toIso));
-    const deliveriesInRange = deliveries.filter((d) => isWithinRange(d.delivered_at, fromIso, toIso));
-    const incidentsInRange = incidents.filter((i) => isWithinRange(String(i.created_at ?? null), fromIso, toIso));
+    const shiftsInRange = shifts;
+    const tasksInRange = tasks;
+    const deliveriesInRange = deliveries;
+    const incidentsInRange = incidents;
 
     const supplyUnitCost = new Map<number, number>();
     for (const s of supplies) {

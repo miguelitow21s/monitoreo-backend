@@ -86,3 +86,25 @@
 - Verify employee can create both observation and alert records from active shift.
 - Verify check-out fails with clear UX when `inicio` or `fin` photo is missing.
 - Verify check-out succeeds after both mandatory photos are uploaded.
+
+## 2026-03-12 - Supervisora hitting employee_self_service (403 expected)
+
+### Backend behavior (expected)
+- `/functions/v1/employee_self_service` is **empleado-only**.
+- If a `supervisora` token calls it, the backend returns **403 PERMISSION** via the standard envelope.
+
+### Frontend actions required
+- Route supervisor flows to supervisor endpoints instead of `employee_self_service`:
+  - Programacion/agenda: `/functions/v1/scheduled_shifts_manage` (list/assign/reschedule/cancel)
+  - Tareas operativas: `/functions/v1/operational_tasks_manage` (list_supervision/create/complete)
+  - Metrica ejecutiva: `/functions/v1/admin_dashboard_metrics`
+- If UI is shared between roles, gate calls by role:
+  - `empleado` => `employee_self_service`
+  - `supervisora` => supervisor endpoints above
+
+### Error example (expected for supervisora)
+- `403` with body `{ success: false, data: null, error: { code: 403, category: "PERMISSION", ... }, request_id }`
+
+### Notes (frontend-only)
+- Console warning about zustand default export is from FE code; switch to `import { create } from 'zustand'`.
+- Realtime WebSocket disconnect is not required by backend; disable if not used.

@@ -159,9 +159,12 @@ $baseRest = "$supabaseUrl/rest/v1"
 $health = Invoke-HttpGet -Uri "$baseFn/health_ping" -Headers @{ authorization = "Bearer $anon"; apikey = $anon }
 Assert-Status $health.StatusCode 200 'health_ping'
 
+$frontendOrigin = Get-OptionalEnv 'HEALTH_CHECK_ORIGIN'
+if (-not $frontendOrigin) { $frontendOrigin = 'https://monitoreo-front-zeta.vercel.app' }
+
 # 2) CORS preflight (browser compatibility)
 $corsProbe = Invoke-HttpRequest -method 'OPTIONS' -uri "$baseFn/legal_consent" -headers @{
-  Origin = 'https://monitoreo-front-zeta.vercel.app'
+  Origin = $frontendOrigin
   'Access-Control-Request-Method' = 'POST'
   'Access-Control-Request-Headers' = 'authorization,apikey,content-type,idempotency-key,x-client-info'
 }

@@ -302,28 +302,27 @@ serve(async (req: Request) => {
     let query = clientAdmin
       .from("profiles")
       .select("id, first_name, last_name, full_name, email, phone_number, role, is_active")
-      .order("email", { ascending: true })
-      .limit(payload.limit);
+      .order("email", { ascending: true });
 
     if (payload.role) query = query.eq("role", payload.role);
     if (payload.is_active !== undefined) query = query.eq("is_active", payload.is_active);
+
+    const searchRaw = payload.search?.trim();
+    if (searchRaw) {
+      const term = searchRaw.replace(/,/g, " ");
+      query = query.or(
+        `email.ilike.%${term}%,full_name.ilike.%${term}%,first_name.ilike.%${term}%,last_name.ilike.%${term}%`
+      );
+    }
+
+    query = query.limit(payload.limit);
 
     const { data, error } = await query;
     if (error) {
       throw { code: 409, message: "No se pudo listar usuarios", category: "BUSINESS", details: error };
     }
 
-    let items = (data ?? []) as Array<Record<string, unknown>>;
-    if (payload.search) {
-      const term = payload.search.toLowerCase();
-      items = items.filter((item) => {
-        const email = String(item.email ?? "").toLowerCase();
-        const fullName = String(item.full_name ?? "").toLowerCase();
-        const firstName = String(item.first_name ?? "").toLowerCase();
-        const lastName = String(item.last_name ?? "").toLowerCase();
-        return email.includes(term) || fullName.includes(term) || firstName.includes(term) || lastName.includes(term);
-      });
-    }
+    const items = (data ?? []) as Array<Record<string, unknown>>;
 
     const successPayload = { success: true, data: { items }, error: null, request_id };
     await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
