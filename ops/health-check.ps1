@@ -23,25 +23,75 @@ function Assert-Status([int]$actual, [int]$expected, [string]$label) {
   Write-Host "[OK] $label -> $actual"
 }
 
-function Invoke-HttpGet([string]$uri, [hashtable]$headers) {
-  $handler = [System.Net.Http.HttpClientHandler]::new()
-  $handler.AllowAutoRedirect = $false
-  $client = [System.Net.Http.HttpClient]::new($handler)
-  try {
-    $req = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Get, $uri)
-    foreach ($key in $headers.Keys) {
-      [void]$req.Headers.TryAddWithoutValidation($key, [string]$headers[$key])
+function Invoke-HttpRequest([string]$method, [string]$uri, [hashtable]$headers, [string]$body = $null) {
+  $request = [System.Net.HttpWebRequest]::Create($uri)
+  $request.Method = $method
+  $request.AllowAutoRedirect = $false
+
+  foreach ($key in $headers.Keys) {
+    $value = [string]$headers[$key]
+    switch ($key.ToLowerInvariant()) {
+      'content-type' { $request.ContentType = $value; continue }
+      'accept' { $request.Accept = $value; continue }
+      'user-agent' { $request.UserAgent = $value; continue }
+      'host' { continue }
+      default { $request.Headers[$key] = $value }
     }
-    $resp = $client.Send($req)
-    $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
-    return [pscustomobject]@{
-      StatusCode = [int]$resp.StatusCode
-      Content = $body
+  }
+
+  if ($null -ne $body -and $body.Length -gt 0) {
+    if ([string]::IsNullOrWhiteSpace($request.ContentType)) {
+      $request.ContentType = 'application/json'
+    }
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+    $request.ContentLength = $bytes.Length
+    $stream = $request.GetRequestStream()
+    try {
+      $stream.Write($bytes, 0, $bytes.Length)
+    } finally {
+      $stream.Dispose()
+    }
+  }
+
+  $response = $null
+  try {
+    $response = [System.Net.HttpWebResponse]$request.GetResponse()
+  } catch [System.Net.WebException] {
+    if ($_.Exception.Response) {
+      $response = [System.Net.HttpWebResponse]$_.Exception.Response
+    } else {
+      throw
+    }
+  }
+
+  $content = ''
+  $reader = $null
+  try {
+    if ($response.GetResponseStream()) {
+      $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+      $content = $reader.ReadToEnd()
     }
   } finally {
-    $client.Dispose()
-    $handler.Dispose()
+    if ($reader) { $reader.Dispose() }
   }
+
+  $responseHeaders = @{}
+  foreach ($name in $response.Headers.AllKeys) {
+    $responseHeaders[$name] = $response.Headers[$name]
+  }
+
+  $statusCode = [int]$response.StatusCode
+  $response.Close()
+
+  return [pscustomobject]@{
+    StatusCode = $statusCode
+    Content = $content
+    Headers = $responseHeaders
+  }
+}
+
+function Invoke-HttpGet([string]$uri, [hashtable]$headers) {
+  return Invoke-HttpRequest -method 'GET' -uri $uri -headers $headers
 }
 
 function Get-AuthToken([string]$supabaseUrl, [string]$anonKey, [string]$email, [string]$password, [string]$label) {
@@ -110,11 +160,11 @@ $health = Invoke-HttpGet -Uri "$baseFn/health_ping" -Headers @{ authorization = 
 Assert-Status $health.StatusCode 200 'health_ping'
 
 # 2) CORS preflight (browser compatibility)
-$corsProbe = Invoke-WebRequest -Method Options -Uri "$baseFn/legal_consent" -Headers @{
+$corsProbe = Invoke-HttpRequest -method 'OPTIONS' -uri "$baseFn/legal_consent" -headers @{
   Origin = 'https://monitoreo-front-zeta.vercel.app'
   'Access-Control-Request-Method' = 'POST'
   'Access-Control-Request-Headers' = 'authorization,apikey,content-type,idempotency-key,x-client-info'
-} -SkipHttpErrorCheck -UseBasicParsing
+}
 if ($corsProbe.StatusCode -ne 204 -and $corsProbe.StatusCode -ne 200) {
   throw "[legal_consent CORS preflight] expected HTTP 204/200 but got $($corsProbe.StatusCode)"
 }
@@ -125,11 +175,11 @@ if ([string]::IsNullOrWhiteSpace($allowOrigin)) {
 Write-Host "[OK] legal_consent CORS preflight -> $($corsProbe.StatusCode) (origin: $allowOrigin)"
 
 # 3) legal_consent must reach function authGuard (not fail at gateway JWT verifier)
-$consentAnon = Invoke-WebRequest -Method Post -Uri "$baseFn/legal_consent" -Headers @{
+$consentAnon = Invoke-HttpRequest -method 'POST' -uri "$baseFn/legal_consent" -headers @{
   Authorization = "Bearer $anon"
   apikey = $anon
   'Content-Type' = 'application/json'
-} -Body '{"action":"status"}' -SkipHttpErrorCheck -UseBasicParsing
+} -body '{"action":"status"}'
 if ($consentAnon.StatusCode -ne 401) {
   throw "[legal_consent auth guard] expected HTTP 401 but got $($consentAnon.StatusCode)"
 }
@@ -139,11 +189,11 @@ if (-not ($consentAnon.Content -match '"success"\s*:\s*false')) {
 Write-Host "[OK] legal_consent auth guard reached -> 401 (function-level AUTH)"
 
 # 4) Method hardening for POST endpoint
-$methodProbe = Invoke-WebRequest -Method Get -Uri "$baseFn/shifts_start" -Headers @{ Authorization = "Bearer $anon"; apikey = $anon } -SkipHttpErrorCheck -UseBasicParsing
+$methodProbe = Invoke-HttpRequest -method 'GET' -uri "$baseFn/shifts_start" -headers @{ Authorization = "Bearer $anon"; apikey = $anon }
 Assert-Status $methodProbe.StatusCode 405 'shifts_start method guard'
 
 # 5) Idempotency required
-$idempotencyProbe = Invoke-WebRequest -Method Post -Uri "$baseFn/shifts_start" -Headers @{ Authorization = "Bearer $anon"; apikey = $anon; 'Content-Type' = 'application/json' } -Body '{"restaurant_id":1,"lat":0,"lng":0}' -SkipHttpErrorCheck -UseBasicParsing
+$idempotencyProbe = Invoke-HttpRequest -method 'POST' -uri "$baseFn/shifts_start" -headers @{ Authorization = "Bearer $anon"; apikey = $anon; 'Content-Type' = 'application/json' } -body '{"restaurant_id":1,"lat":0,"lng":0}'
 if ($idempotencyProbe.StatusCode -eq 422) {
   Write-Host "[OK] shifts_start idempotency guard -> 422"
 } elseif ($idempotencyProbe.StatusCode -eq 401) {
@@ -155,21 +205,21 @@ if ($idempotencyProbe.StatusCode -eq 422) {
 $hasRoleTokens = $employeeJwt -and $supervisorJwt -and $adminJwt
 if ($hasRoleTokens) {
   # 6) RLS smoke by token context
-  $employeeRls = Invoke-WebRequest -Method Get -Uri "$baseRest/shifts?select=id&limit=1" -Headers @{ Authorization = "Bearer $employeeJwt"; apikey = $anon } -SkipHttpErrorCheck -UseBasicParsing
+  $employeeRls = Invoke-HttpRequest -method 'GET' -uri "$baseRest/shifts?select=id&limit=1" -headers @{ Authorization = "Bearer $employeeJwt"; apikey = $anon }
   Assert-Status $employeeRls.StatusCode 200 'RLS employee shifts select'
 
-  $supervisorRls = Invoke-WebRequest -Method Get -Uri "$baseRest/shifts?select=id&limit=1" -Headers @{ Authorization = "Bearer $supervisorJwt"; apikey = $anon } -SkipHttpErrorCheck -UseBasicParsing
+  $supervisorRls = Invoke-HttpRequest -method 'GET' -uri "$baseRest/shifts?select=id&limit=1" -headers @{ Authorization = "Bearer $supervisorJwt"; apikey = $anon }
   Assert-Status $supervisorRls.StatusCode 200 'RLS supervisor shifts select'
 
-  $adminRls = Invoke-WebRequest -Method Get -Uri "$baseRest/shifts?select=id&limit=1" -Headers @{ Authorization = "Bearer $adminJwt"; apikey = $anon } -SkipHttpErrorCheck -UseBasicParsing
+  $adminRls = Invoke-HttpRequest -method 'GET' -uri "$baseRest/shifts?select=id&limit=1" -headers @{ Authorization = "Bearer $adminJwt"; apikey = $anon }
   Assert-Status $adminRls.StatusCode 200 'RLS admin shifts select'
 
   # 7) RPC critical smoke
-  $rpc = Invoke-WebRequest -Method Post -Uri "$baseRest/rpc/get_my_active_shift" -Headers @{ Authorization = "Bearer $employeeJwt"; apikey = $anon; 'Content-Type' = 'application/json' } -Body '{}' -SkipHttpErrorCheck -UseBasicParsing
+  $rpc = Invoke-HttpRequest -method 'POST' -uri "$baseRest/rpc/get_my_active_shift" -headers @{ Authorization = "Bearer $employeeJwt"; apikey = $anon; 'Content-Type' = 'application/json' } -body '{}'
   Assert-Status $rpc.StatusCode 200 'RPC get_my_active_shift'
 
   # 8) Audit permission boundary
-  $auditForbidden = Invoke-WebRequest -Method Post -Uri "$baseFn/audit_log" -Headers @{ Authorization = "Bearer $supervisorJwt"; 'Content-Type' = 'application/json'; 'Idempotency-Key' = [guid]::NewGuid().ToString() } -Body '{"action":"SEC_TEST","context":{"probe":true}}' -SkipHttpErrorCheck -UseBasicParsing
+  $auditForbidden = Invoke-HttpRequest -method 'POST' -uri "$baseFn/audit_log" -headers @{ Authorization = "Bearer $supervisorJwt"; 'Content-Type' = 'application/json'; 'Idempotency-Key' = [guid]::NewGuid().ToString() } -body '{"action":"SEC_TEST","context":{"probe":true}}'
   if ($auditForbidden.StatusCode -eq 403) {
     Write-Host "[OK] audit_log supervisor forbidden -> 403"
   } elseif ($auditForbidden.StatusCode -eq 401) {
@@ -182,10 +232,10 @@ if ($hasRoleTokens) {
 }
 
 # 9) Evidence endpoint guards
-$evMethod = Invoke-WebRequest -Method Get -Uri "$baseFn/evidence_upload" -Headers @{ Authorization = "Bearer $anon"; apikey = $anon } -SkipHttpErrorCheck -UseBasicParsing
+$evMethod = Invoke-HttpRequest -method 'GET' -uri "$baseFn/evidence_upload" -headers @{ Authorization = "Bearer $anon"; apikey = $anon }
 Assert-Status $evMethod.StatusCode 405 'evidence_upload method guard'
 
-$evIdemp = Invoke-WebRequest -Method Post -Uri "$baseFn/evidence_upload" -Headers @{ Authorization = "Bearer $anon"; apikey = $anon; 'Content-Type' = 'application/json' } -Body '{"action":"request_upload","shift_id":1,"type":"inicio"}' -SkipHttpErrorCheck -UseBasicParsing
+$evIdemp = Invoke-HttpRequest -method 'POST' -uri "$baseFn/evidence_upload" -headers @{ Authorization = "Bearer $anon"; apikey = $anon; 'Content-Type' = 'application/json' } -body '{"action":"request_upload","shift_id":1,"type":"inicio"}'
 if ($evIdemp.StatusCode -eq 422) {
   Write-Host "[OK] evidence_upload idempotency guard -> 422"
 } elseif ($evIdemp.StatusCode -eq 401) {

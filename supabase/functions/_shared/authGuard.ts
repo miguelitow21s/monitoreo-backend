@@ -56,12 +56,16 @@ export async function authGuard(req: Request): Promise<{ user: InternalUser; tok
 
   const { data: dbUser, error: dbError } = await clientAdmin
     .from("users")
-    .select("id, roles(name)")
+    .select("id, is_active, roles(name)")
     .eq("id", data.user.id)
     .single();
 
   if (dbError || !dbUser?.id) {
     throw { code: 403, message: "Usuario sin perfil interno", category: "PERMISSION" };
+  }
+
+  if (dbUser.is_active === false) {
+    throw { code: 403, message: "Usuario inactivo", category: "PERMISSION" };
   }
 
   const role = (dbUser.roles as { name?: UserRole } | null)?.name;

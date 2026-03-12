@@ -4,6 +4,7 @@ import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { geoValidatorByRestaurant } from "../_shared/geoValidator.ts";
 import { ensureNoActiveShift } from "../_shared/stateValidator.ts";
+import { ensureSupervisorRestaurantAccess } from "../_shared/scopeGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp, commonSchemas } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
@@ -45,7 +46,7 @@ serve(async (req) => {
     const { user, clientUser } = await authGuard(req);
     userId = user.id;
     userRole = user.role;
-    roleGuard(user, ["empleado"]);
+    roleGuard(user, ["empleado", "supervisora"]);
     await requireAcceptedActiveLegalTerm(user.id);
     const trustedDevice = await requireTrustedDevice({ userId: user.id, req });
     await requireShiftOtpSession({ req, userId: user.id, trustedDeviceId: trustedDevice.id });
@@ -65,6 +66,9 @@ serve(async (req) => {
     const { restaurant_id, lat, lng, fit_for_work, declaration } = payload;
 
     await ensureNoActiveShift(clientUser, user.id);
+    if (user.role === "supervisora") {
+      await ensureSupervisorRestaurantAccess(user.id, restaurant_id);
+    }
     await geoValidatorByRestaurant(clientUser, restaurant_id, lat, lng);
 
     const { data, error } = await clientUser
@@ -116,10 +120,27 @@ serve(async (req) => {
     });
     await safeDispatchPendingEmailNotifications({ limit: 25, maxAttempts: 5 });
 
-    const successPayload = { success: true, data: { shift_id: data.id }, error: null, request_id };
+    const { data: openTasks, error: openTasksError } = await clientUser
+      .from("operational_tasks")
+      .select("id, title, priority, due_at")
+      .eq("assigned_employee_id", user.id)
+      .in("status", ["pending", "in_progress"])
+      .order("updated_at", { ascending: false })
+      .limit(10);
+
+    if (openTasksError) {
+      throw { code: 409, message: "No se pudieron cargar alertas de tareas", category: "BUSINESS", details: openTasksError };
+    }
+
+    const successData = {
+      shift_id: data.id,
+      pending_tasks_count: (openTasks ?? []).length,
+      pending_tasks_preview: openTasks ?? [],
+    };
+    const successPayload = { success: true, data: successData, error: null, request_id };
     await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
 
-    return response(true, { shift_id: data.id }, null, request_id);
+    return response(true, successData, null, request_id);
   } catch (err) {
     const apiError = errorHandler(err, request_id);
     status = apiError.code;

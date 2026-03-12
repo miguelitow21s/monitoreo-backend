@@ -33,6 +33,12 @@ const requestManifestUploadAction = z.object({
   task_id: z.number().int().positive(),
 });
 
+const requestEvidenceUploadAction = z.object({
+  action: z.literal("request_evidence_upload"),
+  task_id: z.number().int().positive(),
+  mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]).default("image/jpeg"),
+});
+
 const completeAction = z.object({
   action: z.literal("complete"),
   task_id: z.number().int().positive(),
@@ -55,6 +61,7 @@ const listSupervisionAction = z.object({
 const payloadSchema = z.discriminatedUnion("action", [
   createAction,
   requestManifestUploadAction,
+  requestEvidenceUploadAction,
   completeAction,
   listMyOpenAction,
   listSupervisionAction,
@@ -64,6 +71,25 @@ async function sha256Hex(blob: Blob) {
   const buffer = await blob.arrayBuffer();
   const hash = await crypto.subtle.digest("SHA-256", buffer);
   return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function mimeToExtension(mimeType: string) {
+  if (mimeType === "image/jpeg") return "jpg";
+  if (mimeType === "image/png") return "png";
+  if (mimeType === "image/webp") return "webp";
+  return "json";
+}
+
+function inferMimeType(path: string, blobType: string) {
+  const byBlob = (blobType || "").toLowerCase();
+  if (byBlob) return byBlob;
+
+  const lower = path.toLowerCase();
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".json")) return "application/json";
+  return "application/octet-stream";
 }
 
 serve(async (req: Request) => {
@@ -183,6 +209,44 @@ serve(async (req: Request) => {
       return response(true, successPayload.data, null, request_id);
     }
 
+    if (payload.action === "request_evidence_upload") {
+      roleGuard(user, ["empleado", "supervisora", "super_admin"]);
+
+      const { data: task, error: taskError } = await clientUser
+        .from("operational_tasks")
+        .select("id, assigned_employee_id")
+        .eq("id", payload.task_id)
+        .single();
+
+      if (taskError || !task) {
+        throw { code: 404, message: "Tarea operativa no encontrada", category: "BUSINESS", details: taskError };
+      }
+
+      const actorForPath = user.role === "empleado" ? user.id : (task.assigned_employee_id as string);
+      const extension = mimeToExtension(payload.mime_type);
+      const path = `users/${actorForPath}/task-evidence/${payload.task_id}/${request_id}.${extension}`;
+      const { data, error } = await clientAdmin.storage.from(evidenceBucket).createSignedUploadUrl(path);
+      if (error || !data) {
+        throw { code: 500, message: "No se pudo generar URL de carga para evidencia", category: "SYSTEM", details: error };
+      }
+
+      const successPayload = {
+        success: true,
+        data: {
+          upload: data,
+          bucket: evidenceBucket,
+          path,
+          allowed_mime: ["image/jpeg", "image/png", "image/webp"],
+          max_bytes: 8 * 1024 * 1024,
+        },
+        error: null,
+        request_id,
+      };
+
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
     if (payload.action === "complete") {
       roleGuard(user, ["empleado", "supervisora", "super_admin"]);
 
@@ -202,25 +266,34 @@ serve(async (req: Request) => {
         }
       }
 
-      const expectedPrefix = `users/${user.id}/task-manifest/`;
-      if (user.role === "empleado" && !payload.evidence_path.startsWith(expectedPrefix)) {
-        throw { code: 403, message: "Ruta de manifest invalida para el empleado", category: "PERMISSION" };
+      const expectedManifestPrefix = `users/${user.id}/task-manifest/`;
+      const expectedEvidencePrefix = `users/${user.id}/task-evidence/`;
+      if (user.role === "empleado" && !payload.evidence_path.startsWith(expectedManifestPrefix) && !payload.evidence_path.startsWith(expectedEvidencePrefix)) {
+        throw { code: 403, message: "Ruta de evidencia invalida para el empleado", category: "PERMISSION" };
       }
 
       const { data: fileBlob, error: downloadError } = await clientAdmin.storage.from(evidenceBucket).download(payload.evidence_path);
       if (downloadError || !fileBlob) {
-        throw { code: 422, message: "Manifest no disponible en storage", category: "VALIDATION", details: downloadError };
+        throw { code: 422, message: "Evidencia no disponible en storage", category: "VALIDATION", details: downloadError };
       }
 
-      if (fileBlob.size <= 0 || fileBlob.size > 512 * 1024) {
-        throw { code: 422, message: "Tamano de manifest invalido", category: "VALIDATION", details: { size: fileBlob.size } };
+      if (fileBlob.size <= 0 || fileBlob.size > 8 * 1024 * 1024) {
+        throw { code: 422, message: "Tamano de evidencia invalido", category: "VALIDATION", details: { size: fileBlob.size } };
       }
 
-      const text = await fileBlob.text();
-      try {
-        JSON.parse(text);
-      } catch {
-        throw { code: 422, message: "Manifest JSON invalido", category: "VALIDATION" };
+      const evidenceMimeType = inferMimeType(payload.evidence_path, fileBlob.type);
+      const allowedMime = ["application/json", "image/jpeg", "image/png", "image/webp"];
+      if (!allowedMime.includes(evidenceMimeType)) {
+        throw { code: 422, message: "Mime de evidencia no permitido", category: "VALIDATION", details: { mime_type: evidenceMimeType } };
+      }
+
+      if (evidenceMimeType === "application/json") {
+        const text = await fileBlob.text();
+        try {
+          JSON.parse(text);
+        } catch {
+          throw { code: 422, message: "Manifest JSON invalido", category: "VALIDATION" };
+        }
       }
 
       const evidenceHash = await sha256Hex(fileBlob);
@@ -229,7 +302,7 @@ serve(async (req: Request) => {
         p_task_id: payload.task_id,
         p_evidence_path: payload.evidence_path,
         p_evidence_hash: evidenceHash,
-        p_evidence_mime_type: "application/json",
+        p_evidence_mime_type: evidenceMimeType,
         p_evidence_size_bytes: fileBlob.size,
       });
 

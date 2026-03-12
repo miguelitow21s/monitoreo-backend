@@ -4,6 +4,7 @@ import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { geoValidatorByShift } from "../_shared/geoValidator.ts";
 import { getOwnedShift, ensureShiftState } from "../_shared/stateValidator.ts";
+import { ensureSupervisorRestaurantAccess } from "../_shared/scopeGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp, commonSchemas } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
@@ -45,7 +46,7 @@ serve(async (req) => {
     const { user, clientUser } = await authGuard(req);
     userId = user.id;
     userRole = user.role;
-    roleGuard(user, ["empleado"]);
+    roleGuard(user, ["empleado", "supervisora"]);
     await requireAcceptedActiveLegalTerm(user.id);
     const trustedDevice = await requireTrustedDevice({ userId: user.id, req });
     await requireShiftOtpSession({ req, userId: user.id, trustedDeviceId: trustedDevice.id });
@@ -66,7 +67,32 @@ serve(async (req) => {
 
     const shift = await getOwnedShift(clientUser, user.id, shift_id);
     ensureShiftState(shift.state, ["activo"], "No se puede finalizar este turno");
+    if (user.role === "supervisora") {
+      await ensureSupervisorRestaurantAccess(user.id, shift.restaurant_id);
+    }
     await geoValidatorByShift(clientUser, shift_id, lat, lng);
+
+    const { data: shiftPhotos, error: shiftPhotosError } = await clientUser
+      .from("shift_photos")
+      .select("type")
+      .eq("shift_id", shift_id)
+      .eq("user_id", user.id)
+      .in("type", ["inicio", "fin"]);
+
+    if (shiftPhotosError) {
+      throw { code: 409, message: "No se pudo validar evidencia obligatoria", category: "BUSINESS", details: shiftPhotosError };
+    }
+
+    const existingTypes = new Set((shiftPhotos ?? []).map((p) => String(p.type)));
+    const missingTypes = ["inicio", "fin"].filter((requiredType) => !existingTypes.has(requiredType));
+    if (missingTypes.length > 0) {
+      throw {
+        code: 422,
+        message: "Faltan fotos obligatorias de turno",
+        category: "VALIDATION",
+        details: { missing_types: missingTypes },
+      };
+    }
 
     const { data, error } = await clientUser
       .from("shifts")

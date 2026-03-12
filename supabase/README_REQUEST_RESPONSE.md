@@ -3,7 +3,7 @@
 ## Iniciar turno (start)
 
 **Request:**
-POST /functions/v1/shifts/start
+POST /functions/v1/shifts_start
 Authorization: Bearer <token>
 {
   "restaurant_id": 1,
@@ -30,7 +30,7 @@ Authorization: Bearer <token>
 ## Subir evidencia
 
 **Request:**
-POST /functions/v1/evidence/upload
+POST /functions/v1/evidence_upload
 Authorization: Bearer <token>
 {
   "shift_id": 123,

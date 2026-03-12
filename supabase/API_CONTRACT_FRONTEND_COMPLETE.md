@@ -190,7 +190,7 @@ Data:
 
 ### 5.5 Turnos operativos
 #### POST `/functions/v1/shifts_start`
-- Rol: `empleado`
+- Roles: `empleado`, `supervisora` (turno propio)
 - Requiere: legal consent + trusted device + `x-shift-otp-token`
 - Body:
 ```json
@@ -204,12 +204,19 @@ Data:
 ```
 - Data:
 ```json
-{ "shift_id": 1001 }
+{
+  "shift_id": 1001,
+  "pending_tasks_count": 2,
+  "pending_tasks_preview": [
+    { "id": 9001, "title": "Reponer jabon", "priority": "high", "due_at": "optional_iso" }
+  ]
+}
 ```
 
 #### POST `/functions/v1/shifts_end`
-- Rol: `empleado`
+- Roles: `empleado`, `supervisora` (turno propio)
 - Requiere: legal consent + trusted device + `x-shift-otp-token`
+- Validacion obligatoria previa: deben existir fotos `inicio` y `fin` en `evidence_upload` para el mismo `shift_id`.
 - Body:
 ```json
 {
@@ -244,6 +251,7 @@ Data:
 #### POST `/functions/v1/evidence_upload`
 - Rol: `empleado`
 - Requiere: legal consent + trusted device + `x-shift-otp-token`
+- Regla operativa: para cerrar turno, se exige evidencia `inicio` y `fin` del turno.
 - Accion `request_upload`:
 ```json
 { "action": "request_upload", "shift_id": 1001, "type": "inicio" }
@@ -454,9 +462,24 @@ Data:
 }
 ```
 
+- `request_evidence_upload` (roles: `empleado`, `supervisora`, `super_admin`)
+```json
+{ "action": "request_evidence_upload", "task_id": 9001, "mime_type": "image/jpeg" }
+```
+Data:
+```json
+{
+  "upload": { "token": "...", "path": "..." },
+  "bucket": "shift-evidence",
+  "path": "users/{uid}/task-evidence/{task_id}/{request_id}.jpg",
+  "allowed_mime": ["image/jpeg", "image/png", "image/webp"],
+  "max_bytes": 8388608
+}
+```
+
 - `complete` (roles: `empleado`, `supervisora`, `super_admin`)
 ```json
-{ "action": "complete", "task_id": 9001, "evidence_path": "...json" }
+{ "action": "complete", "task_id": 9001, "evidence_path": "...jpg" }
 ```
 Data: `{ "task_id": 9001 }`
 
@@ -511,6 +534,234 @@ Data: `{ "items": [...] }`
 }
 ```
 
+### 5.14 Administracion de usuarios
+#### POST `/functions/v1/admin_users_manage`
+- Rol: `super_admin`
+- Requiere: legal consent
+- Acciones:
+
+- `create`
+```json
+{
+  "action": "create",
+  "email": "nuevo@empresa.com",
+  "role": "supervisora",
+  "password": "Temporal123!",
+  "first_name": "Ana",
+  "last_name": "Lopez",
+  "phone_number": "+573001112233",
+  "is_active": true
+}
+```
+Data: `{ "user": { ...profile } }`
+
+- `update`
+```json
+{
+  "action": "update",
+  "user_id": "uuid",
+  "role": "empleado",
+  "is_active": true,
+  "full_name": "Nombre Apellido"
+}
+```
+Data: `{ "user": { ...profile } }`
+
+- `activate` / `deactivate`
+```json
+{ "action": "deactivate", "user_id": "uuid", "reason": "Baja" }
+```
+Data: `{ "user": { ...profile } }`
+
+- `list`
+```json
+{ "action": "list", "role": "supervisora", "is_active": true, "limit": 100 }
+```
+Data: `{ "items": [...] }`
+
+### 5.15 Administracion de restaurantes
+#### POST `/functions/v1/admin_restaurants_manage`
+- Rol: `super_admin`
+- Requiere: legal consent
+- Acciones:
+
+- `create`
+```json
+{
+  "action": "create",
+  "name": "Restaurante Centro",
+  "lat": 4.711,
+  "lng": -74.072,
+  "radius": 120,
+  "address_line": "Calle 10 # 20-30",
+  "city": "Bogota",
+  "state": "Cundinamarca",
+  "country": "CO",
+  "is_active": true
+}
+```
+Data: `{ "restaurant": { ... } }`
+
+- `update`
+```json
+{ "action": "update", "restaurant_id": 2, "radius": 150, "is_active": true }
+```
+Data: `{ "restaurant": { ... } }`
+
+- `activate` / `deactivate`
+```json
+{ "action": "deactivate", "restaurant_id": 2 }
+```
+Data: `{ "restaurant": { ... } }`
+
+- `list`
+```json
+{ "action": "list", "is_active": true, "search": "Centro", "limit": 200 }
+```
+Data: `{ "items": [...] }`
+
+### 5.16 Asignacion de supervisoras
+#### POST `/functions/v1/admin_supervisors_manage`
+- Rol: `super_admin`
+- Requiere: legal consent
+- Acciones:
+
+- `assign`
+```json
+{ "action": "assign", "supervisor_id": "uuid", "restaurant_id": 2 }
+```
+
+- `unassign`
+```json
+{ "action": "unassign", "supervisor_id": "uuid", "restaurant_id": 2 }
+```
+
+- `list_by_restaurant`
+```json
+{ "action": "list_by_restaurant", "restaurant_id": 2 }
+```
+Data: `{ "items": [{ "supervisor_id": "uuid", "assigned_at": "iso", "supervisor": { ... } }] }`
+
+- `list_by_supervisor`
+```json
+{ "action": "list_by_supervisor", "supervisor_id": "uuid" }
+```
+Data: `{ "items": [{ "restaurant_id": 2, "assigned_at": "iso", "restaurant": { ... } }] }`
+
+### 5.17 Dashboard ejecutivo
+#### POST `/functions/v1/admin_dashboard_metrics`
+- Rol: `super_admin`
+- Requiere: legal consent
+- Body:
+```json
+{
+  "action": "summary",
+  "period_start": "2026-03-01",
+  "period_end": "2026-03-31",
+  "restaurant_id": 2
+}
+```
+
+### 5.18 Asignacion de empleados por restaurante
+#### POST `/functions/v1/restaurant_staff_manage`
+- Roles: `supervisora`, `super_admin`
+- Requiere: legal consent
+- Acciones:
+
+- `assign_employee`
+```json
+{ "action": "assign_employee", "employee_id": "uuid", "restaurant_id": 2 }
+```
+
+- `unassign_employee`
+```json
+{ "action": "unassign_employee", "employee_id": "uuid", "restaurant_id": 2 }
+```
+
+- `list_by_restaurant`
+```json
+{ "action": "list_by_restaurant", "restaurant_id": 2 }
+```
+Data: `{ "items": [{ "employee_id": "uuid", "assigned_at": "iso", "employee": { ... } }] }`
+
+- `list_by_employee`
+```json
+{ "action": "list_by_employee", "employee_id": "uuid" }
+```
+Data: `{ "items": [{ "restaurant_id": 2, "assigned_at": "iso", "restaurant": { ... } }] }`
+
+### 5.19 Autoservicio empleado de aseo
+#### POST `/functions/v1/employee_self_service`
+- Rol: `empleado`
+- Requiere: legal consent
+- Acciones:
+
+- `my_dashboard`
+```json
+{ "action": "my_dashboard", "schedule_limit": 10, "pending_tasks_limit": 10 }
+```
+Data:
+```json
+{
+  "active_shift": { "id": 1001, "restaurant_id": 2, "start_time": "iso", "state": "activo" },
+  "can_start_shift": false,
+  "assigned_restaurants": [{ "restaurant_id": 2, "assigned_at": "iso", "restaurant": { "id": 2, "name": "Centro" } }],
+  "scheduled_shifts": [{ "id": 77, "restaurant_id": 2, "scheduled_start": "iso", "scheduled_end": "iso", "status": "scheduled", "restaurant": { "id": 2, "name": "Centro" } }],
+  "pending_tasks_count": 3,
+  "pending_tasks_preview": [{ "id": 9001, "title": "Limpieza campana", "status": "pending" }],
+  "worked_hours_last_30d": 124.5
+}
+```
+
+- `my_hours_history`
+```json
+{ "action": "my_hours_history", "period_start": "2026-03-01", "period_end": "2026-03-31", "limit": 120 }
+```
+Data:
+```json
+{
+  "period_start": "2026-03-01",
+  "period_end": "2026-03-31",
+  "total_shifts": 21,
+  "total_hours_worked": 162.75,
+  "items": [
+    {
+      "shift_id": 1001,
+      "restaurant_id": 2,
+      "start_time": "iso",
+      "end_time": "iso",
+      "state": "finalizado",
+      "hours_worked": 7.75,
+      "restaurant": { "id": 2, "name": "Centro" }
+    }
+  ]
+}
+```
+
+- `create_observation`
+```json
+{ "action": "create_observation", "shift_id": 1001, "kind": "alert", "message": "Derrame en cuarto frio" }
+```
+Data:
+```json
+{ "incident_id": 501, "kind": "alert", "shift_id": 1001 }
+```
+- Data:
+```json
+{
+  "period_start": "2026-03-01",
+  "period_end": "2026-03-31",
+  "restaurant_id": 2,
+  "users": { "total": 20, "active": 18, "inactive": 2, "employees_total": 12, "supervisors_total": 5 },
+  "restaurants": { "total": 5, "active": 4, "inactive": 1 },
+  "shifts": { "total": 120, "active": 3, "approved": 70, "rejected": 5, "finished": 42 },
+  "productivity": { "hours_worked_total": 820.5, "average_hours_per_shift": 6.84, "operational_tasks_completed": 250, "operational_tasks_pending": 17 },
+  "supplies": { "deliveries_count": 34, "units_delivered_total": 510, "cost_total": 1820000 },
+  "incidents": { "total": 8 },
+  "top_restaurants_by_shifts": [{ "restaurant_id": 2, "restaurant_name": "Centro", "shifts": 44 }]
+}
+```
+
 ## 6) Errores frecuentes que frontend debe manejar
 - `401 AUTH`: token invalido, expirado o anon.
 - `403 PERMISSION`: rol no permitido, OTP invalido/expirado, dispositivo no confiable.
@@ -542,4 +793,7 @@ Mensajes comunes esperables:
 ## 8) Nota operativa importante
 - Para `shifts_start` y `shifts_end`, ya existe fix de RLS aplicado en migracion:
 `supabase/migrations/020_fix_shifts_employee_rls_for_edge_functions.sql`
+- Ajuste adicional de RLS para flujo de supervisora y turno propio:
+`supabase/migrations/021_supervisora_shift_and_staff_alignment.sql`
+- Para flujo de empleado: `shifts_end` valida evidencia obligatoria de tipo `inicio` y `fin`.
 
