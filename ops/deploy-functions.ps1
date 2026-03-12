@@ -27,6 +27,7 @@ $functions = @(
   'health_ping',
   'legal_consent',
   'audit_log',
+  'employee_self_service',
   'trusted_device_validate',
   'trusted_device_register',
   'trusted_device_revoke',
@@ -42,7 +43,12 @@ $functions = @(
   'incidents_create',
   'evidence_upload',
   'scheduled_shifts_manage',
-  'operational_tasks_manage'
+  'operational_tasks_manage',
+  'admin_users_manage',
+  'admin_restaurants_manage',
+  'admin_supervisors_manage',
+  'admin_dashboard_metrics',
+  'restaurant_staff_manage'
 )
 
 foreach ($fn in $functions) {
