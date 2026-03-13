@@ -14,11 +14,31 @@ import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 
 const endpoint = "supplies_deliver";
-const payloadSchema = z.object({
+const deliverSchema = z.object({
   supply_id: commonSchemas.supplyId,
   restaurant_id: commonSchemas.restaurantId,
   quantity: commonSchemas.quantity,
 });
+
+const deliverActionSchema = deliverSchema.extend({
+  action: z.literal("deliver"),
+});
+
+const listSuppliesSchema = z.object({
+  action: z.literal("list_supplies"),
+  restaurant_id: commonSchemas.restaurantId.optional(),
+  limit: z.number().int().min(1).max(500).default(200),
+  search: z.string().trim().min(1).max(120).optional(),
+});
+
+const listDeliveriesSchema = z.object({
+  action: z.literal("list_deliveries"),
+  restaurant_id: commonSchemas.restaurantId.optional(),
+  delivered_by: z.string().uuid().optional(),
+  limit: z.number().int().min(1).max(500).default(200),
+});
+
+const payloadSchema = z.union([deliverActionSchema, listSuppliesSchema, listDeliveriesSchema, deliverSchema]);
 
 serve(async (req) => {
   const preflight = handleCorsPreflight(req);
@@ -54,7 +74,75 @@ serve(async (req) => {
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 30, window_seconds: 60 });
 
-    const { supply_id, restaurant_id, quantity } = payload;
+    if ("action" in payload) {
+      if (payload.action === "list_supplies") {
+        if (user.role === "supervisora" && !payload.restaurant_id) {
+          throw { code: 422, message: "Restaurant requerido para supervisora", category: "VALIDATION" };
+        }
+
+        if (user.role === "supervisora" && payload.restaurant_id) {
+          await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
+        }
+
+        let query = clientUser
+          .from("supplies")
+          .select("id, name, unit, stock, restaurant_id, unit_cost, created_at")
+          .order("name", { ascending: true })
+          .limit(payload.limit);
+
+        if (payload.restaurant_id) {
+          query = query.eq("restaurant_id", payload.restaurant_id);
+        }
+
+        if (payload.search) {
+          query = query.ilike("name", `%${payload.search}%`);
+        }
+
+        const { data, error } = await query;
+        if (error) {
+          throw { code: 409, message: "No se pudo listar insumos", category: "BUSINESS", details: error };
+        }
+
+        const successPayload = { success: true, data: { items: data ?? [] }, error: null, request_id };
+        await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+        return response(true, successPayload.data, null, request_id);
+      }
+
+      if (payload.action === "list_deliveries") {
+        if (user.role === "supervisora" && !payload.restaurant_id) {
+          throw { code: 422, message: "Restaurant requerido para supervisora", category: "VALIDATION" };
+        }
+
+        if (user.role === "supervisora" && payload.restaurant_id) {
+          await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
+        }
+
+        let query = clientUser
+          .from("supply_deliveries")
+          .select("id, supply_id, restaurant_id, quantity, delivered_at, delivered_by, status_v2, supplies(name, unit, unit_cost)")
+          .order("delivered_at", { ascending: false })
+          .limit(payload.limit);
+
+        if (payload.restaurant_id) {
+          query = query.eq("restaurant_id", payload.restaurant_id);
+        }
+
+        if (payload.delivered_by) {
+          query = query.eq("delivered_by", payload.delivered_by);
+        }
+
+        const { data, error } = await query;
+        if (error) {
+          throw { code: 409, message: "No se pudo listar entregas de insumos", category: "BUSINESS", details: error };
+        }
+
+        const successPayload = { success: true, data: { items: data ?? [] }, error: null, request_id };
+        await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+        return response(true, successPayload.data, null, request_id);
+      }
+    }
+
+    const { supply_id, restaurant_id, quantity } = payload as z.infer<typeof deliverSchema>;
     if (user.role === "supervisora") {
       await ensureSupervisorRestaurantAccess(user.id, restaurant_id);
     }

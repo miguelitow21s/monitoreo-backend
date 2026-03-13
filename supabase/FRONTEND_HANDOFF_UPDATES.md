@@ -108,3 +108,18 @@
 ### Notes (frontend-only)
 - Console warning about zustand default export is from FE code; switch to `import { create } from 'zustand'`.
 - Realtime WebSocket disconnect is not required by backend; disable if not used.
+
+## 2026-03-12 - Supplies read via Edge Function (admin/supervisora)
+
+### Backend changes delivered
+- Extended `/functions/v1/supplies_deliver` with read actions:
+  - `list_supplies`
+  - `list_deliveries`
+
+### Frontend actions required
+- Use Edge Function instead of direct table reads when listing insumos:
+  - List supplies (inventory):
+    - Body: `{"action":"list_supplies","restaurant_id":<id|null>,"limit":200,"search":"optional"}`
+  - List deliveries:
+    - Body: `{"action":"list_deliveries","restaurant_id":<id|null>,"delivered_by":"optional","limit":200}`
+- For `supervisora`, `restaurant_id` is required (enforced by backend).
