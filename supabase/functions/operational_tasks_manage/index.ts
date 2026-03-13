@@ -300,13 +300,20 @@ serve(async (req: Request) => {
 
       const evidenceHash = await sha256Hex(fileBlob);
 
-      const { error } = await clientUser.rpc("complete_operational_task", {
-        p_task_id: payload.task_id,
-        p_evidence_path: payload.evidence_path,
-        p_evidence_hash: evidenceHash,
-        p_evidence_mime_type: evidenceMimeType,
-        p_evidence_size_bytes: fileBlob.size,
-      });
+      const nowIso = new Date().toISOString();
+      const { error } = await clientUser
+        .from("operational_tasks")
+        .update({
+          status: "completed",
+          resolved_at: nowIso,
+          resolved_by: user.id,
+          evidence_path: payload.evidence_path,
+          evidence_hash: evidenceHash,
+          evidence_mime_type: evidenceMimeType,
+          evidence_size_bytes: fileBlob.size,
+          updated_at: nowIso,
+        })
+        .eq("id", payload.task_id);
 
       if (error) {
         throw { code: 409, message: "No se pudo cerrar tarea operativa", category: "BUSINESS", details: error };

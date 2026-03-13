@@ -74,7 +74,7 @@ serve(async (req) => {
     }
     await geoValidatorByShift(clientUser, shift_id, lat, lng);
 
-    const { data: shiftPhotos, error: shiftPhotosError } = await clientUser
+    const { data: shiftPhotos, error: shiftPhotosError } = await clientAdmin
       .from("shift_photos")
       .select("type")
       .eq("shift_id", shift_id)
