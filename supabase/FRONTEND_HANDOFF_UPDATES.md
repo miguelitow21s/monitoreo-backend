@@ -120,6 +120,26 @@
 - Console warning about zustand default export is from FE code; switch to `import { create } from 'zustand'`.
 - Realtime WebSocket disconnect is not required by backend; disable if not used.
 
+## 2026-03-12 - OTP phone alignment for public signup and admin user creation
+
+### Backend changes delivered
+- `admin_users_manage` now enforces `phone_number` for roles `empleado` and `supervisora`.
+- Expected phone format is strict E.164:
+  - Example: `+573001112233`
+- Added migration `supabase/migrations/023_bootstrap_my_user_phone_alignment.sql`
+  - `bootstrap_my_user()` now persists signup metadata phone into `public.users.phone_e164`
+  - This is required because `phone_otp_send` reads from `users.phone_e164`
+
+### Frontend actions required
+- Public signup must always send phone in auth metadata under `phone_number` (or `phone`) already normalized to E.164.
+- Admin create/update user screens must send `phone_number` for `empleado` and `supervisora`.
+- Do not rely only on client validation; backend now rejects missing/invalid phone for these roles.
+
+### QA checklist for frontend
+- Verify public employee signup stores phone and OTP send works immediately after bootstrap.
+- Verify admin cannot create `empleado` or `supervisora` without valid E.164 phone.
+- Verify updating a user into role `empleado` or `supervisora` without phone fails with `422 VALIDATION`.
+
 ## 2026-03-12 - Supplies read via Edge Function (admin/supervisora)
 
 ### Backend changes delivered

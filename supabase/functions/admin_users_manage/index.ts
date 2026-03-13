@@ -17,6 +17,7 @@ import { hashCanonicalJson } from "../_shared/crypto.ts";
 const endpoint = "admin_users_manage";
 
 type AppRole = "super_admin" | "supervisora" | "empleado";
+const E164_PHONE_REGEX = /^\+[1-9][0-9]{7,14}$/;
 
 const createAction = z.object({
   action: z.literal("create"),
@@ -72,6 +73,29 @@ const payloadSchema = z.discriminatedUnion("action", [
 function randomPassword() {
   const randomPart = crypto.randomUUID().replaceAll("-", "");
   return `Tmp#${randomPart.slice(0, 20)}A1`;
+}
+
+function normalizePhoneNumber(value: string | null | undefined) {
+  const trimmed = value?.trim() ?? "";
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function assertRolePhoneRequirement(role: AppRole, phoneNumber: string | null) {
+  if (phoneNumber && !E164_PHONE_REGEX.test(phoneNumber)) {
+    throw {
+      code: 422,
+      message: "Celular invalido. Use formato E.164 (+573001112233)",
+      category: "VALIDATION",
+    };
+  }
+
+  if ((role === "empleado" || role === "supervisora") && !phoneNumber) {
+    throw {
+      code: 422,
+      message: "Celular es obligatorio para empleado y supervisora. Use formato E.164 (+573001112233)",
+      category: "VALIDATION",
+    };
+  }
 }
 
 async function getRoleIdMap() {
@@ -153,7 +177,8 @@ serve(async (req: Request) => {
       const firstName = payload.first_name?.trim() || null;
       const lastName = payload.last_name?.trim() || null;
       const fullName = payload.full_name?.trim() || [firstName, lastName].filter(Boolean).join(" ") || null;
-      const phoneNumber = payload.phone_number?.trim() || null;
+      const phoneNumber = normalizePhoneNumber(payload.phone_number);
+      assertRolePhoneRequirement(payload.role, phoneNumber);
       const isActive = payload.is_active ?? true;
 
       const { data: createdAuth, error: createAuthError } = await clientAdmin.auth.admin.createUser({
@@ -215,6 +240,13 @@ serve(async (req: Request) => {
     }
 
     if (payload.action === "update") {
+      const currentProfile = await getUserProfile(payload.user_id);
+      const targetRole = String(payload.role ?? currentProfile.role) as AppRole;
+      const targetPhone = payload.phone_number !== undefined
+        ? normalizePhoneNumber(payload.phone_number)
+        : normalizePhoneNumber(currentProfile.phone_number as string | null | undefined);
+      assertRolePhoneRequirement(targetRole, targetPhone);
+
       const roleIdMap = await getRoleIdMap();
       const patch: Record<string, unknown> = { updated_at: new Date().toISOString() };
 

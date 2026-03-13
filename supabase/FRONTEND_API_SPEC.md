@@ -305,12 +305,12 @@ Note: Use `delivered_by` to filter deliveries for a specific employee.
 
 Create:
 ```json
-{"action":"create","email":"...","role":"super_admin|supervisora|empleado","password":"optional","first_name":"optional","last_name":"optional","full_name":"optional","phone_number":"optional","is_active":true}
+{"action":"create","email":"...","role":"super_admin|supervisora|empleado","password":"optional","first_name":"optional","last_name":"optional","full_name":"optional","phone_number":"required for supervisora/empleado in E.164","is_active":true}
 ```
 
 Update:
 ```json
-{"action":"update","user_id":"uuid","email":"optional","role":"optional","first_name":"optional","last_name":"optional","full_name":"optional","phone_number":"optional","is_active":true}
+{"action":"update","user_id":"uuid","email":"optional","role":"optional","first_name":"optional","last_name":"optional","full_name":"optional","phone_number":"required if resulting role is supervisora/empleado, E.164 format","is_active":true}
 ```
 
 Activate / deactivate:

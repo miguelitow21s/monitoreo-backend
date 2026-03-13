@@ -155,7 +155,7 @@ Action: create
   "first_name": "optional",
   "last_name": "optional",
   "full_name": "optional",
-  "phone_number": "optional",
+  "phone_number": "required for supervisora/empleado in E.164",
   "is_active": true
 }
 ```
@@ -170,7 +170,7 @@ Action: update
   "first_name": "optional",
   "last_name": "optional",
   "full_name": "optional",
-  "phone_number": "optional",
+  "phone_number": "required if resulting role is supervisora/empleado, E.164 format",
   "is_active": true
 }
 ```
@@ -193,6 +193,8 @@ Action: list
 Notes
 - If `password` is omitted, a temporary password is generated.
 - `is_active: false` disables auth access.
+- Backend now enforces `phone_number` for `supervisora` and `empleado`.
+- Expected format: `+573001112233`.
 
 ---
 

@@ -13,6 +13,7 @@ Role scope (UI)
 - Empleado can see assigned restaurants and schedule.
 - Empleado can see assigned tasks and upload evidence.
 - Empleado can create observations and alerts.
+- Public signup/bootstrap must persist `phone_number` in E.164 because OTP reads from `users.phone_e164`.
 
 ---
 
