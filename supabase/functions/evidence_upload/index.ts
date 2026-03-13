@@ -119,7 +119,7 @@ serve(async (req) => {
     if (payload.action === "request_upload") {
       const shift = await getOwnedShift(clientUser, user.id, payload.shift_id);
       ensureShiftState(shift.state, ["activo", "finalizado"], "No se puede cargar evidencia en este estado");
-      await ensureEvidenceNotDuplicate(clientUser, payload.shift_id, payload.type);
+      await ensureEvidenceNotDuplicate(clientAdmin, payload.shift_id, payload.type);
 
       const path = `${user.id}/${payload.shift_id}/${payload.type}/${request_id}.bin`;
       const { data, error } = await clientAdmin.storage.from(bucket).createSignedUploadUrl(path);
@@ -154,7 +154,7 @@ serve(async (req) => {
 
     const shift = await getOwnedShift(clientUser, user.id, payload.shift_id);
     ensureShiftState(shift.state, ["activo", "finalizado"], "No se puede cargar evidencia en este estado");
-    await ensureEvidenceNotDuplicate(clientUser, payload.shift_id, payload.type);
+    await ensureEvidenceNotDuplicate(clientAdmin, payload.shift_id, payload.type);
     await geoValidatorByShift(clientUser, payload.shift_id, payload.lat, payload.lng);
 
     const expectedPrefix = `${user.id}/${payload.shift_id}/${payload.type}/`;
@@ -179,7 +179,7 @@ serve(async (req) => {
     const sha256 = await sha256Hex(fileBlob);
     const storageUrl = `storage://${bucket}/${payload.path}`;
 
-    const { error: insertError } = await clientUser.from("shift_photos").insert({
+    const { error: insertError } = await clientAdmin.from("shift_photos").insert({
       shift_id: payload.shift_id,
       user_id: user.id,
       url: storageUrl,
