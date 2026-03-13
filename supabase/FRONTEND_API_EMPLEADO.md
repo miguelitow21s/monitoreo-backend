@@ -295,6 +295,8 @@ Rules
 - Must use a restaurant from the assigned list.
 - Geo validation is enforced.
 - Health form is required at start (`fit_for_work` + optional `declaration`).
+- Must have a scheduled shift for the employee in the start window.
+- Start window: from 30 minutes before `scheduled_start` until `scheduled_end`.
 
 ---
 
@@ -356,7 +358,8 @@ Body:
   "lat": 4.7110,
   "lng": -74.0721,
   "fit_for_work": true,
-  "declaration": "Sin incidentes"
+  "declaration": "Sin incidentes",
+  "early_end_reason": "Terminé tareas"
 }
 ```
 
@@ -369,6 +372,7 @@ Rules
 - Must have both shift photos: `inicio` and `fin`.
 - Health form is required at end (`fit_for_work` + optional `declaration`).
 - Geo validation is enforced.
+- If ending before `scheduled_end`, `early_end_reason` is required.
 
 ---
 

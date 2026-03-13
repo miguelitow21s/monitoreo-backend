@@ -15,7 +15,7 @@ export async function ensureNoActiveShift(client: SupabaseClient, user_id: strin
 export async function getOwnedShift(client: SupabaseClient, user_id: string, shift_id: number) {
   const { data, error } = await client
     .from("shifts")
-    .select("id, employee_id, restaurant_id, state")
+    .select("id, employee_id, restaurant_id, state, start_time")
     .eq("id", shift_id)
     .eq("employee_id", user_id)
     .single();
@@ -24,7 +24,7 @@ export async function getOwnedShift(client: SupabaseClient, user_id: string, shi
     throw { code: 403, message: "Turno no pertenece al usuario", category: "PERMISSION" };
   }
 
-  return data as { id: number; employee_id: string; restaurant_id: number; state: ShiftState };
+  return data as { id: number; employee_id: string; restaurant_id: number; state: ShiftState; start_time: string };
 }
 
 export function ensureShiftState(shiftState: ShiftState, allowed: ShiftState[], message: string) {

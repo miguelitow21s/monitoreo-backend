@@ -136,15 +136,19 @@ Response includes `verification_token` -> use in `x-shift-otp-token`.
 ```json
 {"restaurant_id":1,"lat":-34.6,"lng":-58.38,"fit_for_work":true,"declaration":"optional"}
 ```
+Notes:
+- Must have a scheduled shift for the user in the start window.
+- Start window: from 30 minutes before `scheduled_start` until `scheduled_end`.
 
 ### POST `/shifts_end`
 - Role: **empleado**, **supervisora**
 - Headers: `x-shift-otp-token`
 ```json
-{"shift_id":123,"lat":-34.6,"lng":-58.38,"fit_for_work":true,"declaration":"optional"}
+{"shift_id":123,"lat":-34.6,"lng":-58.38,"fit_for_work":true,"declaration":"optional","early_end_reason":"optional"}
 ```
 Notes:
 - Requires evidence photos `inicio` and `fin` before checkout.
+- If ending before `scheduled_end`, `early_end_reason` is required.
 
 ### POST `/shifts_approve`
 - Role: **supervisora**, **super_admin**

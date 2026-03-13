@@ -15,6 +15,7 @@ import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { requireTrustedDevice } from "../_shared/deviceTrust.ts";
+import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { requireShiftOtpSession } from "../_shared/otp.ts";
 import { notifyShiftEvent, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
 
@@ -65,6 +66,44 @@ serve(async (req) => {
 
     const { restaurant_id, lat, lng, fit_for_work, declaration } = payload;
 
+    const now = new Date();
+    const startWindowOpen = new Date(now.getTime() + 30 * 60 * 1000);
+    const { data: scheduledShift, error: scheduledShiftError } = await clientAdmin
+      .from("scheduled_shifts")
+      .select("id, restaurant_id, scheduled_start, scheduled_end, status")
+      .eq("employee_id", user.id)
+      .eq("status", "scheduled")
+      .lte("scheduled_start", startWindowOpen.toISOString())
+      .gte("scheduled_end", now.toISOString())
+      .order("scheduled_start", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (scheduledShiftError) {
+      throw {
+        code: 409,
+        message: "No se pudo validar turno programado",
+        category: "BUSINESS",
+        details: scheduledShiftError,
+      };
+    }
+
+    if (!scheduledShift) {
+      throw {
+        code: 409,
+        message: "No hay turno programado en ventana de inicio",
+        category: "BUSINESS",
+      };
+    }
+
+    if (Number(scheduledShift.restaurant_id) !== Number(restaurant_id)) {
+      throw {
+        code: 409,
+        message: "Restaurante no coincide con turno programado",
+        category: "BUSINESS",
+      };
+    }
+
     await ensureNoActiveShift(clientUser, user.id);
     if (user.role === "supervisora") {
       await ensureSupervisorRestaurantAccess(user.id, restaurant_id);
@@ -88,6 +127,11 @@ serve(async (req) => {
       throw { code: 409, message: "No se pudo iniciar turno", category: "BUSINESS", details: error };
     }
 
+    const { error: scheduleUpdateError } = await clientAdmin
+      .from("scheduled_shifts")
+      .update({ status: "started", started_shift_id: data.id, updated_at: new Date().toISOString() })
+      .eq("id", scheduledShift.id);
+
     const { error: healthError } = await clientUser
       .from("shift_health_forms")
       .upsert(
@@ -109,7 +153,15 @@ serve(async (req) => {
     await safeWriteAudit({
       user_id: user.id,
       action: "SHIFT_START",
-      context: { shift_id: data.id, restaurant_id, lat, lng, fit_for_work },
+      context: {
+        shift_id: data.id,
+        restaurant_id,
+        lat,
+        lng,
+        fit_for_work,
+        scheduled_shift_id: scheduledShift.id,
+        schedule_linked: !scheduleUpdateError,
+      },
       request_id,
     });
 

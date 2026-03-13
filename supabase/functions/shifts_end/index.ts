@@ -16,6 +16,7 @@ import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { requireTrustedDevice } from "../_shared/deviceTrust.ts";
 import { requireShiftOtpSession } from "../_shared/otp.ts";
+import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { notifyShiftEvent, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
 
 const endpoint = "shifts_end";
@@ -25,6 +26,7 @@ const payloadSchema = z.object({
   lng: commonSchemas.lng,
   fit_for_work: z.boolean(),
   declaration: z.string().trim().max(500).optional().nullable(),
+  early_end_reason: z.string().trim().min(3).max(200).optional().nullable(),
 });
 
 serve(async (req) => {
@@ -63,7 +65,7 @@ serve(async (req) => {
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 20, window_seconds: 60 });
 
-    const { shift_id, lat, lng, fit_for_work, declaration } = payload;
+    const { shift_id, lat, lng, fit_for_work, declaration, early_end_reason } = payload;
 
     const shift = await getOwnedShift(clientUser, user.id, shift_id);
     ensureShiftState(shift.state, ["activo"], "No se puede finalizar este turno");
@@ -91,6 +93,63 @@ serve(async (req) => {
         message: "Faltan fotos obligatorias de turno",
         category: "VALIDATION",
         details: { missing_types: missingTypes },
+      };
+    }
+
+    const { data: scheduledShift, error: scheduledShiftError } = await clientAdmin
+      .from("scheduled_shifts")
+      .select("id, scheduled_start, scheduled_end, status")
+      .eq("started_shift_id", shift_id)
+      .limit(1)
+      .maybeSingle();
+
+    if (scheduledShiftError) {
+      throw {
+        code: 409,
+        message: "No se pudo validar turno programado",
+        category: "BUSINESS",
+        details: scheduledShiftError,
+      };
+    }
+
+    let scheduledEnd: Date | null = null;
+    let scheduledShiftId: number | null = scheduledShift?.id ?? null;
+    if (scheduledShift?.scheduled_end) {
+      scheduledEnd = new Date(scheduledShift.scheduled_end);
+    } else if (shift.start_time) {
+      const { data: fallbackShift, error: fallbackError } = await clientAdmin
+        .from("scheduled_shifts")
+        .select("id, scheduled_start, scheduled_end, status")
+        .eq("employee_id", user.id)
+        .eq("restaurant_id", shift.restaurant_id)
+        .lte("scheduled_start", shift.start_time)
+        .gte("scheduled_end", shift.start_time)
+        .order("scheduled_start", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (fallbackError) {
+        throw {
+          code: 409,
+          message: "No se pudo validar turno programado",
+          category: "BUSINESS",
+          details: fallbackError,
+        };
+      }
+
+      if (fallbackShift?.scheduled_end) {
+        scheduledEnd = new Date(fallbackShift.scheduled_end);
+        scheduledShiftId = fallbackShift.id ?? null;
+      }
+    }
+
+    const now = new Date();
+    const endedEarly = scheduledEnd ? now < scheduledEnd : false;
+    if (endedEarly && !early_end_reason) {
+      throw {
+        code: 422,
+        message: "Debe indicar motivo de salida anticipada",
+        category: "VALIDATION",
       };
     }
 
@@ -131,10 +190,26 @@ serve(async (req) => {
       throw { code: 409, message: "No se pudo registrar formulario de salida", category: "BUSINESS", details: healthError };
     }
 
+    if (scheduledShiftId) {
+      await clientAdmin
+        .from("scheduled_shifts")
+        .update({ status: "completed", started_shift_id: shift_id, updated_at: new Date().toISOString() })
+        .eq("id", scheduledShiftId)
+        .in("status", ["scheduled", "started"]);
+    }
+
     await safeWriteAudit({
       user_id: user.id,
       action: "SHIFT_END",
-      context: { shift_id, lat, lng, fit_for_work },
+      context: {
+        shift_id,
+        lat,
+        lng,
+        fit_for_work,
+        early_end_reason: early_end_reason ?? null,
+        ended_early: endedEarly,
+        scheduled_shift_id: scheduledShiftId,
+      },
       request_id,
     });
 

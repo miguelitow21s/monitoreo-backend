@@ -158,11 +158,13 @@
   }
   ```
 
-  Rules
-  - Must not have an active shift.
-  - Restaurant must be assigned to the supervisora.
-  - Geo validation is enforced.
-  - Health form is required at start (`fit_for_work` + optional `declaration`).
+    Rules
+    - Must not have an active shift.
+    - Restaurant must be assigned to the supervisora.
+    - Geo validation is enforced.
+    - Health form is required at start (`fit_for_work` + optional `declaration`).
+    - Must have a scheduled shift for the supervisor in the start window.
+    - Start window: from 30 minutes before `scheduled_start` until `scheduled_end`.
 
   ---
 
@@ -202,21 +204,23 @@
   Headers (plus global)
   - `x-shift-otp-token: <verification_token>`
 
-  Body:
-  ```
-  {
-    "shift_id": 123,
-    "lat": 4.7110,
-    "lng": -74.0721,
-    "fit_for_work": true,
-    "declaration": "Sin incidentes"
-  }
-  ```
+    Body:
+    ```
+    {
+      "shift_id": 123,
+      "lat": 4.7110,
+      "lng": -74.0721,
+      "fit_for_work": true,
+      "declaration": "Sin incidentes",
+      "early_end_reason": "Terminé tareas"
+    }
+    ```
 
-  Rules
-  - Must have both shift photos: `inicio` and `fin`.
-  - Health form is required at end.
-  - Geo validation is enforced.
+    Rules
+    - Must have both shift photos: `inicio` and `fin`.
+    - Health form is required at end.
+    - Geo validation is enforced.
+    - If ending before `scheduled_end`, `early_end_reason` is required.
 
   ---
 
