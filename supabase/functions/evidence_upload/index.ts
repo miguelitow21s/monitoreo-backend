@@ -99,7 +99,7 @@ serve(async (req) => {
     const { user, clientUser } = await authGuard(req);
     userId = user.id;
     userRole = user.role;
-    roleGuard(user, ["empleado"]);
+    roleGuard(user, ["empleado", "supervisora"]);
     await requireAcceptedActiveLegalTerm(user.id);
     const trustedDevice = await requireTrustedDevice({ userId: user.id, req });
     await requireShiftOtpSession({ req, userId: user.id, trustedDeviceId: trustedDevice.id });

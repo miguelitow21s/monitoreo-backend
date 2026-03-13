@@ -44,17 +44,28 @@
 - Expanded operational tasks evidence flow with photo uploads:
   - New action: `request_evidence_upload`
   - Existing `complete` now supports image evidence (`jpeg/png/webp`) and JSON manifest.
+- Extended supplies endpoint with read actions (inventory + deliveries):
+  - `/functions/v1/supplies_deliver` (`list_supplies`, `list_deliveries`)
 
 ### Frontend actions required
+- Supervisora UI must be **distinct from empleado** (no employee home view).
 - In supervisor UI, enable own check-in/check-out using existing shift start/end endpoints.
 - Add staff assignment flow (supervisor + super admin) using `/functions/v1/restaurant_staff_manage`.
+- Enable supervisor scheduling (assign/reschedule/cancel/bulk) using `/functions/v1/scheduled_shifts_manage`.
+- Enable supervisor task creation for employees using `/functions/v1/operational_tasks_manage` action `create`.
 - In employee task flow, request photo upload URL using `request_evidence_upload` and then send the resulting `evidence_path` in `complete`.
 - Show task alert badge/count on check-in screen using open task queries (`list_my_open`) right after shift start.
+- For insumos view, read through `/functions/v1/supplies_deliver`:
+  - `{"action":"list_supplies","restaurant_id":<id>,...}`
+  - `{"action":"list_deliveries","restaurant_id":<id>,...}`
+  - For **supervisora**, `restaurant_id` is required.
 
 ### QA checklist for frontend
 - Verify supervisora can only start shift in assigned restaurants.
 - Verify supervisora can end only own active shift.
 - Verify supervisor can assign/unassign employees only within authorized restaurants.
+- Verify supervisor can schedule/reschedule/cancel shifts (single + bulk).
+- Verify supervisor can create operational tasks for employees and they show as alerts.
 - Verify employee can upload photo evidence and complete operational tasks successfully.
 - Verify old JSON-manifest task completion flow remains backward compatible.
 
