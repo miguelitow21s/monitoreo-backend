@@ -7,6 +7,7 @@ const E164_PHONE_REGEX = /^\+[1-9][0-9]{7,14}$/;
 type OtpDeliveryResult =
   | { status: "sent"; provider_ref: string | null }
   | { status: "debug"; provider_ref: null }
+  | { status: "screen"; provider_ref: null }
   | { status: "provider_not_configured"; provider_ref: null };
 
 function parseEnvInt(name: string, fallback: number): number {
@@ -84,7 +85,10 @@ async function hashOtpCode(userId: string, code: string): Promise<string> {
   return sha256Hex(`${userId}:${code}:${pepper}`);
 }
 
-export async function getUserPhoneForOtp(userId: string): Promise<string> {
+export async function getUserPhoneForOtp(
+  userId: string,
+  opts?: { allowMissing?: boolean }
+): Promise<string | null> {
   const { data, error } = await clientAdmin.from("users").select("id, phone_e164").eq("id", userId).single();
 
   if (error || !data) {
@@ -93,10 +97,12 @@ export async function getUserPhoneForOtp(userId: string): Promise<string> {
 
   const phone = (data as { phone_e164?: string | null }).phone_e164?.trim() ?? "";
   if (!phone) {
+    if (opts?.allowMissing) return null;
     throw { code: 409, message: "Usuario sin celular verificado en perfil", category: "BUSINESS" };
   }
 
   if (!E164_PHONE_REGEX.test(phone)) {
+    if (opts?.allowMissing) return null;
     throw { code: 409, message: "Celular invalido. Usa formato E.164 (+573001112233)", category: "BUSINESS" };
   }
 
@@ -109,32 +115,37 @@ export async function issueShiftOtp(params: {
   otp_id: number;
   expires_at: string;
   masked_phone: string;
-  delivery_status: "sent" | "debug";
+  delivery_status: "sent" | "debug" | "screen";
   debug_code?: string;
 }> {
   const ttlSeconds = parseEnvInt("OTP_TTL_SECONDS", 300);
   const debugMode = envIsTrue("OTP_DEBUG_MODE");
-  const phone = await getUserPhoneForOtp(params.userId);
+  const screenMode = envIsTrue("OTP_SCREEN_MODE");
+  const phone = await getUserPhoneForOtp(params.userId, { allowMissing: screenMode });
   const code = randomNumericCode(6);
   const message = buildOtpMessage(code, ttlSeconds);
 
   let delivery: OtpDeliveryResult;
-  try {
-    delivery = await sendSmsViaTwilio(phone, message);
-  } catch (err) {
-    if (!debugMode) {
-      throw err;
+  if (screenMode) {
+    delivery = { status: "screen", provider_ref: null };
+  } else {
+    try {
+      delivery = await sendSmsViaTwilio(phone ?? "", message);
+    } catch (err) {
+      if (!debugMode) {
+        throw err;
+      }
+      delivery = { status: "debug", provider_ref: null };
     }
-    delivery = { status: "debug", provider_ref: null };
-  }
 
-  if (delivery.status === "provider_not_configured" && !debugMode) {
-    throw {
-      code: 503,
-      message: "Proveedor SMS no configurado",
-      category: "SYSTEM",
-      details: { required_env: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER|TWILIO_MESSAGING_SERVICE_SID"] },
-    };
+    if (delivery.status === "provider_not_configured" && !debugMode) {
+      throw {
+        code: 503,
+        message: "Proveedor SMS no configurado",
+        category: "SYSTEM",
+        details: { required_env: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER|TWILIO_MESSAGING_SERVICE_SID"] },
+      };
+    }
   }
 
   const nowIso = new Date().toISOString();
@@ -178,16 +189,16 @@ export async function issueShiftOtp(params: {
     otp_id: number;
     expires_at: string;
     masked_phone: string;
-    delivery_status: "sent" | "debug";
+    delivery_status: "sent" | "debug" | "screen";
     debug_code?: string;
   } = {
     otp_id: data.id as number,
     expires_at: expiresAt,
-    masked_phone: maskPhone(phone),
-    delivery_status: delivery.status === "sent" ? "sent" : "debug",
+    masked_phone: phone ? maskPhone(phone) : "OTP en pantalla",
+    delivery_status: delivery.status === "sent" ? "sent" : delivery.status === "screen" ? "screen" : "debug",
   };
 
-  if (debugMode) {
+  if (debugMode || screenMode) {
     response.debug_code = code;
   }
 
