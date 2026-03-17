@@ -37,6 +37,7 @@ const finalizeUploadSchema = z.object({
   lng: commonSchemas.lng,
   accuracy: commonSchemas.accuracy,
   captured_at: commonSchemas.capturedAt,
+  meta: z.record(z.any()).optional(),
 });
 
 const payloadSchema = z.discriminatedUnion("action", [requestUploadSchema, finalizeUploadSchema]);
@@ -190,6 +191,7 @@ serve(async (req) => {
       lat: payload.lat,
       lng: payload.lng,
       accuracy: payload.accuracy,
+      meta: payload.meta ?? null,
       sha256,
       mime_type: sniffedMime,
       file_size: fileBlob.size,
