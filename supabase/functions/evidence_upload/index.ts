@@ -4,7 +4,7 @@ import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
 import { clientAdmin } from "../_shared/supabaseClient.ts";
-import { getOwnedShift, ensureShiftState, ensureEvidenceNotDuplicate } from "../_shared/stateValidator.ts";
+import { getOwnedShift, ensureShiftState } from "../_shared/stateValidator.ts";
 import { geoValidatorByShift } from "../_shared/geoValidator.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp, commonSchemas } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
@@ -120,7 +120,7 @@ serve(async (req) => {
     if (payload.action === "request_upload") {
       const shift = await getOwnedShift(clientUser, user.id, payload.shift_id);
       ensureShiftState(shift.state, ["activo", "finalizado"], "No se puede cargar evidencia en este estado");
-      await ensureEvidenceNotDuplicate(clientAdmin, payload.shift_id, payload.type);
+      // Allow multiple photos per phase (inicio/fin); no duplicate blocking.
 
       const path = `${user.id}/${payload.shift_id}/${payload.type}/${request_id}.bin`;
       const { data, error } = await clientAdmin.storage.from(bucket).createSignedUploadUrl(path);
@@ -155,7 +155,7 @@ serve(async (req) => {
 
     const shift = await getOwnedShift(clientUser, user.id, payload.shift_id);
     ensureShiftState(shift.state, ["activo", "finalizado"], "No se puede cargar evidencia en este estado");
-    await ensureEvidenceNotDuplicate(clientAdmin, payload.shift_id, payload.type);
+    // Allow multiple photos per phase (inicio/fin); no duplicate blocking.
     await geoValidatorByShift(clientUser, payload.shift_id, payload.lat, payload.lng);
 
     const expectedPrefix = `${user.id}/${payload.shift_id}/${payload.type}/`;
