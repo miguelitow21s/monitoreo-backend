@@ -26,6 +26,7 @@ const payloadSchema = z.object({
   lng: commonSchemas.lng,
   fit_for_work: z.boolean(),
   declaration: z.string().trim().max(500).optional().nullable(),
+  scheduled_shift_id: z.number().int().positive().optional(),
 });
 
 serve(async (req) => {
@@ -67,14 +68,19 @@ serve(async (req) => {
     const { restaurant_id, lat, lng, fit_for_work, declaration } = payload;
 
     const now = new Date();
-    const startWindowOpen = new Date(now.getTime() + 30 * 60 * 1000);
-    const { data: scheduledShift, error: scheduledShiftError } = await clientAdmin
+    const scheduledShiftQuery = clientAdmin
       .from("scheduled_shifts")
       .select("id, restaurant_id, scheduled_start, scheduled_end, status")
       .eq("employee_id", user.id)
-      .eq("status", "scheduled")
-      .lte("scheduled_start", startWindowOpen.toISOString())
-      .gte("scheduled_end", now.toISOString())
+      .eq("status", "scheduled");
+
+    if (payload.scheduled_shift_id) {
+      scheduledShiftQuery.eq("id", payload.scheduled_shift_id);
+    } else {
+      scheduledShiftQuery.eq("restaurant_id", restaurant_id).gte("scheduled_end", now.toISOString());
+    }
+
+    const { data: scheduledShift, error: scheduledShiftError } = await scheduledShiftQuery
       .order("scheduled_start", { ascending: true })
       .limit(1)
       .maybeSingle();
@@ -91,7 +97,15 @@ serve(async (req) => {
     if (!scheduledShift) {
       throw {
         code: 409,
-        message: "No hay turno programado en ventana de inicio",
+        message: "No hay turno programado disponible para iniciar",
+        category: "BUSINESS",
+      };
+    }
+
+    if (scheduledShift.scheduled_end && new Date(scheduledShift.scheduled_end) < now) {
+      throw {
+        code: 409,
+        message: "Turno programado ya vencido",
         category: "BUSINESS",
       };
     }
