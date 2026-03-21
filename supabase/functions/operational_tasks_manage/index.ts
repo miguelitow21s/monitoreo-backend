@@ -44,6 +44,17 @@ const cancelAction = z.object({
   reason: z.string().trim().min(3).max(500).optional(),
 });
 
+const markInProgressAction = z.object({
+  action: z.literal("mark_in_progress"),
+  task_id: z.number().int().positive(),
+});
+
+const closeAction = z.object({
+  action: z.literal("close"),
+  task_id: z.number().int().positive(),
+  reason: z.string().trim().min(3).max(500).optional(),
+});
+
 const requestManifestUploadAction = z.object({
   action: z.literal("request_manifest_upload"),
   task_id: z.number().int().positive(),
@@ -78,6 +89,8 @@ const payloadSchema = z.discriminatedUnion("action", [
   createAction,
   updateAction,
   cancelAction,
+  markInProgressAction,
+  closeAction,
   requestManifestUploadAction,
   requestEvidenceUploadAction,
   completeAction,
@@ -311,6 +324,102 @@ serve(async (req: Request) => {
           task_id: payload.task_id,
           reason: payload.reason ?? null,
         },
+        request_id,
+      });
+
+      const successPayload = { success: true, data: { task_id: payload.task_id }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "mark_in_progress") {
+      roleGuard(user, ["empleado", "supervisora", "super_admin"]);
+
+      const { data: task, error: taskError } = await clientUser
+        .from("operational_tasks")
+        .select("id, restaurant_id, assigned_employee_id, status")
+        .eq("id", payload.task_id)
+        .single();
+
+      if (taskError || !task) {
+        throw { code: 404, message: "Tarea operativa no encontrada", category: "BUSINESS", details: taskError };
+      }
+
+      if (task.status === "completed" || task.status === "cancelled") {
+        throw { code: 409, message: "No se puede iniciar una tarea cerrada", category: "BUSINESS" };
+      }
+
+      if (user.role === "empleado" && String(task.assigned_employee_id) !== user.id) {
+        throw { code: 403, message: "Solo el empleado asignado puede iniciar la tarea", category: "PERMISSION" };
+      }
+
+      if (user.role === "supervisora") {
+        await ensureSupervisorRestaurantAccess(user.id, task.restaurant_id as number);
+      }
+
+      if (task.status !== "in_progress") {
+        const { error: updateError } = await clientUser
+          .from("operational_tasks")
+          .update({ status: "in_progress" })
+          .eq("id", payload.task_id);
+
+        if (updateError) {
+          throw { code: 409, message: "No se pudo marcar la tarea en progreso", category: "BUSINESS", details: updateError };
+        }
+      }
+
+      await safeWriteAudit({
+        user_id: user.id,
+        action: "OPERATIONAL_TASK_MARK_IN_PROGRESS",
+        context: { task_id: payload.task_id },
+        request_id,
+      });
+
+      const successPayload = { success: true, data: { task_id: payload.task_id }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "close") {
+      roleGuard(user, ["supervisora", "super_admin"]);
+
+      const { data: task, error: taskError } = await clientUser
+        .from("operational_tasks")
+        .select("id, restaurant_id, status")
+        .eq("id", payload.task_id)
+        .single();
+
+      if (taskError || !task) {
+        throw { code: 404, message: "Tarea operativa no encontrada", category: "BUSINESS", details: taskError };
+      }
+
+      if (task.status === "completed") {
+        throw { code: 409, message: "No se puede cerrar una tarea completada", category: "BUSINESS" };
+      }
+
+      if (user.role === "supervisora") {
+        await ensureSupervisorRestaurantAccess(user.id, task.restaurant_id as number);
+      }
+
+      if (task.status !== "cancelled") {
+        const { error: closeError } = await clientUser
+          .from("operational_tasks")
+          .update({
+            status: "cancelled",
+            resolved_at: new Date().toISOString(),
+            resolved_by: user.id,
+          })
+          .eq("id", payload.task_id);
+
+        if (closeError) {
+          throw { code: 409, message: "No se pudo cerrar tarea operativa", category: "BUSINESS", details: closeError };
+        }
+      }
+
+      await safeWriteAudit({
+        user_id: user.id,
+        action: "OPERATIONAL_TASK_CLOSE",
+        context: { task_id: payload.task_id, reason: payload.reason ?? null },
         request_id,
       });
 
