@@ -48,7 +48,8 @@ $functions = @(
   'admin_restaurants_manage',
   'admin_supervisors_manage',
   'admin_dashboard_metrics',
-  'restaurant_staff_manage'
+  'restaurant_staff_manage',
+  'supervisor_presence_manage'
 )
 
 foreach ($fn in $functions) {

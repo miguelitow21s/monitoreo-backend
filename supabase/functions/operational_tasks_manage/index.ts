@@ -28,6 +28,22 @@ const createAction = z.object({
   due_at: z.string().datetime().optional().nullable(),
 });
 
+const updateAction = z.object({
+  action: z.literal("update"),
+  task_id: z.number().int().positive(),
+  title: z.string().trim().min(3).max(200).optional(),
+  description: z.string().trim().min(5).max(5000).optional(),
+  priority: z.enum(["low", "normal", "high", "critical"]).optional(),
+  due_at: z.string().datetime().optional().nullable(),
+  assigned_employee_id: z.string().uuid().optional(),
+});
+
+const cancelAction = z.object({
+  action: z.literal("cancel"),
+  task_id: z.number().int().positive(),
+  reason: z.string().trim().min(3).max(500).optional(),
+});
+
 const requestManifestUploadAction = z.object({
   action: z.literal("request_manifest_upload"),
   task_id: z.number().int().positive(),
@@ -60,6 +76,8 @@ const listSupervisionAction = z.object({
 
 const payloadSchema = z.discriminatedUnion("action", [
   createAction,
+  updateAction,
+  cancelAction,
   requestManifestUploadAction,
   requestEvidenceUploadAction,
   completeAction,
@@ -90,6 +108,28 @@ function inferMimeType(path: string, blobType: string) {
   if (lower.endsWith(".webp")) return "image/webp";
   if (lower.endsWith(".json")) return "application/json";
   return "application/octet-stream";
+}
+
+async function ensureEmployeeUser(employeeId: string) {
+  const { data, error } = await clientAdmin
+    .from("profiles")
+    .select("id, role, is_active")
+    .eq("id", employeeId)
+    .single();
+
+  if (error || !data) {
+    throw { code: 404, message: "Empleado no encontrado", category: "BUSINESS", details: error };
+  }
+
+  if (String(data.role) !== "empleado") {
+    throw { code: 422, message: "El usuario no tiene rol empleado", category: "VALIDATION" };
+  }
+
+  if (data.is_active === false) {
+    throw { code: 422, message: "No se puede asignar un empleado inactivo", category: "VALIDATION" };
+  }
+
+  return data;
 }
 
 serve(async (req: Request) => {
@@ -169,6 +209,112 @@ serve(async (req: Request) => {
       });
 
       const successPayload = { success: true, data: { task_id: data }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "update") {
+      roleGuard(user, ["supervisora", "super_admin"]);
+
+      const { data: task, error: taskError } = await clientUser
+        .from("operational_tasks")
+        .select("id, restaurant_id, status")
+        .eq("id", payload.task_id)
+        .single();
+
+      if (taskError || !task) {
+        throw { code: 404, message: "Tarea operativa no encontrada", category: "BUSINESS", details: taskError };
+      }
+
+      if (task.status === "completed" || task.status === "cancelled") {
+        throw { code: 409, message: "No se puede editar una tarea cerrada", category: "BUSINESS" };
+      }
+
+      if (user.role === "supervisora") {
+        await ensureSupervisorRestaurantAccess(user.id, task.restaurant_id as number);
+      }
+
+      const updates: Record<string, unknown> = {};
+      if (payload.title !== undefined) updates.title = payload.title;
+      if (payload.description !== undefined) updates.description = payload.description;
+      if (payload.priority !== undefined) updates.priority = payload.priority;
+      if (Object.prototype.hasOwnProperty.call(payload, "due_at")) updates.due_at = payload.due_at;
+      if (payload.assigned_employee_id !== undefined) {
+        await ensureEmployeeUser(payload.assigned_employee_id);
+        updates.assigned_employee_id = payload.assigned_employee_id;
+      }
+
+      if (Object.keys(updates).length === 0) {
+        throw { code: 422, message: "No hay campos para actualizar", category: "VALIDATION" };
+      }
+
+      const { error: updateError } = await clientUser.from("operational_tasks").update(updates).eq("id", payload.task_id);
+      if (updateError) {
+        throw { code: 409, message: "No se pudo actualizar tarea operativa", category: "BUSINESS", details: updateError };
+      }
+
+      await safeWriteAudit({
+        user_id: user.id,
+        action: "OPERATIONAL_TASK_UPDATE",
+        context: {
+          task_id: payload.task_id,
+          fields: Object.keys(updates),
+        },
+        request_id,
+      });
+
+      const successPayload = { success: true, data: { task_id: payload.task_id }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "cancel") {
+      roleGuard(user, ["supervisora", "super_admin"]);
+
+      const { data: task, error: taskError } = await clientUser
+        .from("operational_tasks")
+        .select("id, restaurant_id, status")
+        .eq("id", payload.task_id)
+        .single();
+
+      if (taskError || !task) {
+        throw { code: 404, message: "Tarea operativa no encontrada", category: "BUSINESS", details: taskError };
+      }
+
+      if (task.status === "completed") {
+        throw { code: 409, message: "No se puede cancelar una tarea completada", category: "BUSINESS" };
+      }
+
+      if (user.role === "supervisora") {
+        await ensureSupervisorRestaurantAccess(user.id, task.restaurant_id as number);
+      }
+
+      if (task.status !== "cancelled") {
+        const { error: cancelError } = await clientUser
+          .from("operational_tasks")
+          .update({
+            status: "cancelled",
+            resolved_at: new Date().toISOString(),
+            resolved_by: user.id,
+          })
+          .eq("id", payload.task_id);
+
+        if (cancelError) {
+          throw { code: 409, message: "No se pudo cancelar tarea operativa", category: "BUSINESS", details: cancelError };
+        }
+      }
+
+      await safeWriteAudit({
+        user_id: user.id,
+        action: "OPERATIONAL_TASK_CANCEL",
+        context: {
+          task_id: payload.task_id,
+          reason: payload.reason ?? null,
+        },
+        request_id,
+      });
+
+      const successPayload = { success: true, data: { task_id: payload.task_id }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
