@@ -29,7 +29,18 @@ const registerAction = z.object({
   notes: z.string().trim().max(1000).optional().nullable(),
 });
 
-const payloadSchema = z.discriminatedUnion("action", [registerAction]);
+const listMyAction = z.object({
+  action: z.literal("list_my"),
+  limit: z.number().int().min(1).max(200).default(20),
+});
+
+const listByRestaurantAction = z.object({
+  action: z.literal("list_by_restaurant"),
+  restaurant_id: z.number().int().positive(),
+  limit: z.number().int().min(1).max(500).default(50),
+});
+
+const payloadSchema = z.discriminatedUnion("action", [registerAction, listMyAction, listByRestaurantAction]);
 
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
@@ -65,6 +76,50 @@ serve(async (req: Request) => {
     }
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 40, window_seconds: 60 });
+
+    if (payload.action === "list_my") {
+      const { data, error } = await clientUser
+        .from("supervisor_presence_logs")
+        .select(
+          "id, supervisor_id, restaurant_id, phase, lat, lng, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, recorded_at, notes"
+        )
+        .eq("supervisor_id", user.id)
+        .order("recorded_at", { ascending: false })
+        .limit(payload.limit);
+
+      if (error) {
+        throw { code: 409, message: "No se pudo listar presencia", category: "BUSINESS", details: error };
+      }
+
+      const successPayload = { success: true, data: { items: data ?? [] }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "list_by_restaurant") {
+      roleGuard(user, ["supervisora", "super_admin"]);
+
+      if (user.role === "supervisora") {
+        await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
+      }
+
+      const { data, error } = await clientUser
+        .from("supervisor_presence_logs")
+        .select(
+          "id, supervisor_id, restaurant_id, phase, lat, lng, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, recorded_at, notes"
+        )
+        .eq("restaurant_id", payload.restaurant_id)
+        .order("recorded_at", { ascending: false })
+        .limit(payload.limit);
+
+      if (error) {
+        throw { code: 409, message: "No se pudo listar presencia por restaurante", category: "BUSINESS", details: error };
+      }
+
+      const successPayload = { success: true, data: { items: data ?? [] }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
 
     if (payload.action === "register") {
       if (user.role === "supervisora") {

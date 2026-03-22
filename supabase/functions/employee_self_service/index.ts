@@ -23,6 +23,10 @@ const myDashboardAction = z.object({
   pending_tasks_limit: z.number().int().min(1).max(20).default(10),
 });
 
+const myActiveShiftAction = z.object({
+  action: z.literal("my_active_shift"),
+});
+
 const myHoursHistoryAction = z.object({
   action: z.literal("my_hours_history"),
   period_start: commonSchemas.dateYmd.optional(),
@@ -39,6 +43,7 @@ const createObservationAction = z.object({
 
 const payloadSchema = z.discriminatedUnion("action", [
   myDashboardAction,
+  myActiveShiftAction,
   myHoursHistoryAction,
   createObservationAction,
 ]);
@@ -88,6 +93,25 @@ serve(async (req: Request) => {
     }
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 30, window_seconds: 60 });
+
+    if (payload.action === "my_active_shift") {
+      const { data: activeShift, error: activeShiftError } = await clientAdmin
+        .from("shifts")
+        .select("id, restaurant_id, start_time, end_time, state")
+        .eq("employee_id", user.id)
+        .eq("state", "activo")
+        .order("start_time", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (activeShiftError) {
+        throw { code: 409, message: "No se pudo consultar turno activo", category: "BUSINESS", details: activeShiftError };
+      }
+
+      const successPayload = { success: true, data: activeShift ?? null, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
 
     if (payload.action === "my_dashboard") {
       const nowIso = new Date().toISOString();
