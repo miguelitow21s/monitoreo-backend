@@ -41,11 +41,23 @@ const listByEmployeeAction = z.object({
   employee_id: z.string().uuid(),
 });
 
+const listMyRestaurantsAction = z.object({
+  action: z.literal("list_my_restaurants"),
+});
+
+const listAssignableEmployeesAction = z.object({
+  action: z.literal("list_assignable_employees"),
+  restaurant_id: commonSchemas.restaurantId.optional(),
+  limit: z.number().int().min(1).max(500).default(200),
+});
+
 const payloadSchema = z.discriminatedUnion("action", [
   assignEmployeeAction,
   unassignEmployeeAction,
   listByRestaurantAction,
   listByEmployeeAction,
+  listMyRestaurantsAction,
+  listAssignableEmployeesAction,
 ]);
 
 async function ensureEmployeeUser(employeeId: string) {
@@ -89,7 +101,6 @@ serve(async (req: Request) => {
     const { user, clientUser } = await authGuard(req);
     userId = user.id;
     userRole = user.role;
-    roleGuard(user, ["super_admin", "supervisora"]);
     await requireAcceptedActiveLegalTerm(user.id);
 
     const parsedPayload = await parseBody(req, payloadSchema);
@@ -106,6 +117,7 @@ serve(async (req: Request) => {
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 50, window_seconds: 60 });
 
     if (payload.action === "assign_employee") {
+      roleGuard(user, ["super_admin", "supervisora"]);
       await ensureEmployeeUser(payload.employee_id);
       if (user.role === "supervisora") {
         await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
@@ -152,6 +164,7 @@ serve(async (req: Request) => {
     }
 
     if (payload.action === "unassign_employee") {
+      roleGuard(user, ["super_admin", "supervisora"]);
       if (user.role === "supervisora") {
         await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
       }
@@ -193,6 +206,7 @@ serve(async (req: Request) => {
     }
 
     if (payload.action === "list_by_restaurant") {
+      roleGuard(user, ["super_admin", "supervisora"]);
       if (user.role === "supervisora") {
         await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
       }
@@ -238,51 +252,172 @@ serve(async (req: Request) => {
       return response(true, successPayload.data, null, request_id);
     }
 
-    const { data: links, error: linksError } = await clientAdmin
-      .from("restaurant_employees")
-      .select("restaurant_id, created_at")
-      .eq("user_id", payload.employee_id)
-      .order("created_at", { ascending: false });
+    if (payload.action === "list_my_restaurants") {
+      roleGuard(user, ["empleado", "supervisora"]);
 
-    if (linksError) {
-      throw { code: 409, message: "No se pudo listar restaurantes del empleado", category: "BUSINESS", details: linksError };
-    }
+      const { data: links, error: linksError } = await clientAdmin
+        .from("restaurant_employees")
+        .select("restaurant_id, created_at")
+        .eq("user_id", user.id)
+        .order("created_at", { ascending: false });
 
-    if (user.role === "supervisora") {
-      const restaurantIdsToCheck = [...new Set((links ?? []).map((x) => Number(x.restaurant_id)))];
-      for (const restaurantId of restaurantIdsToCheck) {
-        await ensureSupervisorRestaurantAccess(user.id, restaurantId);
+      if (linksError) {
+        throw { code: 409, message: "No se pudieron listar restaurantes asignados", category: "BUSINESS", details: linksError };
       }
+
+      const restaurantIds = [...new Set((links ?? []).map((row) => Number(row.restaurant_id)).filter((n) => Number.isFinite(n)))];
+      if (restaurantIds.length === 0) {
+        const emptyPayload = { success: true, data: { items: [] }, error: null, request_id };
+        await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: emptyPayload });
+        return response(true, emptyPayload.data, null, request_id);
+      }
+
+      const { data: restaurants, error: restaurantsError } = await clientAdmin
+        .from("restaurants")
+        .select("id, name, address_line, lat, lng, geofence_radius_m, is_active")
+        .in("id", restaurantIds)
+        .order("name", { ascending: true });
+
+      if (restaurantsError) {
+        throw { code: 409, message: "No se pudieron cargar restaurantes", category: "BUSINESS", details: restaurantsError };
+      }
+
+      const successPayload = { success: true, data: { items: restaurants ?? [] }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
     }
 
-    const restaurantIds = [...new Set((links ?? []).map((x) => Number(x.restaurant_id)))];
-    const { data: restaurants, error: restaurantsError } = restaurantIds.length
-      ? await clientAdmin
-          .from("restaurants")
-          .select("id, name, is_active, city, state")
-          .in("id", restaurantIds)
-      : { data: [], error: null };
+    if (payload.action === "list_assignable_employees") {
+      roleGuard(user, ["supervisora", "super_admin"]);
 
-    if (restaurantsError) {
-      throw { code: 409, message: "No se pudieron cargar restaurantes", category: "BUSINESS", details: restaurantsError };
-    }
+      let restaurantIds: number[] | null = null;
+      if (payload.restaurant_id) {
+        if (user.role === "supervisora") {
+          await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
+        }
+        restaurantIds = [payload.restaurant_id];
+      } else if (user.role === "supervisora") {
+        const { data: scopeLinks, error: scopeError } = await clientAdmin
+          .from("restaurant_employees")
+          .select("restaurant_id")
+          .eq("user_id", user.id);
 
-    const byRestaurantId = new Map((restaurants ?? []).map((r) => [Number(r.id), r]));
-    const items = (links ?? [])
-      .map((row) => {
-        const restaurant = byRestaurantId.get(Number(row.restaurant_id));
-        if (!restaurant) return null;
+        if (scopeError) {
+          throw { code: 409, message: "No se pudo resolver alcance de supervisora", category: "BUSINESS", details: scopeError };
+        }
+
+        restaurantIds = [...new Set((scopeLinks ?? []).map((row) => Number(row.restaurant_id)).filter((n) => Number.isFinite(n)))];
+        if (restaurantIds.length === 0) {
+          const emptyPayload = { success: true, data: { items: [] }, error: null, request_id };
+          await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: emptyPayload });
+          return response(true, emptyPayload.data, null, request_id);
+        }
+      }
+
+      let employeeIds: string[] = [];
+      if (restaurantIds) {
+        const { data: staffLinks, error: staffError } = await clientAdmin
+          .from("restaurant_employees")
+          .select("user_id")
+          .in("restaurant_id", restaurantIds);
+
+        if (staffError) {
+          throw { code: 409, message: "No se pudieron cargar empleados asignables", category: "BUSINESS", details: staffError };
+        }
+
+        employeeIds = [...new Set((staffLinks ?? []).map((row) => String(row.user_id)).filter((v) => !!v))];
+        if (employeeIds.length === 0) {
+          const emptyPayload = { success: true, data: { items: [] }, error: null, request_id };
+          await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: emptyPayload });
+          return response(true, emptyPayload.data, null, request_id);
+        }
+      }
+
+      let query = clientAdmin
+        .from("profiles")
+        .select("id, full_name, first_name, last_name, phone_number, email, role, is_active")
+        .eq("role", "empleado")
+        .order("full_name", { ascending: true })
+        .limit(payload.limit);
+
+      if (employeeIds.length > 0) {
+        query = query.in("id", employeeIds);
+      }
+
+      const { data: profiles, error: profilesError } = await query;
+      if (profilesError) {
+        throw { code: 409, message: "No se pudieron cargar empleados", category: "BUSINESS", details: profilesError };
+      }
+
+      const items = (profiles ?? []).map((row) => {
+        const fullName =
+          row.full_name ??
+          [row.first_name, row.last_name].filter((v) => !!v).join(" ").trim() ??
+          null;
         return {
-          restaurant_id: row.restaurant_id,
-          assigned_at: row.created_at,
-          restaurant,
+          id: row.id,
+          full_name: fullName,
+          phone_number: row.phone_number ?? null,
+          email: row.email ?? null,
+          role: row.role,
+          is_active: row.is_active,
         };
-      })
-      .filter(Boolean);
+      });
 
-    const successPayload = { success: true, data: { items }, error: null, request_id };
-    await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
-    return response(true, successPayload.data, null, request_id);
+      const successPayload = { success: true, data: { items }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "list_by_employee") {
+      roleGuard(user, ["super_admin", "supervisora"]);
+
+      const { data: links, error: linksError } = await clientAdmin
+        .from("restaurant_employees")
+        .select("restaurant_id, created_at")
+        .eq("user_id", payload.employee_id)
+        .order("created_at", { ascending: false });
+
+      if (linksError) {
+        throw { code: 409, message: "No se pudo listar restaurantes del empleado", category: "BUSINESS", details: linksError };
+      }
+
+      if (user.role === "supervisora") {
+        const restaurantIdsToCheck = [...new Set((links ?? []).map((x) => Number(x.restaurant_id)))];
+        for (const restaurantId of restaurantIdsToCheck) {
+          await ensureSupervisorRestaurantAccess(user.id, restaurantId);
+        }
+      }
+
+      const restaurantIds = [...new Set((links ?? []).map((x) => Number(x.restaurant_id)))];
+      const { data: restaurants, error: restaurantsError } = restaurantIds.length
+        ? await clientAdmin
+            .from("restaurants")
+            .select("id, name, is_active, city, state")
+            .in("id", restaurantIds)
+        : { data: [], error: null };
+
+      if (restaurantsError) {
+        throw { code: 409, message: "No se pudieron cargar restaurantes", category: "BUSINESS", details: restaurantsError };
+      }
+
+      const byRestaurantId = new Map((restaurants ?? []).map((r) => [Number(r.id), r]));
+      const items = (links ?? [])
+        .map((row) => {
+          const restaurant = byRestaurantId.get(Number(row.restaurant_id));
+          if (!restaurant) return null;
+          return {
+            restaurant_id: row.restaurant_id,
+            assigned_at: row.created_at,
+            restaurant,
+          };
+        })
+        .filter(Boolean);
+
+      const successPayload = { success: true, data: { items }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
   } catch (err) {
     const apiError = errorHandler(err, request_id);
     status = apiError.code;
