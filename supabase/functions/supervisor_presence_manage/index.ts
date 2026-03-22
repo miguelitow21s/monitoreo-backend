@@ -39,6 +39,8 @@ const listByRestaurantAction = z.object({
   action: z.literal("list_by_restaurant"),
   restaurant_id: z.number().int().positive(),
   limit: z.number().int().min(1).max(500).default(50),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
 });
 
 const listTodayAction = z.object({
@@ -131,7 +133,22 @@ serve(async (req: Request) => {
         await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
       }
 
-      const { data, error } = await clientUser
+      if ((payload.from && !payload.to) || (!payload.from && payload.to)) {
+        throw { code: 422, message: "from y to son requeridos juntos", category: "VALIDATION" };
+      }
+
+      if (payload.from && payload.to) {
+        const fromDate = new Date(payload.from);
+        const toDate = new Date(payload.to);
+        if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+          throw { code: 422, message: "from/to invalidos", category: "VALIDATION" };
+        }
+        if (fromDate >= toDate) {
+          throw { code: 422, message: "from debe ser menor que to", category: "VALIDATION" };
+        }
+      }
+
+      let query = clientUser
         .from("supervisor_presence_logs")
         .select(
           "id, supervisor_id, restaurant_id, phase, lat, lng, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, recorded_at, notes"
@@ -139,6 +156,12 @@ serve(async (req: Request) => {
         .eq("restaurant_id", payload.restaurant_id)
         .order("recorded_at", { ascending: false })
         .limit(payload.limit);
+
+      if (payload.from && payload.to) {
+        query = query.gte("recorded_at", new Date(payload.from).toISOString()).lt("recorded_at", new Date(payload.to).toISOString());
+      }
+
+      const { data, error } = await query;
 
       if (error) {
         throw { code: 409, message: "No se pudo listar presencia por restaurante", category: "BUSINESS", details: error };
