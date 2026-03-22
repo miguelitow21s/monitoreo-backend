@@ -44,6 +44,8 @@ const listByRestaurantAction = z.object({
 const listTodayAction = z.object({
   action: z.literal("list_today"),
   limit: z.number().int().min(1).max(500).default(20),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
 });
 
 const payloadSchema = z.discriminatedUnion("action", [registerAction, listMyAction, listByRestaurantAction, listTodayAction]);
@@ -149,7 +151,28 @@ serve(async (req: Request) => {
 
     if (payload.action === "list_today") {
       roleGuard(user, ["super_admin"]);
-      const { startIso, endIso } = getBogotaDayRange();
+      let startIso: string;
+      let endIso: string;
+
+      if (payload.from || payload.to) {
+        if (!payload.from || !payload.to) {
+          throw { code: 422, message: "from y to son requeridos juntos", category: "VALIDATION" };
+        }
+        const fromDate = new Date(payload.from);
+        const toDate = new Date(payload.to);
+        if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+          throw { code: 422, message: "from/to invalidos", category: "VALIDATION" };
+        }
+        if (fromDate >= toDate) {
+          throw { code: 422, message: "from debe ser menor que to", category: "VALIDATION" };
+        }
+        startIso = fromDate.toISOString();
+        endIso = toDate.toISOString();
+      } else {
+        const range = getBogotaDayRange();
+        startIso = range.startIso;
+        endIso = range.endIso;
+      }
 
       const { data, error } = await clientAdmin
         .from("supervisor_presence_logs")
