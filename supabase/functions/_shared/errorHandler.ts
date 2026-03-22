@@ -12,11 +12,26 @@ function normalizeError(error: unknown): AppError {
         code,
         message,
         category: category as AppError["category"],
+        details: e.details,
       };
     }
 
     if (typeof e.code === "string" && e.code.startsWith("22")) {
-      return { code: 422, message: "Datos invalidos", category: "VALIDATION" };
+      return {
+        code: 422,
+        message: message ?? "Datos invalidos",
+        category: "VALIDATION",
+        details: e.details ?? e.hint,
+      };
+    }
+
+    if (message) {
+      return {
+        code: code ?? 500,
+        message,
+        category: (category as AppError["category"]) ?? "SYSTEM",
+        details: e.details ?? e.hint,
+      };
     }
   }
 

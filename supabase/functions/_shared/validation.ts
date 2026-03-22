@@ -21,9 +21,13 @@ export async function parseBody<T>(req: Request, schema: z.ZodType<T>): Promise<
 
   const parsed = schema.safeParse(raw);
   if (!parsed.success) {
+    const firstIssue = parsed.error.issues[0];
+    const issuePath = firstIssue?.path?.length ? firstIssue.path.join(".") : "payload";
+    const issueMessage = firstIssue?.message ?? "Payload invalido";
+    const friendly = `Payload invalido: ${issuePath} ${issueMessage}`.trim();
     throw {
       code: 422,
-      message: "Payload invalido",
+      message: friendly,
       category: "VALIDATION",
       details: parsed.error.flatten(),
     };
