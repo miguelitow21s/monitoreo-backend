@@ -5,6 +5,7 @@ import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
 import { ensureSupervisorRestaurantAccess } from "../_shared/scopeGuard.ts";
+import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
 import { claimIdempotency, replayIdempotentResponse, safeFinalizeIdempotency } from "../_shared/idempotency.ts";
@@ -40,7 +41,32 @@ const listByRestaurantAction = z.object({
   limit: z.number().int().min(1).max(500).default(50),
 });
 
-const payloadSchema = z.discriminatedUnion("action", [registerAction, listMyAction, listByRestaurantAction]);
+const listTodayAction = z.object({
+  action: z.literal("list_today"),
+  limit: z.number().int().min(1).max(500).default(20),
+});
+
+const payloadSchema = z.discriminatedUnion("action", [registerAction, listMyAction, listByRestaurantAction, listTodayAction]);
+
+function getBogotaDayRange() {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Bogota",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(now);
+
+  const year = Number(parts.find((p) => p.type === "year")?.value ?? now.getUTCFullYear());
+  const month = Number(parts.find((p) => p.type === "month")?.value ?? now.getUTCMonth() + 1);
+  const day = Number(parts.find((p) => p.type === "day")?.value ?? now.getUTCDate());
+
+  // Bogota is UTC-5, so local midnight is 05:00 UTC.
+  const startUtc = new Date(Date.UTC(year, month - 1, day, 5, 0, 0, 0));
+  const endUtc = new Date(Date.UTC(year, month - 1, day + 1, 5, 0, 0, 0));
+
+  return { startIso: startUtc.toISOString(), endIso: endUtc.toISOString() };
+}
 
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
@@ -117,6 +143,42 @@ serve(async (req: Request) => {
       }
 
       const successPayload = { success: true, data: { items: data ?? [] }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "list_today") {
+      roleGuard(user, ["super_admin"]);
+      const { startIso, endIso } = getBogotaDayRange();
+
+      const { data, error } = await clientAdmin
+        .from("supervisor_presence_logs")
+        .select("id, supervisor_id, restaurant_id, phase, recorded_at, notes, users:supervisor_id(full_name), restaurants:restaurant_id(name)")
+        .gte("recorded_at", startIso)
+        .lt("recorded_at", endIso)
+        .order("recorded_at", { ascending: false })
+        .limit(payload.limit);
+
+      if (error) {
+        throw { code: 409, message: "No se pudo listar supervisiones de hoy", category: "BUSINESS", details: error };
+      }
+
+      const items = (data ?? []).map((row) => {
+        const supervisorName = row?.users?.full_name ?? row?.users?.[0]?.full_name ?? null;
+        const restaurantName = row?.restaurants?.name ?? row?.restaurants?.[0]?.name ?? null;
+        return {
+          id: row.id,
+          supervisor_id: row.supervisor_id,
+          supervisor_name: supervisorName,
+          restaurant_id: row.restaurant_id,
+          restaurant_name: restaurantName,
+          phase: row.phase,
+          recorded_at: row.recorded_at,
+          notes: row.notes ?? null,
+        };
+      });
+
+      const successPayload = { success: true, data: { items }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
