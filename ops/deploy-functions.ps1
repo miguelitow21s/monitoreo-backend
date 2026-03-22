@@ -51,6 +51,7 @@ $functions = @(
   'audit_logs_manage',
   'auth_register',
   'users_bootstrap',
+  'users_manage',
   'admin_users_manage',
   'admin_restaurants_manage',
   'admin_supervisors_manage',
