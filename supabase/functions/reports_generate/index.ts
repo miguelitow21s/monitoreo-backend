@@ -28,11 +28,13 @@ const allowedColumns = [
   "shift_id",
   "employee_id",
   "employee_name",
+  "supervisor_name",
   "restaurant_id",
   "restaurant_name",
   "start_time",
   "end_time",
   "hours_worked",
+  "incidents_count",
   "state",
   "status",
   "approved_by",
@@ -46,31 +48,49 @@ const allowedColumns = [
 const defaultColumns = [
   "restaurant_name",
   "employee_name",
+  "supervisor_name",
   "start_time",
   "end_time",
   "hours_worked",
   "state",
+  "incidents_count",
   "start_evidence_path",
   "end_evidence_path",
 ] as const;
 
 const columnLabel: Record<string, string> = {
-  shift_id: "Shift ID",
+  shift_id: "Turno",
   employee_id: "Empleado ID",
   employee_name: "Empleado",
+  supervisor_name: "Supervisora",
   restaurant_id: "Restaurante ID",
   restaurant_name: "Restaurante",
   start_time: "Inicio",
   end_time: "Fin",
-  hours_worked: "Horas",
+  hours_worked: "Duracion (h)",
+  incidents_count: "Novedades",
   state: "Estado",
   status: "Status",
   approved_by: "Aprobado por (ID)",
   approved_by_name: "Aprobado por",
   rejected_by: "Rechazado por (ID)",
   rejected_by_name: "Rechazado por",
-  start_evidence_path: "Evidencia inicio",
-  end_evidence_path: "Evidencia fin",
+  start_evidence_path: "Evidencia inicial",
+  end_evidence_path: "Evidencia final",
+};
+
+const columnAliases: Record<string, string> = {
+  turno: "shift_id",
+  restaurante: "restaurant_name",
+  empleado: "employee_name",
+  supervisora: "supervisor_name",
+  inicio: "start_time",
+  fin: "end_time",
+  estado: "state",
+  duracion: "hours_worked",
+  novedades: "incidents_count",
+  evidencia_inicial: "start_evidence_path",
+  evidencia_final: "end_evidence_path",
 };
 
 function csvEscape(value: unknown) {
@@ -79,6 +99,16 @@ function csvEscape(value: unknown) {
     return `"${raw.replaceAll("\"", "\"\"")}"`;
   }
   return raw;
+}
+
+function normalizeColumnKey(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
 }
 
 function formatCell(value: unknown, maxLen = 40) {
@@ -212,9 +242,14 @@ serve(async (req: Request) => {
     }
 
     const generatedAt = new Date().toISOString();
-    const selectedColumns = (payload.columns && payload.columns.length > 0)
+    const rawColumns = payload.columns && payload.columns.length > 0
       ? payload.columns
       : [...defaultColumns];
+
+    const selectedColumns = rawColumns.map((col) => {
+      const normalized = normalizeColumnKey(col);
+      return columnAliases[normalized] ?? col;
+    });
 
     const invalidColumns = selectedColumns.filter((col) => !allowedColumns.includes(col as (typeof allowedColumns)[number]));
     if (invalidColumns.length > 0) {
@@ -255,8 +290,9 @@ serve(async (req: Request) => {
     const employeeIds = [...new Set((shifts ?? []).map((s) => String(s.employee_id)).filter((id) => id && id !== "null"))];
     const supervisorIds = [...new Set((shifts ?? []).map((s) => [s.approved_by, s.rejected_by]).flat().filter(Boolean).map((id) => String(id)))];
     const restaurantIds = [restaurant_id];
+    const shiftIds = (shifts ?? []).map((s) => s.id);
 
-    const [usersRes, restaurantsRes, photosRes] = await Promise.all([
+    const [usersRes, restaurantsRes, photosRes, incidentsRes] = await Promise.all([
       employeeIds.length || supervisorIds.length
         ? clientAdmin.from("users").select("id, full_name").in("id", [...new Set([...employeeIds, ...supervisorIds])])
         : Promise.resolve({ data: [], error: null }),
@@ -271,6 +307,12 @@ serve(async (req: Request) => {
             .in("type", ["inicio", "fin"])
             .order("created_at", { ascending: true })
         : Promise.resolve({ data: [], error: null }),
+      shiftIds.length
+        ? clientAdmin
+            .from("shift_incidents")
+            .select("id, shift_id")
+            .in("shift_id", shiftIds)
+        : Promise.resolve({ data: [], error: null }),
     ]);
 
     if ((usersRes as { error?: unknown }).error) {
@@ -281,6 +323,9 @@ serve(async (req: Request) => {
     }
     if ((photosRes as { error?: unknown }).error) {
       throw { code: 409, message: "No se pudieron cargar evidencias de turnos", category: "BUSINESS", details: (photosRes as { error?: unknown }).error };
+    }
+    if ((incidentsRes as { error?: unknown }).error) {
+      throw { code: 409, message: "No se pudieron cargar incidentes", category: "BUSINESS", details: (incidentsRes as { error?: unknown }).error };
     }
 
     const userNameMap = new Map((usersRes as { data?: Array<{ id: string; full_name: string | null }> }).data?.map((u) => [String(u.id), u.full_name ?? null]) ?? []);
@@ -295,6 +340,12 @@ serve(async (req: Request) => {
       if (photo.type === "fin" && !endEvidence.has(photo.shift_id)) {
         if (photo.storage_path) endEvidence.set(photo.shift_id, photo.storage_path);
       }
+    }
+
+    const incidentsCount = new Map<number, number>();
+    for (const incident of ((incidentsRes as { data?: Array<{ shift_id: number }> }).data ?? [])) {
+      const key = Number(incident.shift_id);
+      incidentsCount.set(key, (incidentsCount.get(key) ?? 0) + 1);
     }
 
     const rows = (shifts ?? []).map((s) => {
@@ -316,15 +367,21 @@ serve(async (req: Request) => {
         approved_by_name: s.approved_by ? userNameMap.get(String(s.approved_by)) ?? null : null,
         rejected_by: s.rejected_by ?? null,
         rejected_by_name: s.rejected_by ? userNameMap.get(String(s.rejected_by)) ?? null : null,
+        supervisor_name: s.approved_by
+          ? userNameMap.get(String(s.approved_by)) ?? null
+          : s.rejected_by
+            ? userNameMap.get(String(s.rejected_by)) ?? null
+            : null,
         start_evidence_path: startEvidence.get(Number(s.id)) ?? null,
         end_evidence_path: endEvidence.get(Number(s.id)) ?? null,
+        incidents_count: incidentsCount.get(Number(s.id)) ?? 0,
       };
     });
 
     const csvHeader = selectedColumns;
     const csvHeaderLabels = selectedColumns.map((col) => columnLabel[col] ?? col);
     const csvBody = rows.map((r) => csvHeader.map((h) => csvEscape((r as Record<string, unknown>)[h])).join(",")).join("\n");
-    const csvContent = `${csvHeaderLabels.join(",")}\n${csvBody}`;
+    const csvContent = `sep=,\n${csvHeaderLabels.join(",")}\n${csvBody}`;
 
     const pdfHeaderLine = selectedColumns.map((col) => {
       const label = columnLabel[col] ?? col;
