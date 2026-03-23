@@ -118,6 +118,55 @@ function buildSimplePdf(lines: string[]): Uint8Array {
   return new TextEncoder().encode(body);
 }
 
+function buildPagedPdf(pages: string[][]): Uint8Array {
+  const fontSize = 10;
+  const lineHeight = 12;
+  const startX = 40;
+  const startY = 800;
+
+  const fontObjId = 3 + pages.length * 2;
+  const objects: string[] = [];
+
+  objects.push("1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj\n");
+  const kids = pages.map((_, idx) => `${3 + idx * 2} 0 R`).join(" ");
+  objects.push(`2 0 obj << /Type /Pages /Kids [${kids}] /Count ${pages.length} >> endobj\n`);
+
+  pages.forEach((lines, idx) => {
+    const pageObjId = 3 + idx * 2;
+    const contentObjId = pageObjId + 1;
+
+    const escaped = lines.map((line) =>
+      line.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)").replaceAll("\r", " ").replaceAll("\n", " ")
+    );
+    const textCommands = escaped.map((line, i) => `${i === 0 ? "" : "T* "}(${line}) Tj`).join("\n");
+    const stream = `BT\n/F1 ${fontSize} Tf\n${startX} ${startY} Td\n${lineHeight} TL\n${textCommands}\nET`;
+
+    objects.push(
+      `${pageObjId} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 ${fontObjId} 0 R >> >> /Contents ${contentObjId} 0 R >> endobj\n`
+    );
+    objects.push(`${contentObjId} 0 obj << /Length ${stream.length} >> stream\n${stream}\nendstream endobj\n`);
+  });
+
+  objects.push(`${fontObjId} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Courier >> endobj\n`);
+
+  let body = "%PDF-1.4\n";
+  const offsets: number[] = [0];
+  for (const obj of objects) {
+    offsets.push(body.length);
+    body += obj;
+  }
+
+  const xrefStart = body.length;
+  body += `xref\n0 ${objects.length + 1}\n`;
+  body += "0000000000 65535 f \n";
+  for (let i = 1; i <= objects.length; i += 1) {
+    body += `${String(offsets[i]).padStart(10, "0")} 00000 n \n`;
+  }
+  body += `trailer << /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+
+  return new TextEncoder().encode(body);
+}
+
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
   if (preflight) return preflight;
@@ -273,20 +322,93 @@ serve(async (req: Request) => {
     });
 
     const csvHeader = selectedColumns;
+    const csvHeaderLabels = selectedColumns.map((col) => columnLabel[col] ?? col);
     const csvBody = rows.map((r) => csvHeader.map((h) => csvEscape((r as Record<string, unknown>)[h])).join(",")).join("\n");
-    const csvContent = `${csvHeader.join(",")}\n${csvBody}`;
+    const csvContent = `${csvHeaderLabels.join(",")}\n${csvBody}`;
 
-    const pdfLines = [
+    const pdfHeaderLine = selectedColumns.map((col) => {
+      const label = columnLabel[col] ?? col;
+      return label;
+    });
+
+    const baseWidths = selectedColumns.map((col) => {
+      const widthMap: Record<string, number> = {
+        restaurant_name: 20,
+        employee_name: 20,
+        start_time: 16,
+        end_time: 16,
+        hours_worked: 6,
+        state: 10,
+        status: 10,
+        start_evidence_path: 22,
+        end_evidence_path: 22,
+        employee_id: 12,
+        restaurant_id: 10,
+        shift_id: 10,
+        approved_by: 12,
+        approved_by_name: 18,
+        rejected_by: 12,
+        rejected_by_name: 18,
+      };
+      return widthMap[col] ?? Math.max(10, (columnLabel[col] ?? col).length);
+    });
+
+    const minWidths = selectedColumns.map(() => 6);
+    const maxLineWidth = 110;
+    const widths = [...baseWidths];
+    const totalWidth = () => widths.reduce((acc, w) => acc + w, 0) + Math.max(0, widths.length - 1) * 3;
+    while (totalWidth() > maxLineWidth) {
+      let maxIdx = 0;
+      for (let i = 1; i < widths.length; i += 1) {
+        if (widths[i] > widths[maxIdx]) maxIdx = i;
+      }
+      if (widths[maxIdx] <= minWidths[maxIdx]) break;
+      widths[maxIdx] -= 1;
+    }
+
+    const headerLine = selectedColumns
+      .map((col, idx) => formatCell(columnLabel[col] ?? col, widths[idx]).padEnd(widths[idx], " "))
+      .join(" | ");
+    const separator = "-".repeat(Math.min(headerLine.length, maxLineWidth));
+
+    const dataLines = rows.map((r) =>
+      selectedColumns
+        .map((col, idx) => formatCell((r as Record<string, unknown>)[col], widths[idx]).padEnd(widths[idx], " "))
+        .join(" | ")
+    );
+
+    const infoLines = [
       `Reporte restaurante #${restaurant_id}`,
       `Periodo: ${period_start} a ${period_end}`,
       `Generado: ${generatedAt}`,
       `Total turnos: ${rows.length}`,
       `Horas acumuladas: ${rows.reduce((acc, r) => acc + (r.hours_worked ?? 0), 0).toFixed(2)}`,
-      "------------------------------",
-      selectedColumns.map((col) => columnLabel[col] ?? col).join(" | "),
-      ...rows.slice(0, 200).map((r) => selectedColumns.map((col) => formatCell((r as Record<string, unknown>)[col], 40)).join(" | ")),
-      ...(rows.length > 200 ? [`... (${rows.length - 200} filas mas)`] : []),
     ];
+
+    const maxLinesPerPage = 60;
+    const pages: string[][] = [];
+    let current: string[] = [];
+    const pushPage = () => {
+      if (current.length > 0) pages.push(current);
+      current = [];
+    };
+
+    const appendLines = (lines: string[]) => {
+      for (const line of lines) {
+        if (current.length >= maxLinesPerPage) {
+          pushPage();
+          current.push("Reporte (continuacion)");
+          current.push(...[headerLine, separator]);
+        }
+        current.push(line);
+      }
+    };
+
+    appendLines(infoLines);
+    current.push(headerLine);
+    current.push(separator);
+    appendLines(dataLines);
+    pushPage();
 
     const reportJson = {
       report_id: null,
@@ -319,7 +441,7 @@ serve(async (req: Request) => {
 
     if ((payload.export_format ?? "both") !== "csv") {
       uploadOperations.push(
-        clientAdmin.storage.from("reports").upload(pdfPath, new Blob([buildSimplePdf(pdfLines)], { type: "application/pdf" }), {
+        clientAdmin.storage.from("reports").upload(pdfPath, new Blob([buildPagedPdf(pages)], { type: "application/pdf" }), {
           contentType: "application/pdf",
           upsert: true,
         })
