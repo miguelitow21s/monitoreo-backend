@@ -24,12 +24,67 @@ const payloadSchema = z.object({
   export_format: z.enum(["csv", "pdf", "both"]).optional(),
 });
 
+const allowedColumns = [
+  "shift_id",
+  "employee_id",
+  "employee_name",
+  "restaurant_id",
+  "restaurant_name",
+  "start_time",
+  "end_time",
+  "hours_worked",
+  "state",
+  "status",
+  "approved_by",
+  "approved_by_name",
+  "rejected_by",
+  "rejected_by_name",
+  "start_evidence_path",
+  "end_evidence_path",
+] as const;
+
+const defaultColumns = [
+  "restaurant_name",
+  "employee_name",
+  "start_time",
+  "end_time",
+  "hours_worked",
+  "state",
+  "start_evidence_path",
+  "end_evidence_path",
+] as const;
+
+const columnLabel: Record<string, string> = {
+  shift_id: "Shift ID",
+  employee_id: "Empleado ID",
+  employee_name: "Empleado",
+  restaurant_id: "Restaurante ID",
+  restaurant_name: "Restaurante",
+  start_time: "Inicio",
+  end_time: "Fin",
+  hours_worked: "Horas",
+  state: "Estado",
+  status: "Status",
+  approved_by: "Aprobado por (ID)",
+  approved_by_name: "Aprobado por",
+  rejected_by: "Rechazado por (ID)",
+  rejected_by_name: "Rechazado por",
+  start_evidence_path: "Evidencia inicio",
+  end_evidence_path: "Evidencia fin",
+};
+
 function csvEscape(value: unknown) {
   const raw = value == null ? "" : String(value);
   if (raw.includes(",") || raw.includes("\n") || raw.includes("\"")) {
     return `"${raw.replaceAll("\"", "\"\"")}"`;
   }
   return raw;
+}
+
+function formatCell(value: unknown, maxLen = 40) {
+  const raw = value == null ? "" : String(value);
+  if (raw.length <= maxLen) return raw;
+  return `${raw.slice(0, Math.max(0, maxLen - 3))}...`;
 }
 
 function buildSimplePdf(lines: string[]): Uint8Array {
@@ -108,11 +163,25 @@ serve(async (req: Request) => {
     }
 
     const generatedAt = new Date().toISOString();
+    const selectedColumns = (payload.columns && payload.columns.length > 0)
+      ? payload.columns
+      : [...defaultColumns];
+
+    const invalidColumns = selectedColumns.filter((col) => !allowedColumns.includes(col as (typeof allowedColumns)[number]));
+    if (invalidColumns.length > 0) {
+      throw {
+        code: 422,
+        message: `Columnas no soportadas: ${invalidColumns.join(", ")}`,
+        category: "VALIDATION",
+        details: { allowed: allowedColumns },
+      };
+    }
+
     const filtros_json = {
       period_start,
       period_end,
       filters: payload.filtros_json ?? {},
-      columns: payload.columns ?? [],
+      columns: selectedColumns,
       export_format: payload.export_format ?? "both",
     };
     const hash_documento = await hashCanonicalJson(filtros_json);
@@ -124,7 +193,7 @@ serve(async (req: Request) => {
 
     const { data: shifts, error: shiftsError } = await clientUser
       .from("shifts")
-      .select("id, employee_id, restaurant_id, start_time, end_time, state, status")
+      .select("id, employee_id, restaurant_id, start_time, end_time, state, status, approved_by, rejected_by")
       .eq("restaurant_id", restaurant_id)
       .gte("start_time", fromIso)
       .lte("start_time", toIso)
@@ -134,6 +203,51 @@ serve(async (req: Request) => {
       throw { code: 409, message: "No se pudieron consultar turnos para el reporte", category: "BUSINESS", details: shiftsError };
     }
 
+    const employeeIds = [...new Set((shifts ?? []).map((s) => String(s.employee_id)).filter((id) => id && id !== "null"))];
+    const supervisorIds = [...new Set((shifts ?? []).map((s) => [s.approved_by, s.rejected_by]).flat().filter(Boolean).map((id) => String(id)))];
+    const restaurantIds = [restaurant_id];
+
+    const [usersRes, restaurantsRes, photosRes] = await Promise.all([
+      employeeIds.length || supervisorIds.length
+        ? clientAdmin.from("users").select("id, full_name").in("id", [...new Set([...employeeIds, ...supervisorIds])])
+        : Promise.resolve({ data: [], error: null }),
+      restaurantIds.length
+        ? clientAdmin.from("restaurants").select("id, name").in("id", restaurantIds)
+        : Promise.resolve({ data: [], error: null }),
+      (shifts ?? []).length
+        ? clientAdmin
+            .from("shift_photos")
+            .select("shift_id, type, storage_path, created_at")
+            .in("shift_id", (shifts ?? []).map((s) => s.id))
+            .in("type", ["inicio", "fin"])
+            .order("created_at", { ascending: true })
+        : Promise.resolve({ data: [], error: null }),
+    ]);
+
+    if ((usersRes as { error?: unknown }).error) {
+      throw { code: 409, message: "No se pudieron cargar nombres de usuarios", category: "BUSINESS", details: (usersRes as { error?: unknown }).error };
+    }
+    if ((restaurantsRes as { error?: unknown }).error) {
+      throw { code: 409, message: "No se pudieron cargar restaurantes", category: "BUSINESS", details: (restaurantsRes as { error?: unknown }).error };
+    }
+    if ((photosRes as { error?: unknown }).error) {
+      throw { code: 409, message: "No se pudieron cargar evidencias de turnos", category: "BUSINESS", details: (photosRes as { error?: unknown }).error };
+    }
+
+    const userNameMap = new Map((usersRes as { data?: Array<{ id: string; full_name: string | null }> }).data?.map((u) => [String(u.id), u.full_name ?? null]) ?? []);
+    const restaurantNameMap = new Map((restaurantsRes as { data?: Array<{ id: number; name: string | null }> }).data?.map((r) => [Number(r.id), r.name ?? null]) ?? []);
+
+    const startEvidence = new Map<number, string>();
+    const endEvidence = new Map<number, string>();
+    for (const photo of ((photosRes as { data?: Array<{ shift_id: number; type: string; storage_path: string | null }> }).data ?? [])) {
+      if (photo.type === "inicio" && !startEvidence.has(photo.shift_id)) {
+        if (photo.storage_path) startEvidence.set(photo.shift_id, photo.storage_path);
+      }
+      if (photo.type === "fin" && !endEvidence.has(photo.shift_id)) {
+        if (photo.storage_path) endEvidence.set(photo.shift_id, photo.storage_path);
+      }
+    }
+
     const rows = (shifts ?? []).map((s) => {
       const start = s.start_time ? new Date(String(s.start_time)) : null;
       const end = s.end_time ? new Date(String(s.end_time)) : null;
@@ -141,16 +255,24 @@ serve(async (req: Request) => {
       return {
         shift_id: s.id,
         employee_id: s.employee_id,
+        employee_name: userNameMap.get(String(s.employee_id)) ?? null,
         restaurant_id: s.restaurant_id,
+        restaurant_name: restaurantNameMap.get(Number(s.restaurant_id)) ?? null,
         start_time: s.start_time,
         end_time: s.end_time,
         hours_worked: hours == null ? null : Number(hours.toFixed(2)),
         state: s.state,
         status: s.status,
+        approved_by: s.approved_by ?? null,
+        approved_by_name: s.approved_by ? userNameMap.get(String(s.approved_by)) ?? null : null,
+        rejected_by: s.rejected_by ?? null,
+        rejected_by_name: s.rejected_by ? userNameMap.get(String(s.rejected_by)) ?? null : null,
+        start_evidence_path: startEvidence.get(Number(s.id)) ?? null,
+        end_evidence_path: endEvidence.get(Number(s.id)) ?? null,
       };
     });
 
-    const csvHeader = ["shift_id", "employee_id", "restaurant_id", "start_time", "end_time", "hours_worked", "state", "status"];
+    const csvHeader = selectedColumns;
     const csvBody = rows.map((r) => csvHeader.map((h) => csvEscape((r as Record<string, unknown>)[h])).join(",")).join("\n");
     const csvContent = `${csvHeader.join(",")}\n${csvBody}`;
 
@@ -160,6 +282,10 @@ serve(async (req: Request) => {
       `Generado: ${generatedAt}`,
       `Total turnos: ${rows.length}`,
       `Horas acumuladas: ${rows.reduce((acc, r) => acc + (r.hours_worked ?? 0), 0).toFixed(2)}`,
+      "------------------------------",
+      selectedColumns.map((col) => columnLabel[col] ?? col).join(" | "),
+      ...rows.slice(0, 200).map((r) => selectedColumns.map((col) => formatCell((r as Record<string, unknown>)[col], 40)).join(" | ")),
+      ...(rows.length > 200 ? [`... (${rows.length - 200} filas mas)`] : []),
     ];
 
     const reportJson = {
@@ -174,6 +300,7 @@ serve(async (req: Request) => {
         shifts: rows.length,
         hours_worked: Number(rows.reduce((acc, r) => acc + (r.hours_worked ?? 0), 0).toFixed(2)),
       },
+      columns: selectedColumns,
       rows,
     };
 
