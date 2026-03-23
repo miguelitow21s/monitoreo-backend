@@ -45,6 +45,7 @@ $functions = @(
   'reports_manage',
   'incidents_create',
   'incidents_manage',
+  'shift_evidence_manage',
   'evidence_upload',
   'scheduled_shifts_manage',
   'operational_tasks_manage',
