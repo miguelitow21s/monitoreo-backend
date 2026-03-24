@@ -278,6 +278,45 @@ serve(async (req: Request) => {
       return response(true, successPayload.data, null, request_id);
     }
 
+    if (!payload.restaurant_id && user.role === "supervisora") {
+      const { data: scope, error: scopeError } = await clientAdmin
+        .from("restaurant_employees")
+        .select("restaurant_id")
+        .eq("user_id", user.id);
+
+      if (scopeError) {
+        throw { code: 409, message: "No se pudo validar alcance de supervisora", category: "BUSINESS", details: scopeError };
+      }
+
+      const restaurantIds = (scope ?? []).map((r) => Number(r.restaurant_id)).filter((id) => Number.isFinite(id));
+      if (restaurantIds.length === 0) {
+        const successPayload = { success: true, data: { items: [] }, error: null, request_id };
+        await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+        return response(true, successPayload.data, null, request_id);
+      }
+
+      let scopedQuery = clientUser
+        .from("scheduled_shifts")
+        .select("id, employee_id, restaurant_id, scheduled_start, scheduled_end, status, notes, started_shift_id, created_by, created_at, updated_at")
+        .in("restaurant_id", restaurantIds)
+        .order("scheduled_start", { ascending: false })
+        .limit(payload.limit);
+
+      if (payload.employee_id) scopedQuery = scopedQuery.eq("employee_id", payload.employee_id);
+      if (payload.status) scopedQuery = scopedQuery.eq("status", payload.status);
+      if (payload.from) scopedQuery = scopedQuery.gte("scheduled_start", payload.from);
+      if (payload.to) scopedQuery = scopedQuery.lte("scheduled_end", payload.to);
+
+      const { data, error } = await scopedQuery;
+      if (error) {
+        throw { code: 409, message: "No se pudo listar agenda", category: "BUSINESS", details: error };
+      }
+
+      const successPayload = { success: true, data: { items: data ?? [] }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
     let query = clientUser
       .from("scheduled_shifts")
       .select("id, employee_id, restaurant_id, scheduled_start, scheduled_end, status, notes, started_shift_id, created_by, created_at, updated_at")

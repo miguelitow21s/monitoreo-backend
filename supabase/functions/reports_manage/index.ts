@@ -4,6 +4,7 @@ import { z } from "npm:zod@3.23.8";
 import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
+import { ensureSupervisorRestaurantAccess } from "../_shared/scopeGuard.ts";
 import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
@@ -62,7 +63,7 @@ serve(async (req: Request) => {
     const { user } = await authGuard(req);
     userId = user.id;
     userRole = user.role;
-    roleGuard(user, ["super_admin"]);
+    roleGuard(user, ["super_admin", "supervisora"]);
     await requireAcceptedActiveLegalTerm(user.id);
 
     const parsedPayload = await parseBody(req, payloadSchema);
@@ -79,11 +80,34 @@ serve(async (req: Request) => {
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 30, window_seconds: 60 });
 
     if (payload.action === "list_history") {
-      const { data: history, error: historyError } = await clientAdmin
+      let historyQuery = clientAdmin
         .from("reports")
         .select("id, restaurant_id, period_start, period_end, generated_by, url_pdf, url_excel, created_at")
         .order("created_at", { ascending: false })
         .limit(payload.limit);
+
+      if (user.role === "supervisora") {
+        const { data: scope, error: scopeError } = await clientAdmin
+          .from("restaurant_employees")
+          .select("restaurant_id")
+          .eq("user_id", user.id);
+
+        if (scopeError) {
+          throw { code: 409, message: "No se pudo validar alcance de supervisora", category: "BUSINESS", details: scopeError };
+        }
+
+        const restaurantIds = (scope ?? []).map((r) => Number(r.restaurant_id)).filter((id) => Number.isFinite(id));
+        if (restaurantIds.length === 0) {
+          const successPayload = { success: true, data: { items: [] }, error: null, request_id };
+          await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+          return response(true, successPayload.data, null, request_id);
+        }
+        historyQuery = historyQuery.in("restaurant_id", restaurantIds);
+      } else if (payload.restaurant_id) {
+        historyQuery = historyQuery.eq("restaurant_id", payload.restaurant_id);
+      }
+
+      const { data: history, error: historyError } = await historyQuery;
 
       if (historyError) {
         throw { code: 409, message: "No se pudo listar historial de reportes", category: "BUSINESS", details: historyError };
@@ -105,7 +129,29 @@ serve(async (req: Request) => {
       .order("start_time", { ascending: false })
       .limit(payload.limit);
 
-    if (payload.restaurant_id) query = query.eq("restaurant_id", payload.restaurant_id);
+    if (payload.restaurant_id) {
+      if (user.role === "supervisora") {
+        await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
+      }
+      query = query.eq("restaurant_id", payload.restaurant_id);
+    } else if (user.role === "supervisora") {
+      const { data: scope, error: scopeError } = await clientAdmin
+        .from("restaurant_employees")
+        .select("restaurant_id")
+        .eq("user_id", user.id);
+
+      if (scopeError) {
+        throw { code: 409, message: "No se pudo validar alcance de supervisora", category: "BUSINESS", details: scopeError };
+      }
+
+      const restaurantIds = (scope ?? []).map((r) => Number(r.restaurant_id)).filter((id) => Number.isFinite(id));
+      if (restaurantIds.length === 0) {
+        const successPayload = { success: true, data: { items: [] }, error: null, request_id };
+        await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+        return response(true, successPayload.data, null, request_id);
+      }
+      query = query.in("restaurant_id", restaurantIds);
+    }
     if (payload.employee_id) query = query.eq("employee_id", payload.employee_id);
     if (payload.status) query = query.eq("state", payload.status);
     if (payload.supervisor_id) {
