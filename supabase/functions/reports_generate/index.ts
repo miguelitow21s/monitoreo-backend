@@ -46,6 +46,7 @@ const allowedColumns = [
 ] as const;
 
 const defaultColumns = [
+  "shift_id",
   "restaurant_name",
   "employee_name",
   "supervisor_name",
@@ -67,7 +68,7 @@ const columnLabel: Record<string, string> = {
   restaurant_name: "Restaurante",
   start_time: "Inicio",
   end_time: "Fin",
-  hours_worked: "Duracion (h)",
+  hours_worked: "Duracion (HH:MM)",
   incidents_count: "Novedades",
   state: "Estado",
   status: "Status",
@@ -117,6 +118,89 @@ function formatCell(value: unknown, maxLen = 40) {
   return `${raw.slice(0, Math.max(0, maxLen - 3))}...`;
 }
 
+function formatDateTime(iso: string | null) {
+  if (!iso) return "";
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return String(iso);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Bogota",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+  return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get("minute")}`;
+}
+
+function formatDuration(hoursValue: number | null) {
+  if (hoursValue == null || Number.isNaN(hoursValue)) return "";
+  const totalMinutes = Math.round(hoursValue * 60);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function formatState(value: string | null) {
+  const map: Record<string, string> = {
+    activo: "Activo",
+    finalizado: "Finalizado",
+    aprobado: "Aprobado",
+    rechazado: "Rechazado",
+    scheduled: "Programado",
+    started: "Iniciado",
+    completed: "Completado",
+    cancelled: "Cancelado",
+  };
+  if (!value) return "";
+  return map[value] ?? value;
+}
+
+function shortenEvidencePath(path: string, maxLen = 40) {
+  const parts = path.split("/");
+  const tail = parts.slice(-2).join("/");
+  if (tail.length <= maxLen) return tail;
+  return `${tail.slice(0, Math.max(0, maxLen - 3))}...`;
+}
+
+function formatEvidence(path: string | null, mode: "csv" | "pdf") {
+  if (!path) return "NO";
+  if (mode === "pdf") return "SI";
+  return `SI (${shortenEvidencePath(path, 48)})`;
+}
+
+function formatValue(row: Record<string, unknown>, column: string, mode: "csv" | "pdf") {
+  switch (column) {
+    case "start_time":
+    case "end_time":
+      return formatDateTime(row[column] as string | null);
+    case "hours_worked":
+      return formatDuration(row[column] as number | null);
+    case "state":
+    case "status":
+      return formatState(row[column] ? String(row[column]) : null);
+    case "incidents_count":
+      return row[column] == null ? "0" : String(row[column]);
+    case "employee_name":
+      return (row.employee_name as string | null) ?? (row.employee_id as string | number | null) ?? "";
+    case "supervisor_name":
+      return (row.supervisor_name as string | null) ?? "";
+    case "restaurant_name":
+      return (row.restaurant_name as string | null) ?? (row.restaurant_id as string | number | null) ?? "";
+    case "approved_by_name":
+      return (row.approved_by_name as string | null) ?? (row.approved_by as string | number | null) ?? "";
+    case "rejected_by_name":
+      return (row.rejected_by_name as string | null) ?? (row.rejected_by as string | number | null) ?? "";
+    case "start_evidence_path":
+      return formatEvidence(row.start_evidence_path as string | null, mode);
+    case "end_evidence_path":
+      return formatEvidence(row.end_evidence_path as string | null, mode);
+    default:
+      return row[column] ?? "";
+  }
+}
 function buildSimplePdf(lines: string[]): Uint8Array {
   const escaped = lines.map((line) => line.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)").replaceAll("\r", " ").replaceAll("\n", " "));
   const textCommands = escaped.map((line, idx) => `${idx === 0 ? "" : "T* "}(${line}) Tj`).join("\n");
@@ -380,7 +464,13 @@ serve(async (req: Request) => {
 
     const csvHeader = selectedColumns;
     const csvHeaderLabels = selectedColumns.map((col) => columnLabel[col] ?? col);
-    const csvBody = rows.map((r) => csvHeader.map((h) => csvEscape((r as Record<string, unknown>)[h])).join(",")).join("\n");
+    const csvBody = rows
+      .map((r) =>
+        csvHeader
+          .map((h) => csvEscape(formatValue(r as Record<string, unknown>, h, "csv")))
+          .join(",")
+      )
+      .join("\n");
     const csvContent = `sep=,\n${csvHeaderLabels.join(",")}\n${csvBody}`;
 
     const pdfHeaderLine = selectedColumns.map((col) => {
@@ -390,22 +480,24 @@ serve(async (req: Request) => {
 
     const baseWidths = selectedColumns.map((col) => {
       const widthMap: Record<string, number> = {
-        restaurant_name: 20,
-        employee_name: 20,
+        restaurant_name: 22,
+        employee_name: 18,
         start_time: 16,
         end_time: 16,
-        hours_worked: 6,
+        hours_worked: 8,
+        incidents_count: 8,
         state: 10,
         status: 10,
-        start_evidence_path: 22,
-        end_evidence_path: 22,
+        start_evidence_path: 12,
+        end_evidence_path: 12,
         employee_id: 12,
         restaurant_id: 10,
         shift_id: 10,
         approved_by: 12,
-        approved_by_name: 18,
+        approved_by_name: 16,
         rejected_by: 12,
-        rejected_by_name: 18,
+        rejected_by_name: 16,
+        supervisor_name: 18,
       };
       return widthMap[col] ?? Math.max(10, (columnLabel[col] ?? col).length);
     });
@@ -430,16 +522,18 @@ serve(async (req: Request) => {
 
     const dataLines = rows.map((r) =>
       selectedColumns
-        .map((col, idx) => formatCell((r as Record<string, unknown>)[col], widths[idx]).padEnd(widths[idx], " "))
+        .map((col, idx) => formatCell(formatValue(r as Record<string, unknown>, col, "pdf"), widths[idx]).padEnd(widths[idx], " "))
         .join(" | ")
     );
 
+    const totalHours = rows.reduce((acc, r) => acc + (r.hours_worked ?? 0), 0);
+    const restaurantLabel = restaurantNameMap.get(Number(restaurant_id)) ?? `#${restaurant_id}`;
     const infoLines = [
-      `Reporte restaurante #${restaurant_id}`,
+      `Reporte restaurante: ${restaurantLabel}`,
       `Periodo: ${period_start} a ${period_end}`,
-      `Generado: ${generatedAt}`,
+      `Generado: ${formatDateTime(generatedAt)}`,
       `Total turnos: ${rows.length}`,
-      `Horas acumuladas: ${rows.reduce((acc, r) => acc + (r.hours_worked ?? 0), 0).toFixed(2)}`,
+      `Horas acumuladas: ${formatDuration(totalHours)}`,
     ];
 
     const maxLinesPerPage = 60;
