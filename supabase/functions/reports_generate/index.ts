@@ -1,4 +1,5 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import * as XLSX from "https://esm.sh/xlsx@0.18.5";
 import { z } from "npm:zod@3.23.8";
 import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
@@ -21,7 +22,7 @@ const payloadSchema = z.object({
   period_end: commonSchemas.dateYmd,
   filtros_json: z.record(z.any()).optional(),
   columns: z.array(z.string().min(1).max(64)).max(100).optional(),
-  export_format: z.enum(["csv", "pdf", "both"]).optional(),
+  export_format: z.enum(["csv", "pdf", "both", "xlsx"]).optional(),
 });
 
 const allowedColumns = [
@@ -200,6 +201,62 @@ function formatValue(row: Record<string, unknown>, column: string, mode: "csv" |
     default:
       return row[column] ?? "";
   }
+}
+
+function buildXlsxWorkbook(
+  rows: Array<Record<string, unknown>>,
+  columns: string[],
+  headerLabels: string[],
+  meta: {
+    restaurantLabel: string;
+    period_start: string;
+    period_end: string;
+    generatedAt: string;
+    totalShifts: number;
+    totalHours: number;
+  }
+) {
+  const dataRows = rows.map((r) => columns.map((col) => formatValue(r, col, "csv")));
+  const title = `Reporte de turnos`;
+  const headerOffset = 5;
+  const sheetData: Array<Array<string | number>> = [
+    [title],
+    [`Restaurante: ${meta.restaurantLabel}`],
+    [`Periodo: ${meta.period_start} a ${meta.period_end}`],
+    [`Generado: ${formatDateTime(meta.generatedAt)}`],
+    [],
+    headerLabels,
+    ...dataRows,
+    [],
+    [`Totales: turnos ${meta.totalShifts}, horas ${formatDuration(meta.totalHours)}`],
+  ];
+
+  const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
+  const lastCol = Math.max(columns.length - 1, 0);
+
+  worksheet["!merges"] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: lastCol } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: lastCol } },
+    { s: { r: 2, c: 0 }, e: { r: 2, c: lastCol } },
+    { s: { r: 3, c: 0 }, e: { r: 3, c: lastCol } },
+    { s: { r: headerOffset + dataRows.length + 1, c: 0 }, e: { r: headerOffset + dataRows.length + 1, c: lastCol } },
+  ];
+
+  const widths = columns.map((col, idx) => {
+    const base = Math.max((headerLabels[idx] ?? col).length, 10);
+    const maxValue = dataRows.reduce((acc, row) => {
+      const value = row[idx];
+      const len = value == null ? 0 : String(value).length;
+      return Math.max(acc, len);
+    }, base);
+    return { wch: Math.min(40, Math.max(10, maxValue + 2)) };
+  });
+
+  worksheet["!cols"] = widths;
+
+  const workbook = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(workbook, worksheet, "Reporte");
+  return XLSX.write(workbook, { type: "array", bookType: "xlsx" });
 }
 function buildSimplePdf(lines: string[]): Uint8Array {
   const escaped = lines.map((line) => line.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)").replaceAll("\r", " ").replaceAll("\n", " "));
@@ -579,9 +636,15 @@ serve(async (req: Request) => {
 
     const uploadOperations: Array<Promise<unknown>> = [];
     const csvPath = `${basePath}.csv`;
+    const xlsxPath = `${basePath}.xlsx`;
     const pdfPath = `${basePath}.pdf`;
 
-    if ((payload.export_format ?? "both") !== "pdf") {
+    const exportFormat = payload.export_format ?? "both";
+    const includeCsv = exportFormat === "csv";
+    const includeXlsx = exportFormat === "xlsx" || exportFormat === "both";
+    const includePdf = exportFormat === "pdf" || exportFormat === "both";
+
+    if (includeCsv) {
       uploadOperations.push(
         clientAdmin.storage.from("reports").upload(csvPath, new Blob([csvContent], { type: "text/csv; charset=utf-8" }), {
           contentType: "text/csv; charset=utf-8",
@@ -590,7 +653,30 @@ serve(async (req: Request) => {
       );
     }
 
-    if ((payload.export_format ?? "both") !== "csv") {
+    if (includeXlsx) {
+      const xlsxBinary = buildXlsxWorkbook(rows as Array<Record<string, unknown>>, selectedColumns, csvHeaderLabels, {
+        restaurantLabel,
+        period_start,
+        period_end,
+        generatedAt,
+        totalShifts: rows.length,
+        totalHours,
+      });
+      uploadOperations.push(
+        clientAdmin.storage.from("reports").upload(
+          xlsxPath,
+          new Blob([xlsxBinary], {
+            type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          }),
+          {
+            contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            upsert: true,
+          }
+        )
+      );
+    }
+
+    if (includePdf) {
       uploadOperations.push(
         clientAdmin.storage.from("reports").upload(pdfPath, new Blob([buildPagedPdf(pages)], { type: "application/pdf" }), {
           contentType: "application/pdf",
@@ -617,7 +703,7 @@ serve(async (req: Request) => {
     let url_excel = "";
     let url_pdf = "";
 
-    if ((payload.export_format ?? "both") !== "pdf") {
+    if (includeCsv) {
       const { data: csvSigned, error: csvSignedError } = await clientAdmin.storage.from("reports").createSignedUrl(csvPath, 60 * 60 * 24 * 7);
       if (csvSignedError || !csvSigned?.signedUrl) {
         throw { code: 500, message: "No se pudo generar URL firmada CSV", category: "SYSTEM", details: csvSignedError };
@@ -625,7 +711,15 @@ serve(async (req: Request) => {
       url_excel = csvSigned.signedUrl;
     }
 
-    if ((payload.export_format ?? "both") !== "csv") {
+    if (includeXlsx) {
+      const { data: xlsxSigned, error: xlsxSignedError } = await clientAdmin.storage.from("reports").createSignedUrl(xlsxPath, 60 * 60 * 24 * 7);
+      if (xlsxSignedError || !xlsxSigned?.signedUrl) {
+        throw { code: 500, message: "No se pudo generar URL firmada XLSX", category: "SYSTEM", details: xlsxSignedError };
+      }
+      url_excel = xlsxSigned.signedUrl;
+    }
+
+    if (includePdf) {
       const { data: pdfSigned, error: pdfSignedError } = await clientAdmin.storage.from("reports").createSignedUrl(pdfPath, 60 * 60 * 24 * 7);
       if (pdfSignedError || !pdfSigned?.signedUrl) {
         throw { code: 500, message: "No se pudo generar URL firmada PDF", category: "SYSTEM", details: pdfSignedError };
