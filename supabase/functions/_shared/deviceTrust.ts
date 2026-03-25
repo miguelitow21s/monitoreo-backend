@@ -4,7 +4,7 @@ import { sha256Hex } from "./crypto.ts";
 const FINGERPRINT_HEADERS = ["x-device-fingerprint", "x-device-id", "x-device-key"] as const;
 const MIN_FINGERPRINT_LENGTH = 16;
 const MAX_FINGERPRINT_LENGTH = 256;
-const MAX_TRUSTED_DEVICES_PER_USER = 10;
+const MAX_TRUSTED_DEVICES_PER_USER = 50;
 
 export type TrustedDevice = {
   id: number;
