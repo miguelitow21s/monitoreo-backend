@@ -14,8 +14,23 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
+import { getSystemSettings } from "../_shared/systemSettings.ts";
+import { geoValidatorByRestaurant } from "../_shared/geoValidator.ts";
 
 const endpoint = "supervisor_presence_manage";
+const evidenceBucket = "shift-evidence";
+const evidenceMaxBytes = 8 * 1024 * 1024;
+const allowedMime = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+const evidenceItemSchema = z
+  .object({
+    path: z.string().min(5).max(500),
+    label: z.string().trim().min(1).max(200).optional(),
+    hash: z.string().min(16).max(200).optional(),
+    mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]).optional(),
+    size_bytes: z.number().int().positive().max(50_000_000).optional(),
+  })
+  .strict();
 
 const registerAction = z.object({
   action: z.literal("register"),
@@ -23,11 +38,24 @@ const registerAction = z.object({
   phase: z.enum(["start", "end"]),
   lat: z.number().min(-90).max(90),
   lng: z.number().min(-180).max(180),
-  evidence_path: z.string().min(5).max(500),
-  evidence_hash: z.string().min(16).max(200),
-  evidence_mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]),
-  evidence_size_bytes: z.number().int().positive().max(50000000),
+  accuracy: z.number().min(0).max(10000).optional(),
+  evidence_path: z.string().min(5).max(500).optional(),
+  evidence_hash: z.string().min(16).max(200).optional(),
+  evidence_mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]).optional(),
+  evidence_size_bytes: z.number().int().positive().max(50000000).optional(),
+  evidences: z.array(evidenceItemSchema).min(1).max(20).optional(),
   notes: z.string().trim().max(1000).optional().nullable(),
+});
+
+const requestEvidenceUploadAction = z.object({
+  action: z.literal("request_evidence_upload"),
+  phase: z.enum(["start", "end"]),
+  mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]).default("image/jpeg"),
+});
+
+const finalizeEvidenceUploadAction = z.object({
+  action: z.literal("finalize_evidence_upload"),
+  path: z.string().min(5).max(500),
 });
 
 const listMyAction = z.object({
@@ -50,7 +78,60 @@ const listTodayAction = z.object({
   to: z.string().datetime().optional(),
 });
 
-const payloadSchema = z.discriminatedUnion("action", [registerAction, listMyAction, listByRestaurantAction, listTodayAction]);
+const payloadSchema = z.discriminatedUnion("action", [
+  registerAction,
+  listMyAction,
+  listByRestaurantAction,
+  listTodayAction,
+  requestEvidenceUploadAction,
+  finalizeEvidenceUploadAction,
+]);
+
+function mimeToExtension(mimeType: string) {
+  if (mimeType === "image/jpeg") return "jpg";
+  if (mimeType === "image/png") return "png";
+  if (mimeType === "image/webp") return "webp";
+  return "bin";
+}
+
+async function sha256Hex(blob: Blob) {
+  const buffer = await blob.arrayBuffer();
+  const hash = await crypto.subtle.digest("SHA-256", buffer);
+  return [...new Uint8Array(hash)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function detectMimeByMagic(blob: Blob): Promise<string> {
+  const head = new Uint8Array(await blob.slice(0, 16).arrayBuffer());
+
+  const isJpeg = head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff;
+  if (isJpeg) return "image/jpeg";
+
+  const isPng =
+    head.length >= 8 &&
+    head[0] === 0x89 &&
+    head[1] === 0x50 &&
+    head[2] === 0x4e &&
+    head[3] === 0x47 &&
+    head[4] === 0x0d &&
+    head[5] === 0x0a &&
+    head[6] === 0x1a &&
+    head[7] === 0x0a;
+  if (isPng) return "image/png";
+
+  const isWebp =
+    head.length >= 12 &&
+    head[0] === 0x52 &&
+    head[1] === 0x49 &&
+    head[2] === 0x46 &&
+    head[3] === 0x46 &&
+    head[8] === 0x57 &&
+    head[9] === 0x45 &&
+    head[10] === 0x42 &&
+    head[11] === 0x50;
+  if (isWebp) return "image/webp";
+
+  return "application/octet-stream";
+}
 
 function getBogotaDayRange() {
   const now = new Date();
@@ -106,6 +187,114 @@ serve(async (req: Request) => {
     }
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 40, window_seconds: 60 });
+    const settings = await getSystemSettings(clientAdmin);
+
+    const fetchEvidences = async (supabase: typeof clientAdmin, presenceIds: Array<number | string>) => {
+      if (!presenceIds.length) return new Map<string, Array<Record<string, unknown>>>();
+      const { data: evidenceRows, error: evidenceError } = await supabase
+        .from("supervisor_presence_evidences")
+        .select("id, presence_id, storage_path, sha256, mime_type, size_bytes, label, created_at")
+        .in("presence_id", presenceIds);
+
+      if (evidenceError) {
+        throw { code: 409, message: "No se pudieron cargar evidencias de supervision", category: "BUSINESS", details: evidenceError };
+      }
+
+      const map = new Map<string, Array<Record<string, unknown>>>();
+      for (const row of evidenceRows ?? []) {
+        const key = String(row.presence_id);
+        const list = map.get(key) ?? [];
+        list.push({
+          id: row.id,
+          path: row.storage_path,
+          sha256: row.sha256,
+          mime_type: row.mime_type,
+          size_bytes: row.size_bytes,
+          label: row.label ?? null,
+          created_at: row.created_at,
+        });
+        map.set(key, list);
+      }
+
+      return map;
+    };
+
+    const assertSupervisorPath = (path: string, phase?: "start" | "end") => {
+      const lower = path.toLowerCase();
+      const expectedStart = `users/${user.id}/supervisor-start/`;
+      const expectedEnd = `users/${user.id}/supervisor-end/`;
+      const legacyA = `users/${user.id}/supervisor/`;
+      const legacyB = `users/${user.id}/supervision/`;
+      const matchesPhase =
+        phase === "start"
+          ? lower.startsWith(expectedStart)
+          : phase === "end"
+            ? lower.startsWith(expectedEnd)
+            : lower.startsWith(expectedStart) || lower.startsWith(expectedEnd);
+
+      if (!matchesPhase && !lower.startsWith(legacyA) && !lower.startsWith(legacyB)) {
+        throw { code: 403, message: "Ruta de evidencia invalida para supervision", category: "PERMISSION" };
+      }
+    };
+
+    if (payload.action === "request_evidence_upload") {
+      const extension = mimeToExtension(payload.mime_type);
+      const path = `users/${user.id}/supervisor-${payload.phase}/${request_id}.${extension}`;
+      const { data, error } = await clientAdmin.storage.from(evidenceBucket).createSignedUploadUrl(path);
+      if (error || !data) {
+        throw { code: 500, message: "No se pudo generar URL de carga", category: "SYSTEM", details: error };
+      }
+
+      const successPayload = {
+        success: true,
+        data: {
+          upload: data,
+          bucket: evidenceBucket,
+          path,
+          allowed_mime: [...allowedMime],
+          max_bytes: evidenceMaxBytes,
+        },
+        error: null,
+        request_id,
+      };
+
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "finalize_evidence_upload") {
+      assertSupervisorPath(payload.path);
+      const { data: fileBlob, error: downloadError } = await clientAdmin.storage.from(evidenceBucket).download(payload.path);
+      if (downloadError || !fileBlob) {
+        throw { code: 422, message: "Archivo no disponible en storage", category: "VALIDATION", details: downloadError };
+      }
+
+      if (fileBlob.size <= 0 || fileBlob.size > evidenceMaxBytes) {
+        throw { code: 422, message: "Tamano de archivo invalido", category: "VALIDATION", details: { size: fileBlob.size } };
+      }
+
+      const sniffedMime = await detectMimeByMagic(fileBlob);
+      if (!allowedMime.has(sniffedMime)) {
+        throw { code: 422, message: "MIME no permitido", category: "VALIDATION", details: { sniffedMime } };
+      }
+
+      const sha256 = await sha256Hex(fileBlob);
+
+      const successPayload = {
+        success: true,
+        data: {
+          path: payload.path,
+          sha256,
+          mime_type: sniffedMime,
+          size_bytes: fileBlob.size,
+        },
+        error: null,
+        request_id,
+      };
+
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
 
     if (payload.action === "list_my") {
       const { data, error } = await clientUser
@@ -121,7 +310,13 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se pudo listar presencia", category: "BUSINESS", details: error };
       }
 
-      const successPayload = { success: true, data: { items: data ?? [] }, error: null, request_id };
+      const items = data ?? [];
+      const evidenceMap = await fetchEvidences(clientUser, items.map((row) => row.id));
+      const withEvidence = items.map((row) => ({
+        ...row,
+        evidences: evidenceMap.get(String(row.id)) ?? [],
+      }));
+      const successPayload = { success: true, data: { items: withEvidence }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
@@ -167,7 +362,13 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se pudo listar presencia por restaurante", category: "BUSINESS", details: error };
       }
 
-      const successPayload = { success: true, data: { items: data ?? [] }, error: null, request_id };
+      const items = data ?? [];
+      const evidenceMap = await fetchEvidences(clientUser, items.map((row) => row.id));
+      const withEvidence = items.map((row) => ({
+        ...row,
+        evidences: evidenceMap.get(String(row.id)) ?? [],
+      }));
+      const successPayload = { success: true, data: { items: withEvidence }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
@@ -209,7 +410,7 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se pudo listar supervisiones de hoy", category: "BUSINESS", details: error };
       }
 
-      const items = (data ?? []).map((row) => {
+      const baseItems = (data ?? []).map((row) => {
         const supervisorName = row?.users?.full_name ?? row?.users?.[0]?.full_name ?? null;
         const restaurantName = row?.restaurants?.name ?? row?.restaurants?.[0]?.name ?? null;
         return {
@@ -224,6 +425,12 @@ serve(async (req: Request) => {
         };
       });
 
+      const evidenceMap = await fetchEvidences(clientAdmin, baseItems.map((row) => row.id));
+      const items = baseItems.map((row) => ({
+        ...row,
+        evidences: evidenceMap.get(String(row.id)) ?? [],
+      }));
+
       const successPayload = { success: true, data: { items }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
@@ -234,6 +441,69 @@ serve(async (req: Request) => {
         await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
       }
 
+      if (settings.gps.require_gps_for_supervision) {
+        await geoValidatorByRestaurant(clientUser, payload.restaurant_id, payload.lat, payload.lng, {
+          settings,
+          accuracy: payload.accuracy,
+        });
+      }
+
+      const incomingEvidences = payload.evidences ?? [];
+      const legacyEvidence =
+        payload.evidence_path && payload.evidence_hash && payload.evidence_mime_type && payload.evidence_size_bytes
+          ? [
+              {
+                path: payload.evidence_path,
+                label: undefined,
+                hash: payload.evidence_hash,
+                mime_type: payload.evidence_mime_type,
+                size_bytes: payload.evidence_size_bytes,
+              },
+            ]
+          : [];
+
+      const evidences = [...incomingEvidences, ...legacyEvidence];
+
+      if (settings.evidence.require_supervision_photos && evidences.length === 0) {
+        throw { code: 422, message: "Debe adjuntar evidencia de supervision", category: "VALIDATION" };
+      }
+
+      const normalizedEvidences: Array<{
+        storage_path: string;
+        sha256: string;
+        mime_type: string;
+        size_bytes: number;
+        label: string | null;
+      }> = [];
+
+      for (const evidence of evidences) {
+        assertSupervisorPath(evidence.path, payload.phase);
+        const { data: fileBlob, error: downloadError } = await clientAdmin.storage.from(evidenceBucket).download(evidence.path);
+        if (downloadError || !fileBlob) {
+          throw { code: 422, message: "Evidencia no disponible en storage", category: "VALIDATION", details: downloadError };
+        }
+
+        if (fileBlob.size <= 0 || fileBlob.size > evidenceMaxBytes) {
+          throw { code: 422, message: "Tamano de evidencia invalido", category: "VALIDATION", details: { size: fileBlob.size } };
+        }
+
+        const sniffedMime = await detectMimeByMagic(fileBlob);
+        if (!allowedMime.has(sniffedMime)) {
+          throw { code: 422, message: "MIME no permitido", category: "VALIDATION", details: { sniffedMime } };
+        }
+
+        const sha256 = await sha256Hex(fileBlob);
+        normalizedEvidences.push({
+          storage_path: evidence.path,
+          sha256,
+          mime_type: sniffedMime,
+          size_bytes: fileBlob.size,
+          label: evidence.label ?? null,
+        });
+      }
+
+      const primaryEvidence = normalizedEvidences[0] ?? null;
+
       const { data, error } = await clientUser
         .from("supervisor_presence_logs")
         .insert({
@@ -242,10 +512,10 @@ serve(async (req: Request) => {
           phase: payload.phase,
           lat: payload.lat,
           lng: payload.lng,
-          evidence_path: payload.evidence_path,
-          evidence_hash: payload.evidence_hash,
-          evidence_mime_type: payload.evidence_mime_type,
-          evidence_size_bytes: payload.evidence_size_bytes,
+          evidence_path: primaryEvidence?.storage_path ?? null,
+          evidence_hash: primaryEvidence?.sha256 ?? null,
+          evidence_mime_type: primaryEvidence?.mime_type ?? null,
+          evidence_size_bytes: primaryEvidence?.size_bytes ?? null,
           notes: payload.notes ?? null,
           recorded_at: new Date().toISOString(),
         })
@@ -256,6 +526,23 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se pudo registrar presencia", category: "BUSINESS", details: error };
       }
 
+      if (normalizedEvidences.length > 0) {
+        const evidenceRows = normalizedEvidences.map((row) => ({
+          presence_id: data.id,
+          storage_path: row.storage_path,
+          sha256: row.sha256,
+          mime_type: row.mime_type,
+          size_bytes: row.size_bytes,
+          label: row.label,
+          created_at: new Date().toISOString(),
+        }));
+
+        const { error: evidenceInsertError } = await clientUser.from("supervisor_presence_evidences").insert(evidenceRows);
+        if (evidenceInsertError) {
+          throw { code: 409, message: "No se pudo guardar evidencias de supervision", category: "BUSINESS", details: evidenceInsertError };
+        }
+      }
+
       await safeWriteAudit({
         user_id: user.id,
         action: "SUPERVISOR_PRESENCE_REGISTER",
@@ -263,7 +550,7 @@ serve(async (req: Request) => {
           presence_id: data.id,
           restaurant_id: payload.restaurant_id,
           phase: payload.phase,
-          evidence_path: payload.evidence_path,
+          evidence_count: normalizedEvidences.length,
         },
         request_id,
       });

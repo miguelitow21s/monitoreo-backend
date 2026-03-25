@@ -17,6 +17,14 @@ const endpoint = "admin_restaurants_manage";
 
 type AppRole = "super_admin" | "supervisora" | "empleado";
 
+const cleaningAreaSchema = z
+  .object({
+    code: z.string().trim().min(1).max(60),
+    label: z.string().trim().min(1).max(120),
+    active: z.boolean().optional(),
+  })
+  .strict();
+
 const createAction = z.object({
   action: z.literal("create"),
   name: z.string().trim().min(2).max(160),
@@ -30,6 +38,7 @@ const createAction = z.object({
   country: z.string().trim().max(120).optional().nullable(),
   place_id: z.string().trim().max(250).optional().nullable(),
   is_active: z.boolean().optional(),
+  cleaning_areas: z.array(cleaningAreaSchema).max(200).optional(),
 });
 
 const updateAction = z.object({
@@ -46,6 +55,7 @@ const updateAction = z.object({
   country: z.string().trim().max(120).optional().nullable(),
   place_id: z.string().trim().max(250).optional().nullable(),
   is_active: z.boolean().optional(),
+  cleaning_areas: z.array(cleaningAreaSchema).max(200).optional().nullable(),
 });
 
 const activateAction = z.object({
@@ -125,9 +135,10 @@ serve(async (req: Request) => {
           country: payload.country ?? null,
           place_id: payload.place_id ?? null,
           is_active: payload.is_active ?? true,
+          cleaning_areas: payload.cleaning_areas ?? null,
           updated_at: now,
         })
-        .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, created_at, updated_at")
+        .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, cleaning_areas, created_at, updated_at")
         .single();
 
       if (error || !data) {
@@ -162,12 +173,13 @@ serve(async (req: Request) => {
       if (payload.country !== undefined) patch.country = payload.country ?? null;
       if (payload.place_id !== undefined) patch.place_id = payload.place_id ?? null;
       if (payload.is_active !== undefined) patch.is_active = payload.is_active;
+      if (payload.cleaning_areas !== undefined) patch.cleaning_areas = payload.cleaning_areas ?? null;
 
       const { data, error } = await clientUser
         .from("restaurants")
         .update(patch)
         .eq("id", payload.restaurant_id)
-        .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, created_at, updated_at")
+        .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, cleaning_areas, created_at, updated_at")
         .single();
 
       if (error || !data) {
@@ -192,7 +204,7 @@ serve(async (req: Request) => {
         .from("restaurants")
         .update({ is_active: isActive, updated_at: new Date().toISOString() })
         .eq("id", payload.restaurant_id)
-        .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, created_at, updated_at")
+        .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, cleaning_areas, created_at, updated_at")
         .single();
 
       if (error || !data) {
@@ -213,7 +225,7 @@ serve(async (req: Request) => {
 
     let query = clientUser
       .from("restaurants")
-      .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, created_at, updated_at")
+      .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, cleaning_areas, created_at, updated_at")
       .order("name", { ascending: true });
 
     if (payload.is_active !== undefined) query = query.eq("is_active", payload.is_active);

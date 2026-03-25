@@ -18,6 +18,14 @@ const endpoint = "audit_logs_manage";
 const listAction = z.object({
   action: z.literal("list"),
   limit: z.number().int().min(1).max(1000).default(200),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+  search: z.string().trim().min(1).max(200).optional(),
+  action_filter: z.string().trim().min(1).max(200).optional(),
+  action_name: z.string().trim().min(1).max(200).optional(),
+  endpoint: z.string().trim().min(1).max(200).optional(),
+  user_id: z.string().uuid().optional(),
+  request_id: z.string().uuid().optional(),
 });
 
 const payloadSchema = z.discriminatedUnion("action", [listAction]);
@@ -57,11 +65,36 @@ serve(async (req: Request) => {
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 20, window_seconds: 60 });
 
-    const { data: logs, error: logsError } = await clientAdmin
+    if ((payload.from && !payload.to) || (!payload.from && payload.to)) {
+      throw { code: 422, message: "from y to son requeridos juntos", category: "VALIDATION" };
+    }
+
+    let query = clientAdmin
       .from("audit_logs")
       .select("id, user_id, action, context, request_id, created_at")
       .order("created_at", { ascending: false })
       .limit(payload.limit);
+
+    if (payload.from && payload.to) {
+      query = query.gte("created_at", payload.from).lte("created_at", payload.to);
+    }
+
+    if (payload.user_id) query = query.eq("user_id", payload.user_id);
+    if (payload.request_id) query = query.eq("request_id", payload.request_id);
+    const actionFilter = payload.action_filter ?? payload.action_name;
+    if (actionFilter) query = query.eq("action", actionFilter);
+
+    if (payload.endpoint) {
+      query = query.eq("context->>endpoint", payload.endpoint);
+    }
+
+    const searchRaw = payload.search?.trim();
+    if (searchRaw) {
+      const term = searchRaw.replace(/,/g, " ");
+      query = query.or(`action.ilike.%${term}%,context.ilike.%${term}%`);
+    }
+
+    const { data: logs, error: logsError } = await query;
 
     if (logsError) {
       throw { code: 409, message: "No se pudieron cargar auditorias", category: "BUSINESS", details: logsError };

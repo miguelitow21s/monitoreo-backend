@@ -10,6 +10,7 @@ import { errorHandler } from "../_shared/errorHandler.ts";
 import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
+import { getSystemSettings } from "../_shared/systemSettings.ts";
 
 const endpoint = "users_manage";
 
@@ -17,7 +18,12 @@ const meAction = z.object({
   action: z.literal("me"),
 });
 
-const payloadSchema = z.discriminatedUnion("action", [meAction]);
+const changeMyPinAction = z.object({
+  action: z.literal("change_my_pin"),
+  new_pin: z.string().trim().min(4).max(12),
+});
+
+const payloadSchema = z.discriminatedUnion("action", [meAction, changeMyPinAction]);
 
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
@@ -54,7 +60,7 @@ serve(async (req: Request) => {
     if (payload.action === "me") {
       const { data, error } = await clientAdmin
         .from("users")
-        .select("id, email, is_active, first_name, last_name, full_name, phone_e164, roles(name)")
+        .select("id, email, is_active, first_name, last_name, full_name, phone_e164, must_change_pin, pin_updated_at, roles(name)")
         .eq("id", user.id)
         .single();
 
@@ -78,11 +84,45 @@ serve(async (req: Request) => {
           last_name: data.last_name,
           full_name: data.full_name,
           phone_e164: data.phone_e164,
+          must_change_pin: data.must_change_pin ?? false,
+          pin_updated_at: data.pin_updated_at ?? null,
         },
         error: null,
         request_id,
       };
 
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "change_my_pin") {
+      const settings = await getSystemSettings(clientAdmin);
+      const pinLength = settings.security.pin_length ?? 6;
+      const cleaned = payload.new_pin.trim();
+
+      if (!/^[0-9]+$/.test(cleaned)) {
+        throw { code: 422, message: "El PIN debe ser numerico", category: "VALIDATION" };
+      }
+
+      if (cleaned.length !== pinLength) {
+        throw { code: 422, message: `El PIN debe tener ${pinLength} digitos`, category: "VALIDATION" };
+      }
+
+      const { error: authError } = await clientAdmin.auth.admin.updateUserById(user.id, { password: cleaned });
+      if (authError) {
+        throw { code: 409, message: "No se pudo actualizar el PIN", category: "BUSINESS", details: authError };
+      }
+
+      const { error: updateError } = await clientAdmin
+        .from("users")
+        .update({ must_change_pin: false, pin_updated_at: new Date().toISOString() })
+        .eq("id", user.id);
+
+      if (updateError) {
+        throw { code: 409, message: "No se pudo registrar el cambio de PIN", category: "BUSINESS", details: updateError };
+      }
+
+      const successPayload = { success: true, data: { changed: true }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }

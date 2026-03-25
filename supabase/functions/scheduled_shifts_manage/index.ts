@@ -14,6 +14,7 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
+import { getSystemSettings } from "../_shared/systemSettings.ts";
 
 const endpoint = "scheduled_shifts_manage";
 
@@ -94,6 +95,27 @@ serve(async (req: Request) => {
     const payload = parsedPayload as z.infer<typeof payloadSchema>;
     idempotencyKey = requireIdempotencyKey(req);
 
+    const settings = await getSystemSettings(clientAdmin);
+    const minHours = Math.max(0, settings.shifts.min_hours ?? 0);
+    const maxHours = Math.max(minHours, settings.shifts.max_hours ?? minHours);
+
+    const assertDurationWindow = (startIso: string, endIso: string) => {
+      const start = new Date(startIso);
+      const end = new Date(endIso);
+      if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+        throw { code: 422, message: "Rango horario invalido", category: "VALIDATION" };
+      }
+      const hours = (end.getTime() - start.getTime()) / 3600000;
+      if (hours < minHours || hours > maxHours) {
+        throw {
+          code: 422,
+          message: "Duracion de turno fuera de rango permitido",
+          category: "VALIDATION",
+          details: { min_hours: minHours, max_hours: maxHours, hours },
+        };
+      }
+    };
+
     const payloadHash = await hashCanonicalJson(payload);
     const claim = await claimIdempotency({ userId: user.id, endpoint, key: idempotencyKey, payloadHash });
     if (claim.type === "replay") {
@@ -107,6 +129,8 @@ serve(async (req: Request) => {
       if (user.role === "supervisora") {
         await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
       }
+
+      assertDurationWindow(payload.scheduled_start, payload.scheduled_end);
 
       const { data, error } = await clientUser.rpc("assign_scheduled_shift", {
         p_employee_id: payload.employee_id,
@@ -152,6 +176,10 @@ serve(async (req: Request) => {
         for (const restaurantId of uniqueRestaurantIds) {
           await ensureSupervisorRestaurantAccess(user.id, restaurantId);
         }
+      }
+
+      for (const entry of entries) {
+        assertDurationWindow(entry.scheduled_start, entry.scheduled_end);
       }
 
       const { data, error } = await clientUser.rpc("bulk_assign_scheduled_shifts", {
@@ -212,6 +240,8 @@ serve(async (req: Request) => {
       if (user.role === "supervisora") {
         await ensureSupervisorRestaurantAccess(user.id, row.restaurant_id as number);
       }
+
+      assertDurationWindow(payload.scheduled_start, payload.scheduled_end);
 
       const { error } = await clientUser.rpc("reschedule_scheduled_shift", {
         p_scheduled_shift_id: payload.scheduled_shift_id,

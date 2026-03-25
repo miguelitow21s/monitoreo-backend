@@ -14,6 +14,7 @@ import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { notifyIncidentCreated, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
+import { getSystemSettings, resolveCleaningAreas } from "../_shared/systemSettings.ts";
 
 const endpoint = "employee_self_service";
 
@@ -116,6 +117,7 @@ serve(async (req: Request) => {
     if (payload.action === "my_dashboard") {
       const nowIso = new Date().toISOString();
       const monthAgoIso = addUtcDays(new Date(), -30).toISOString();
+      const settings = await getSystemSettings(clientAdmin);
 
       const [activeShiftRes, linksRes, scheduleRes, tasksRes, shiftsRes] = await Promise.all([
         clientAdmin
@@ -177,7 +179,7 @@ serve(async (req: Request) => {
       const restaurantsRes = restaurantIds.length
         ? await clientAdmin
             .from("restaurants")
-            .select("id, name, is_active, city, state, address_line")
+            .select("id, name, is_active, city, state, address_line, cleaning_areas")
             .in("id", restaurantIds)
         : { data: [], error: null };
 
@@ -185,7 +187,15 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se pudieron consultar restaurantes", category: "BUSINESS", details: restaurantsRes.error };
       }
 
-      const restaurantsById = new Map((restaurantsRes.data ?? []).map((r) => [Number(r.id), r]));
+      const restaurantsById = new Map(
+        (restaurantsRes.data ?? []).map((r) => [
+          Number(r.id),
+          {
+            ...r,
+            cleaning_areas: resolveCleaningAreas(settings, r.cleaning_areas),
+          },
+        ])
+      );
 
       const assigned_restaurants = (linksRes.data ?? []).map((row) => ({
         restaurant_id: row.restaurant_id,

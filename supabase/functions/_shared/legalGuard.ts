@@ -1,4 +1,5 @@
 import { clientAdmin } from "./supabaseClient.ts";
+import { getSystemSettings } from "./systemSettings.ts";
 
 type ActiveLegalTerm = {
   id: number;
@@ -50,6 +51,23 @@ export async function requireAcceptedActiveLegalTerm(userId: string): Promise<vo
   const status = await hasAcceptedActiveLegalTerm(userId);
   if (!status.accepted) {
     throw { code: 403, message: "Debe aceptar tratamiento de datos para continuar", category: "PERMISSION" };
+  }
+
+  const settings = await getSystemSettings(clientAdmin);
+  if (settings.security.force_password_change_on_first_login) {
+    const { data, error } = await clientAdmin
+      .from("users")
+      .select("must_change_pin")
+      .eq("id", userId)
+      .single();
+
+    if (error) {
+      throw { code: 500, message: "No se pudo validar estado de PIN", category: "SYSTEM", details: error };
+    }
+
+    if (data?.must_change_pin) {
+      throw { code: 403, message: "Debe cambiar su PIN para continuar", category: "PERMISSION" };
+    }
   }
 }
 

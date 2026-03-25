@@ -18,6 +18,7 @@ import { requireTrustedDevice } from "../_shared/deviceTrust.ts";
 import { requireShiftOtpSession } from "../_shared/otp.ts";
 import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { notifyShiftEvent, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
+import { getSystemSettings } from "../_shared/systemSettings.ts";
 
 const endpoint = "shifts_end";
 const payloadSchema = z.object({
@@ -66,34 +67,62 @@ serve(async (req) => {
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 20, window_seconds: 60 });
 
     const { shift_id, lat, lng, fit_for_work, declaration, early_end_reason } = payload;
+    const settings = await getSystemSettings(clientAdmin);
 
     const shift = await getOwnedShift(clientUser, user.id, shift_id);
     ensureShiftState(shift.state, ["activo"], "No se puede finalizar este turno");
     if (user.role === "supervisora") {
       await ensureSupervisorRestaurantAccess(user.id, shift.restaurant_id);
     }
-    await geoValidatorByShift(clientUser, shift_id, lat, lng);
-
-    const { data: shiftPhotos, error: shiftPhotosError } = await clientAdmin
-      .from("shift_photos")
-      .select("type")
-      .eq("shift_id", shift_id)
-      .eq("user_id", user.id)
-      .in("type", ["inicio", "fin"]);
-
-    if (shiftPhotosError) {
-      throw { code: 409, message: "No se pudo validar evidencia obligatoria", category: "BUSINESS", details: shiftPhotosError };
+    if (settings.gps.require_gps_for_shift_start) {
+      await geoValidatorByShift(clientUser, shift_id, lat, lng, { settings });
     }
 
-    const existingTypes = new Set((shiftPhotos ?? []).map((p) => String(p.type)));
-    const missingTypes = ["inicio", "fin"].filter((requiredType) => !existingTypes.has(requiredType));
-    if (missingTypes.length > 0) {
-      throw {
-        code: 422,
-        message: "Faltan fotos obligatorias de turno",
-        category: "VALIDATION",
-        details: { missing_types: missingTypes },
-      };
+    if (settings.tasks.require_special_task_completion_check) {
+      const { data: openTasks, error: openTasksError } = await clientUser
+        .from("operational_tasks")
+        .select("id")
+        .eq("shift_id", shift_id)
+        .eq("assigned_employee_id", user.id)
+        .in("status", ["pending", "in_progress"])
+        .limit(1);
+
+      if (openTasksError) {
+        throw { code: 409, message: "No se pudieron validar tareas especiales", category: "BUSINESS", details: openTasksError };
+      }
+
+      if ((openTasks ?? []).length > 0) {
+        throw { code: 422, message: "Debe completar tareas especiales antes de finalizar", category: "VALIDATION" };
+      }
+    }
+
+    const requiredTypes = [
+      settings.evidence.require_start_photos ? "inicio" : null,
+      settings.evidence.require_end_photos ? "fin" : null,
+    ].filter((value): value is string => !!value);
+
+    if (requiredTypes.length > 0) {
+      const { data: shiftPhotos, error: shiftPhotosError } = await clientAdmin
+        .from("shift_photos")
+        .select("type")
+        .eq("shift_id", shift_id)
+        .eq("user_id", user.id)
+        .in("type", requiredTypes);
+
+      if (shiftPhotosError) {
+        throw { code: 409, message: "No se pudo validar evidencia obligatoria", category: "BUSINESS", details: shiftPhotosError };
+      }
+
+      const existingTypes = new Set((shiftPhotos ?? []).map((p) => String(p.type)));
+      const missingTypes = requiredTypes.filter((requiredType) => !existingTypes.has(requiredType));
+      if (missingTypes.length > 0) {
+        throw {
+          code: 422,
+          message: "Faltan fotos obligatorias de turno",
+          category: "VALIDATION",
+          details: { missing_types: missingTypes },
+        };
+      }
     }
 
     const { data: scheduledShift, error: scheduledShiftError } = await clientAdmin

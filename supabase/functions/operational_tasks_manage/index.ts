@@ -14,6 +14,7 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
+import { getSystemSettings } from "../_shared/systemSettings.ts";
 
 const endpoint = "operational_tasks_manage";
 const evidenceBucket = "shift-evidence";
@@ -26,6 +27,7 @@ const createAction = z.object({
   description: z.string().trim().min(5).max(5000),
   priority: z.enum(["low", "normal", "high", "critical"]).default("normal"),
   due_at: z.string().datetime().optional().nullable(),
+  requires_evidence: z.boolean().optional(),
 });
 
 const updateAction = z.object({
@@ -36,6 +38,7 @@ const updateAction = z.object({
   priority: z.enum(["low", "normal", "high", "critical"]).optional(),
   due_at: z.string().datetime().optional().nullable(),
   assigned_employee_id: z.string().uuid().optional(),
+  requires_evidence: z.boolean().optional(),
 });
 
 const cancelAction = z.object({
@@ -53,6 +56,7 @@ const closeAction = z.object({
   action: z.literal("close"),
   task_id: z.number().int().positive(),
   reason: z.string().trim().min(3).max(500).optional(),
+  notes: z.string().trim().min(3).max(5000).optional(),
 });
 
 const requestManifestUploadAction = z.object({
@@ -70,6 +74,7 @@ const completeAction = z.object({
   action: z.literal("complete"),
   task_id: z.number().int().positive(),
   evidence_path: z.string().min(20).max(500),
+  notes: z.string().trim().min(3).max(5000).optional(),
 });
 
 const listMyOpenAction = z.object({
@@ -170,6 +175,8 @@ serve(async (req: Request) => {
     const payload = parsedPayload as z.infer<typeof payloadSchema>;
     idempotencyKey = requireIdempotencyKey(req);
 
+    const settings = await getSystemSettings(clientAdmin);
+
     const payloadHash = await hashCanonicalJson(payload);
     const claim = await claimIdempotency({ userId: user.id, endpoint, key: idempotencyKey, payloadHash });
     if (claim.type === "replay") {
@@ -203,6 +210,7 @@ serve(async (req: Request) => {
         p_description: payload.description,
         p_priority: payload.priority,
         p_due_at: payload.due_at ?? null,
+        p_requires_evidence: payload.requires_evidence ?? true,
       });
 
       if (error || !data) {
@@ -256,6 +264,7 @@ serve(async (req: Request) => {
         await ensureEmployeeUser(payload.assigned_employee_id);
         updates.assigned_employee_id = payload.assigned_employee_id;
       }
+      if (payload.requires_evidence !== undefined) updates.requires_evidence = payload.requires_evidence;
 
       if (Object.keys(updates).length === 0) {
         throw { code: 422, message: "No hay campos para actualizar", category: "VALIDATION" };
@@ -381,11 +390,11 @@ serve(async (req: Request) => {
     }
 
     if (payload.action === "close") {
-      roleGuard(user, ["supervisora", "super_admin"]);
+      roleGuard(user, ["supervisora", "super_admin", "empleado"]);
 
       const { data: task, error: taskError } = await clientUser
         .from("operational_tasks")
-        .select("id, restaurant_id, status")
+        .select("id, restaurant_id, status, assigned_employee_id, requires_evidence")
         .eq("id", payload.task_id)
         .single();
 
@@ -396,18 +405,34 @@ serve(async (req: Request) => {
       if (task.status === "completed") {
         throw { code: 409, message: "No se puede cerrar una tarea completada", category: "BUSINESS" };
       }
+      if (task.status === "cancelled") {
+        throw { code: 409, message: "No se puede cerrar una tarea cancelada", category: "BUSINESS" };
+      }
+
+      if (user.role === "empleado" && String(task.assigned_employee_id) !== user.id) {
+        throw { code: 403, message: "Solo el empleado asignado puede cerrar la tarea", category: "PERMISSION" };
+      }
 
       if (user.role === "supervisora") {
         await ensureSupervisorRestaurantAccess(user.id, task.restaurant_id as number);
       }
 
-      if (task.status !== "cancelled") {
+      if (task.requires_evidence) {
+        throw { code: 422, message: "La tarea requiere evidencia para completarse", category: "VALIDATION" };
+      }
+
+      if (settings.tasks.require_special_task_notes && !payload.notes && !payload.reason) {
+        throw { code: 422, message: "Debe incluir observaciones para cerrar la tarea", category: "VALIDATION" };
+      }
+
+      if (task.status !== "completed") {
         const { error: closeError } = await clientUser
           .from("operational_tasks")
           .update({
-            status: "cancelled",
+            status: "completed",
             resolved_at: new Date().toISOString(),
             resolved_by: user.id,
+            resolution_notes: payload.notes ?? payload.reason ?? null,
           })
           .eq("id", payload.task_id);
 
@@ -419,7 +444,7 @@ serve(async (req: Request) => {
       await safeWriteAudit({
         user_id: user.id,
         action: "OPERATIONAL_TASK_CLOSE",
-        context: { task_id: payload.task_id, reason: payload.reason ?? null },
+        context: { task_id: payload.task_id, reason: payload.reason ?? null, notes: payload.notes ?? null },
         request_id,
       });
 
@@ -507,7 +532,7 @@ serve(async (req: Request) => {
 
       const { data: task, error: taskError } = await clientUser
         .from("operational_tasks")
-        .select("id, restaurant_id, assigned_employee_id")
+        .select("id, restaurant_id, assigned_employee_id, requires_evidence")
         .eq("id", payload.task_id)
         .single();
 
@@ -521,6 +546,12 @@ serve(async (req: Request) => {
 
       if (user.role === "supervisora") {
         await ensureSupervisorRestaurantAccess(user.id, task.restaurant_id as number);
+      }
+
+      if (settings.tasks.require_special_task_notes && payload.notes) {
+        // ok
+      } else if (settings.tasks.require_special_task_notes && !payload.notes) {
+        throw { code: 422, message: "Debe incluir observaciones para cerrar la tarea", category: "VALIDATION" };
       }
 
       const expectedManifestPrefix = `users/${task.assigned_employee_id}/task-manifest/${payload.task_id}/`;
@@ -566,6 +597,7 @@ serve(async (req: Request) => {
           evidence_hash: evidenceHash,
           evidence_mime_type: evidenceMimeType,
           evidence_size_bytes: fileBlob.size,
+          resolution_notes: payload.notes ?? null,
           updated_at: nowIso,
         })
         .eq("id", payload.task_id);
@@ -596,7 +628,7 @@ serve(async (req: Request) => {
 
       let query = clientUser
         .from("operational_tasks")
-        .select("id, shift_id, restaurant_id, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
+        .select("id, shift_id, restaurant_id, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
         .eq("assigned_employee_id", user.id)
         .in("status", ["pending", "in_progress"])
         .order("updated_at", { ascending: false })
@@ -618,7 +650,7 @@ serve(async (req: Request) => {
 
     let query = clientUser
       .from("operational_tasks")
-      .select("id, shift_id, restaurant_id, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
+      .select("id, shift_id, restaurant_id, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
       .order("updated_at", { ascending: false })
       .limit(payload.limit);
 

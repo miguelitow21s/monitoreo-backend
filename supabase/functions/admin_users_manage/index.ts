@@ -13,6 +13,7 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
+import { getSystemSettings } from "../_shared/systemSettings.ts";
 
 const endpoint = "admin_users_manage";
 
@@ -168,6 +169,7 @@ serve(async (req: Request) => {
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 30, window_seconds: 60 });
 
     if (payload.action === "create") {
+      const settings = await getSystemSettings(clientAdmin);
       const roleIdMap = await getRoleIdMap();
       const roleId = roleIdMap.get(payload.role);
       if (!roleId) {
@@ -180,6 +182,7 @@ serve(async (req: Request) => {
       const phoneNumber = normalizePhoneNumber(payload.phone_number);
       assertRolePhoneRequirement(payload.role, phoneNumber);
       const isActive = payload.is_active ?? true;
+      const mustChangePin = settings.security.force_password_change_on_first_login === true;
 
       const { data: createdAuth, error: createAuthError } = await clientAdmin.auth.admin.createUser({
         email: payload.email,
@@ -209,6 +212,7 @@ serve(async (req: Request) => {
           full_name: fullName,
           phone_e164: phoneNumber,
           is_active: isActive,
+          must_change_pin: mustChangePin,
           updated_at: new Date().toISOString(),
         },
         { onConflict: "id" }

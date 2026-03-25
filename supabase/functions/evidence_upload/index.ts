@@ -16,6 +16,7 @@ import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { requireTrustedDevice } from "../_shared/deviceTrust.ts";
 import { requireShiftOtpSession } from "../_shared/otp.ts";
+import { getSystemSettings } from "../_shared/systemSettings.ts";
 
 const endpoint = "evidence_upload";
 const bucket = "shift-evidence";
@@ -108,6 +109,8 @@ serve(async (req) => {
     const payload = await parseBody(req, payloadSchema);
     idempotencyKey = requireIdempotencyKey(req);
 
+    const settings = await getSystemSettings(clientAdmin);
+
     const payloadHash = await hashCanonicalJson(payload);
     const claim = await claimIdempotency({ userId: user.id, endpoint, key: idempotencyKey, payloadHash });
     if (claim.type === "replay") {
@@ -156,7 +159,12 @@ serve(async (req) => {
     const shift = await getOwnedShift(clientUser, user.id, payload.shift_id);
     ensureShiftState(shift.state, ["activo", "finalizado"], "No se puede cargar evidencia en este estado");
     // Allow multiple photos per phase (inicio/fin); no duplicate blocking.
-    await geoValidatorByShift(clientUser, payload.shift_id, payload.lat, payload.lng);
+    if (settings.gps.require_gps_for_shift_start) {
+      if (settings.gps.min_accuracy_meters && payload.accuracy > settings.gps.min_accuracy_meters) {
+        throw { code: 422, message: "Precision GPS insuficiente", category: "VALIDATION" };
+      }
+      await geoValidatorByShift(clientUser, payload.shift_id, payload.lat, payload.lng, { settings, accuracy: payload.accuracy });
+    }
 
     const expectedPrefix = `${user.id}/${payload.shift_id}/${payload.type}/`;
     if (!payload.path.startsWith(expectedPrefix)) {

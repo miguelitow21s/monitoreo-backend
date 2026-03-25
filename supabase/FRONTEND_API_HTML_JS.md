@@ -5,13 +5,13 @@ Project: monitoreo-backend
 Base URL:
 - https://orwingqtwoqfhcogggac.supabase.co/functions/v1
 
-This document is the single integration guide for a plain HTML/JS frontend. It answers the open questions and includes concrete request/response examples.
+This document is the single integration guide for a plain HTML/JS frontend. It includes confirmed contracts, headers, and examples. The backend now enforces system settings (not just stores them).
 
 ---
 
 ## 1) Authentication (confirmado)
 
-- Yes, the frontend should use Supabase Auth directly.
+- The frontend should use Supabase Auth directly.
 - The `access_token` from the Supabase session MUST be sent as:
   - `Authorization: Bearer <access_token>`
 - Session refresh:
@@ -76,7 +76,70 @@ SMS mode:
 
 ---
 
-## 5) Evidence Upload Flow (confirmado)
+## 5) System Settings (backend enforced)
+
+`system_settings_manage` now validates schema and applies settings to logic (GPS, shifts, evidence, tasks, PIN policy).
+
+### POST /system_settings_manage
+Actions:
+- `get`
+- `update`
+
+Example:
+```
+{ "action": "get" }
+```
+```
+{ "action": "update", "settings": { "gps": { "default_radius_meters": 120 } } }
+```
+
+### Schema (validated)
+```
+security:
+  pin_length: 4..12 (int)
+  force_password_change_on_first_login: boolean
+  otp_expiration_minutes: 1..120 (int)
+  trusted_device_days: 1..3650 (int)
+
+legal:
+  consent_text: string (5..5000)
+  support_email: email
+
+gps:
+  default_radius_meters: 10..20000 (int)
+  min_accuracy_meters: 1..10000 (int)
+  require_gps_for_shift_start: boolean
+  require_gps_for_supervision: boolean
+
+shifts:
+  default_hours: 1..24
+  min_hours: 1..24
+  max_hours: 1..24
+  early_start_tolerance_minutes: 0..10080
+  late_start_tolerance_minutes: 0..10080
+
+evidence:
+  require_start_photos: boolean
+  require_end_photos: boolean
+  require_supervision_photos: boolean
+  default_cleaning_areas: string[]
+  areas_mode: "restaurant_or_default" | "default_only" | "restaurant_only"
+
+tasks:
+  require_special_task_completion_check: boolean
+  require_special_task_notes: boolean
+```
+
+### Backend behavior (important)
+- GPS validations and min accuracy use `gps.*`.
+- Shift start window uses `early_start_tolerance_minutes` and `late_start_tolerance_minutes`.
+- Evidence required per phase uses `evidence.*`.
+- Task notes required if `tasks.require_special_task_notes=true`.
+- If `security.force_password_change_on_first_login=true`, most protected endpoints return 403 until the user changes PIN.
+
+---
+
+## 6) Evidence Upload Flow (shift photos)
 
 Sequence:
 1. `evidence_upload` -> `request_upload`
@@ -109,21 +172,25 @@ POST /evidence_upload
 }
 ```
 
+Notes:
+- Multiple photos per phase are supported.
+- If `gps.require_gps_for_shift_start=true`, accuracy is validated against `gps.min_accuracy_meters`.
+
 ---
 
-## 6) Roles & Endpoints (resumen)
+## 7) Roles & Endpoints (resumen)
 
 ### Empleado
 - `employee_self_service` (my_dashboard, my_hours_history, create_observation)
 - `shifts_start`, `shifts_end`
 - `evidence_upload`
-- `operational_tasks_manage` (list_my_open, request_evidence_upload, request_manifest_upload, complete)
+- `operational_tasks_manage` (list_my_open, request_evidence_upload, request_manifest_upload, complete, close)
 
 ### Supervisora
 - `scheduled_shifts_manage` (list/assign/bulk_assign/reschedule/cancel)
-- `operational_tasks_manage` (list_supervision, create, complete)
-- `restaurant_staff_manage` (list_by_restaurant, assign_employee, unassign_employee)
-- `supervisor_presence_manage` (register, list_my, list_by_restaurant)
+- `operational_tasks_manage` (list_supervision, create, complete, update, cancel, mark_in_progress, close)
+- `restaurant_staff_manage` (list_by_restaurant, list_my_restaurants, list_assignable_employees, assign_employee, unassign_employee)
+- `supervisor_presence_manage` (request_evidence_upload, finalize_evidence_upload, register, list_my, list_by_restaurant, list_today)
 - `shifts_approve`, `shifts_reject`
 - `incidents_create`
 
@@ -133,10 +200,11 @@ POST /evidence_upload
 - `admin_restaurants_manage`
 - `admin_dashboard_metrics`
 - `reports_manage` + `reports_generate`
+- `system_settings_manage`
 
 ---
 
-## 6.1) Common Utilities (all roles)
+## 7.1) Common Utilities (all roles)
 
 ### POST /users_manage (who am I)
 ```
@@ -150,16 +218,26 @@ Response:
   "role": "super_admin|supervisora|empleado",
   "is_active": true,
   "full_name": "...",
-  "phone_e164": "+57..."
+  "phone_e164": "+57...",
+  "must_change_pin": false,
+  "pin_updated_at": "2026-03-25T00:00:00.000Z"
 }
 ```
+
+### POST /users_manage (change PIN)
+```
+{ "action": "change_my_pin", "new_pin": "123456" }
+```
+Notes:
+- PIN must be numeric and length = `security.pin_length`.
+- If `must_change_pin=true`, call this before accessing protected endpoints.
 
 ### GET /health_ping
 Use for connectivity only (no auth).
 
 ---
 
-## 6.2) Empleado (detalle)
+## 7.2) Empleado (detalle)
 
 ### POST /employee_self_service
 Actions:
@@ -184,13 +262,10 @@ Requires `x-shift-otp-token`.
   "scheduled_shift_id": 123
 }
 ```
-
-### POST /evidence_upload
-Actions:
-- `request_upload`
-- `finalize_upload`
-
-Multiple photos per fase (inicio/fin) are supported.
+Notes:
+- Start window is enforced using settings:
+  - `early_start_tolerance_minutes`
+  - `late_start_tolerance_minutes`
 
 ### POST /shifts_end
 Requires `x-shift-otp-token`.
@@ -201,9 +276,12 @@ Requires `x-shift-otp-token`.
   "lng": -74.0721,
   "fit_for_work": true,
   "declaration": "Sin incidentes",
-  "early_end_reason": "Terminé tareas"
+  "early_end_reason": "Termine tareas"
 }
 ```
+Notes:
+- Evidence required depends on `evidence.require_start_photos` and `evidence.require_end_photos`.
+- If `tasks.require_special_task_completion_check=true`, backend blocks shift end until tasks are closed.
 
 ### POST /operational_tasks_manage (Empleado)
 Actions:
@@ -211,10 +289,21 @@ Actions:
 - `request_evidence_upload`
 - `request_manifest_upload`
 - `complete`
+- `close` (only if `requires_evidence=false`)
+
+Close example:
+```
+{ "action": "close", "task_id": 123, "notes": "Listo" }
+```
+
+Complete example:
+```
+{ "action": "complete", "task_id": 123, "evidence_path": "users/<uid>/task-evidence/...", "notes": "Listo" }
+```
 
 ---
 
-## 6.3) Supervisora (detalle)
+## 7.3) Supervisora (detalle)
 
 ### POST /scheduled_shifts_manage
 Actions:
@@ -224,15 +313,8 @@ Actions:
 - `reschedule`
 - `cancel`
 
-Example (bulk):
-```
-{
-  "action": "bulk_assign",
-  "entries": [
-    { "employee_id": "<uuid>", "restaurant_id": 5, "scheduled_start": "...", "scheduled_end": "...", "notes": "..." }
-  ]
-}
-```
+Notes:
+- Duration is validated against `shifts.min_hours` and `shifts.max_hours`.
 
 ### POST /restaurant_staff_manage
 Actions:
@@ -245,7 +327,7 @@ Actions:
 ### POST /operational_tasks_manage (Supervisora)
 Actions:
 - `list_supervision`
-- `create`
+- `create` (supports `requires_evidence`)
 - `request_evidence_upload` / `request_manifest_upload`
 - `complete`
 - `update`
@@ -255,22 +337,41 @@ Actions:
 
 ### POST /supervisor_presence_manage
 Actions:
+- `request_evidence_upload`
+- `finalize_evidence_upload`
 - `register`
 - `list_my`
 - `list_by_restaurant`
+- `list_today`
 
-### POST /shifts_approve` / `shifts_reject`
-Requires `x-shift-otp-token`.
+Register (multiple photos):
+```
+{
+  "action": "register",
+  "restaurant_id": 5,
+  "phase": "start",
+  "lat": 4.7110,
+  "lng": -74.0721,
+  "evidences": [
+    { "path": "users/<uid>/supervisor-start/<uuid>.jpg", "label": "Area general" }
+  ]
+}
+```
 
-### POST /incidents_create
-Requires `x-shift-otp-token`.
+Upload flow:
 ```
-{ "shift_id": 123, "description": "..." }
+{ "action": "request_evidence_upload", "phase": "start", "mime_type": "image/jpeg" }
 ```
+Then upload to signed URL and call:
+```
+{ "action": "finalize_evidence_upload", "path": "users/<uid>/supervisor-start/<uuid>.jpg" }
+```
+
+Responses from `list_*` include `evidences: []`.
 
 ---
 
-## 6.4) Super Admin (detalle)
+## 7.4) Super Admin (detalle)
 
 ### POST /admin_users_manage
 Actions:
@@ -288,6 +389,9 @@ Actions:
 - `activate`
 - `deactivate`
 
+Notes:
+- `cleaning_areas` is supported in create/update and returned in list.
+
 ### POST /admin_dashboard_metrics
 Dashboard ejecutivo.
 
@@ -299,37 +403,55 @@ Actions:
 ### POST /reports_generate
 Genera PDF + XLSX (excel nativo).
 
-### POST /system_settings_manage
-Actions:
-- `get`
-- `update`
+---
 
-Example:
+## 7.5) Audit Logs (server-side filters)
+
+### POST /audit_logs_manage
 ```
-{ "action": "get" }
+{
+  "action": "list",
+  "limit": 100,
+  "from": "2026-03-01T00:00:00Z",
+  "to": "2026-03-25T23:59:59Z",
+  "search": "scheduled_shifts_manage",
+  "action_name": "SHIFT_START",
+  "endpoint": "scheduled_shifts_manage",
+  "user_id": "<uuid>",
+  "request_id": "<uuid>"
+}
 ```
+Notes:
+- `from` and `to` must be sent together.
+- `action_name` or `action_filter` are accepted.
+- `endpoint` matches `context.endpoint` when present.
+
+---
+
+## 8) Reports (PDF + Excel nativo)
+
+`reports_generate` returns:
+- `url_pdf`
+- `url_excel` (XLSX native)
+
+Example request:
 ```
-{ "action": "update", "settings": { "gps": { "default_radius_meters": 120 } } }
+POST /reports_generate
+{
+  "restaurant_id": 5,
+  "period_start": "2026-02-22",
+  "period_end": "2026-03-24",
+  "export_format": "both",
+  "columns": [
+    "Turno","Restaurante","Empleado","Supervisora","Inicio","Fin",
+    "Estado","Duracion","Novedades","Evidencia inicial","Evidencia final"
+  ]
+}
 ```
 
 ---
 
-## 6.5) Evidencias (listado)
-
-### POST /shift_evidence_manage
-Action:
-- `list_by_shift`
-```
-{ "action": "list_by_shift", "shift_id": 123, "type": "inicio" }
-```
-Respuesta:
-```
-{ "items": [ { "id": 1, "shift_id": 123, "type": "inicio", "storage_path": "...", "captured_at": "...", "lat": 4.7, "lng": -74.0 } ] }
-```
-
----
-
-## 7) Example: Login (HTML/JS)
+## 9) Example: Login (HTML/JS)
 
 ```html
 <script type="module">
@@ -352,7 +474,7 @@ Respuesta:
 
 ---
 
-## 8) Example: Generic Edge Call (fetch)
+## 10) Example: Generic Edge Call (fetch)
 
 ```js
 const idempotencyKey = crypto.randomUUID();
@@ -376,48 +498,14 @@ const payload = await res.json();
 
 ---
 
-## 9) Reports (PDF + Excel nativo)
-
-- `reports_manage` (list_shifts, list_history)
-- `reports_generate`
-
-`reports_generate` now returns:
-- `url_pdf`
-- `url_excel` (XLSX native)
-
-Example request:
-```
-POST /reports_generate
-{
-  "restaurant_id": 5,
-  "period_start": "2026-02-22",
-  "period_end": "2026-03-24",
-  "export_format": "both",
-  "columns": [
-    "Turno","Restaurante","Empleado","Supervisora","Inicio","Fin",
-    "Estado","Duracion","Novedades","Evidencia inicial","Evidencia final"
-  ]
-}
-```
-
----
-
-## 10) Edge Contracts Confirmations
-
-- Yes, the MD files are final and aligned.
-- Yes, the response envelope applies to all Edge endpoints.
-- Yes, headers are exactly as listed above.
-- `legal_consent` status can be sent with Idempotency-Key (recommended) even if not strictly required.
-
----
-
 ## 11) Troubleshooting
 
 - 401 AUTH: expired token -> refresh session.
-- 403 PERMISSION: role mismatch or missing OTP.
+- 403 PERMISSION: role mismatch, missing OTP, or must_change_pin.
 - 409 BUSINESS: device limit, missing phone, conflicts.
 - 422 VALIDATION: invalid payload or headers.
 
 ---
 
-If you need any additional examples per role, we can attach full sample payloads and responses.
+If you need additional examples per role, we can attach full sample payloads and responses.
+

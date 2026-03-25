@@ -12,6 +12,7 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
+import { getSystemSettings, mergeSettings, validateSettingsPatch } from "../_shared/systemSettings.ts";
 
 const endpoint = "system_settings_manage";
 
@@ -25,86 +26,6 @@ const updateAction = z.object({
 });
 
 const payloadSchema = z.discriminatedUnion("action", [getAction, updateAction]);
-
-const defaultSettings = {
-  security: {
-    pin_length: 6,
-    force_password_change_on_first_login: false,
-    otp_expiration_minutes: 10,
-    trusted_device_days: 30,
-  },
-  legal: {
-    consent_text: "Autorizo el uso de mis datos personales, ubicacion GPS y camara para fines de verificacion de turnos laborales.",
-    support_email: "soporte@worktrace.com",
-  },
-  gps: {
-    default_radius_meters: 100,
-    min_accuracy_meters: 100,
-    require_gps_for_shift_start: true,
-    require_gps_for_supervision: true,
-  },
-  shifts: {
-    default_hours: 6,
-    min_hours: 1,
-    max_hours: 12,
-    early_start_tolerance_minutes: 30,
-    late_start_tolerance_minutes: 30,
-  },
-  evidence: {
-    require_start_photos: true,
-    require_end_photos: true,
-    require_supervision_photos: true,
-    default_cleaning_areas: ["Cocina", "Comedor", "Banos", "Patio"],
-    areas_mode: "restaurant_or_default",
-  },
-  tasks: {
-    require_special_task_completion_check: true,
-    require_special_task_notes: true,
-  },
-};
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-
-function mergeDeep(base: Record<string, unknown>, patch: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = { ...base };
-  for (const [key, value] of Object.entries(patch)) {
-    if (isPlainObject(value) && isPlainObject(result[key])) {
-      result[key] = mergeDeep(result[key] as Record<string, unknown>, value as Record<string, unknown>);
-    } else {
-      result[key] = value;
-    }
-  }
-  return result;
-}
-
-async function ensureSettingsRow(): Promise<Record<string, unknown>> {
-  const { data, error } = await clientAdmin
-    .from("system_settings")
-    .select("id, settings")
-    .eq("id", 1)
-    .maybeSingle();
-
-  if (error) {
-    throw { code: 500, message: "No se pudo cargar configuracion", category: "SYSTEM", details: error };
-  }
-
-  if (data?.settings) {
-    return data.settings as Record<string, unknown>;
-  }
-
-  const { error: insertError } = await clientAdmin
-    .from("system_settings")
-    .insert({ id: 1, settings: defaultSettings })
-    .eq("id", 1);
-
-  if (insertError) {
-    throw { code: 500, message: "No se pudo inicializar configuracion", category: "SYSTEM", details: insertError };
-  }
-
-  return defaultSettings as Record<string, unknown>;
-}
 
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
@@ -142,14 +63,15 @@ serve(async (req: Request) => {
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 20, window_seconds: 60 });
 
     if (payload.action === "get") {
-      const settings = await ensureSettingsRow();
+      const settings = await getSystemSettings(clientAdmin);
       const successPayload = { success: true, data: { settings }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
 
-    const current = await ensureSettingsRow();
-    const merged = mergeDeep(current, payload.settings ?? {});
+    const current = await getSystemSettings(clientAdmin);
+    const patch = validateSettingsPatch(payload.settings ?? {});
+    const merged = mergeSettings(current, patch);
 
     const { data, error } = await clientAdmin
       .from("system_settings")

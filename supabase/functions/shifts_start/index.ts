@@ -18,6 +18,7 @@ import { requireTrustedDevice } from "../_shared/deviceTrust.ts";
 import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { requireShiftOtpSession } from "../_shared/otp.ts";
 import { notifyShiftEvent, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
+import { getSystemSettings } from "../_shared/systemSettings.ts";
 
 const endpoint = "shifts_start";
 const payloadSchema = z.object({
@@ -66,6 +67,7 @@ serve(async (req) => {
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 20, window_seconds: 60 });
 
     const { restaurant_id, lat, lng, fit_for_work, declaration } = payload;
+    const settings = await getSystemSettings(clientAdmin);
 
     const now = new Date();
     const scheduledShiftQuery = clientAdmin
@@ -110,6 +112,23 @@ serve(async (req) => {
       };
     }
 
+    if (scheduledShift.scheduled_start && scheduledShift.scheduled_end) {
+      const scheduledStart = new Date(scheduledShift.scheduled_start);
+      const scheduledEnd = new Date(scheduledShift.scheduled_end);
+      const earlyToleranceMs = Math.max(0, settings.shifts.early_start_tolerance_minutes) * 60 * 1000;
+      const lateToleranceMs = Math.max(0, settings.shifts.late_start_tolerance_minutes) * 60 * 1000;
+      const earliest = new Date(scheduledStart.getTime() - earlyToleranceMs);
+      const latest = new Date(scheduledEnd.getTime() + lateToleranceMs);
+      if (now < earliest || now > latest) {
+        throw {
+          code: 422,
+          message: "Fuera de la ventana permitida para iniciar el turno",
+          category: "VALIDATION",
+          details: { earliest: earliest.toISOString(), latest: latest.toISOString() },
+        };
+      }
+    }
+
     if (Number(scheduledShift.restaurant_id) !== Number(restaurant_id)) {
       throw {
         code: 409,
@@ -122,7 +141,9 @@ serve(async (req) => {
     if (user.role === "supervisora") {
       await ensureSupervisorRestaurantAccess(user.id, restaurant_id);
     }
-    await geoValidatorByRestaurant(clientUser, restaurant_id, lat, lng);
+    if (settings.gps.require_gps_for_shift_start) {
+      await geoValidatorByRestaurant(clientUser, restaurant_id, lat, lng, { settings });
+    }
 
     const { data, error } = await clientUser
       .from("shifts")

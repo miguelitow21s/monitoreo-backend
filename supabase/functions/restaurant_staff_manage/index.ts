@@ -14,6 +14,7 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
+import { getSystemSettings, resolveCleaningAreas } from "../_shared/systemSettings.ts";
 
 const endpoint = "restaurant_staff_manage";
 
@@ -282,6 +283,7 @@ serve(async (req: Request) => {
     if (payload.action === "list_my_restaurants") {
       roleGuard(user, ["empleado", "supervisora"]);
 
+      const settings = await getSystemSettings(clientAdmin);
       const { data: links, error: linksError } = await clientAdmin
         .from("restaurant_employees")
         .select("restaurant_id, created_at")
@@ -301,7 +303,7 @@ serve(async (req: Request) => {
 
       const { data: restaurants, error: restaurantsError } = await clientAdmin
         .from("restaurants")
-        .select("id, name, address_line, lat, lng, geofence_radius_m, is_active")
+        .select("id, name, address_line, lat, lng, geofence_radius_m, is_active, cleaning_areas")
         .in("id", restaurantIds)
         .order("name", { ascending: true });
 
@@ -309,7 +311,12 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se pudieron cargar restaurantes", category: "BUSINESS", details: restaurantsError };
       }
 
-      const successPayload = { success: true, data: { items: restaurants ?? [] }, error: null, request_id };
+      const items = (restaurants ?? []).map((row) => ({
+        ...row,
+        cleaning_areas: resolveCleaningAreas(settings, row.cleaning_areas),
+      }));
+
+      const successPayload = { success: true, data: { items }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
