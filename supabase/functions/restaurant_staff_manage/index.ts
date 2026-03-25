@@ -33,7 +33,7 @@ const unassignEmployeeAction = z.object({
 
 const listByRestaurantAction = z.object({
   action: z.literal("list_by_restaurant"),
-  restaurant_id: commonSchemas.restaurantId,
+  restaurant_id: commonSchemas.restaurantId.optional(),
 });
 
 const listByEmployeeAction = z.object({
@@ -207,14 +207,41 @@ serve(async (req: Request) => {
 
     if (payload.action === "list_by_restaurant") {
       roleGuard(user, ["super_admin", "supervisora"]);
+      let restaurantId = payload.restaurant_id ?? null;
+      if (!restaurantId) {
+        if (user.role === "super_admin") {
+          throw { code: 422, message: "restaurant_id requerido", category: "VALIDATION" };
+        }
+
+        const { data: scopeLinks, error: scopeError } = await clientAdmin
+          .from("restaurant_employees")
+          .select("restaurant_id")
+          .eq("user_id", user.id);
+
+        if (scopeError) {
+          throw { code: 409, message: "No se pudo resolver alcance de supervisora", category: "BUSINESS", details: scopeError };
+        }
+
+        const restaurantIds = [...new Set((scopeLinks ?? []).map((row) => Number(row.restaurant_id)).filter((n) => Number.isFinite(n)))];
+        if (restaurantIds.length === 0) {
+          const emptyPayload = { success: true, data: { items: [] }, error: null, request_id };
+          await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey!, statusCode: 200, responseBody: emptyPayload });
+          return response(true, emptyPayload.data, null, request_id);
+        }
+        if (restaurantIds.length > 1) {
+          throw { code: 422, message: "restaurant_id requerido (supervisora con multiples restaurantes)", category: "VALIDATION" };
+        }
+        restaurantId = restaurantIds[0]!;
+      }
+
       if (user.role === "supervisora") {
-        await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
+        await ensureSupervisorRestaurantAccess(user.id, restaurantId);
       }
 
       const { data: links, error: linksError } = await clientAdmin
         .from("restaurant_employees")
         .select("user_id, created_at")
-        .eq("restaurant_id", payload.restaurant_id)
+        .eq("restaurant_id", restaurantId)
         .order("created_at", { ascending: false });
 
       if (linksError) {

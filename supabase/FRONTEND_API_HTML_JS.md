@@ -299,6 +299,19 @@ Actions:
 ### POST /reports_generate
 Genera PDF + XLSX (excel nativo).
 
+### POST /system_settings_manage
+Actions:
+- `get`
+- `update`
+
+Example:
+```
+{ "action": "get" }
+```
+```
+{ "action": "update", "settings": { "gps": { "default_radius_meters": 120 } } }
+```
+
 ---
 
 ## 6.5) Evidencias (listado)

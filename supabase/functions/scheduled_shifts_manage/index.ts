@@ -5,6 +5,7 @@ import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
 import { ensureSupervisorRestaurantAccess } from "../_shared/scopeGuard.ts";
+import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp, commonSchemas } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
 import { claimIdempotency, replayIdempotentResponse, safeFinalizeIdempotency } from "../_shared/idempotency.ts";
