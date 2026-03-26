@@ -27,6 +27,22 @@ if (!session || session.expires_at * 1000 < Date.now() + 60_000) {
 
 ---
 
+## 1.1) Login + PIN (clarificación)
+
+El login usa Supabase Auth (email/usuario + password). El backend **no valida el PIN en el login**; la validación de longitud aplica solo a `users_manage -> change_my_pin`.
+
+Flujo recomendado:
+1. Login con Supabase Auth.
+2. Llamar `users_manage -> me`.
+3. Si `must_change_pin=true`, forzar cambio con `users_manage -> change_my_pin`.
+4. Luego continuar con el resto de endpoints y cargar `system_settings_manage`.
+
+Confirmado:
+- `users_manage -> me` **NO** queda bloqueado por `must_change_pin`.
+- `users_manage -> change_my_pin` **NO** queda bloqueado por `must_change_pin`.
+
+---
+
 ## 2) Required Headers (ALL POST)
 
 Always send these headers:
@@ -231,6 +247,7 @@ Response:
 Notes:
 - PIN must be numeric and length = `security.pin_length`.
 - If `must_change_pin=true`, call this before accessing protected endpoints.
+- This endpoint is allowed even when `must_change_pin=true`.
 
 ### GET /health_ping
 Use for connectivity only (no auth).
@@ -249,6 +266,9 @@ Example:
 ```
 { "action": "my_dashboard", "schedule_limit": 10, "pending_tasks_limit": 10 }
 ```
+
+Notes:
+- `assigned_restaurants[].restaurant.cleaning_areas` ya viene resuelto con fallback según `evidence.areas_mode` y `evidence.default_cleaning_areas`.
 
 ### POST /shifts_start
 Requires `x-shift-otp-token`.
@@ -301,6 +321,13 @@ Complete example:
 { "action": "complete", "task_id": 123, "evidence_path": "users/<uid>/task-evidence/...", "notes": "Listo" }
 ```
 
+List response includes:
+- `id` and `task_id`
+- `title`, `description`, `status`
+- `requires_evidence`
+- `notes_required`
+- `assigned_employee_id`, `restaurant_id`
+
 ---
 
 ## 7.3) Supervisora (detalle)
@@ -324,6 +351,9 @@ Actions:
 - `assign_employee`
 - `unassign_employee`
 
+Notes:
+- `list_my_restaurants` devuelve `cleaning_areas` ya resuelto con fallback según `evidence.areas_mode`.
+
 ### POST /operational_tasks_manage (Supervisora)
 Actions:
 - `list_supervision`
@@ -334,6 +364,13 @@ Actions:
 - `cancel`
 - `mark_in_progress`
 - `close`
+
+List response includes:
+- `id` and `task_id`
+- `title`, `description`, `status`
+- `requires_evidence`
+- `notes_required`
+- `assigned_employee_id`, `restaurant_id`
 
 ### POST /supervisor_presence_manage
 Actions:
@@ -391,6 +428,7 @@ Actions:
 
 Notes:
 - `cleaning_areas` is supported in create/update and returned in list.
+- En endpoints operativos (empleado/supervisora) se entrega ya resuelto con fallback.
 
 ### POST /admin_dashboard_metrics
 Dashboard ejecutivo.
@@ -508,4 +546,3 @@ const payload = await res.json();
 ---
 
 If you need additional examples per role, we can attach full sample payloads and responses.
-

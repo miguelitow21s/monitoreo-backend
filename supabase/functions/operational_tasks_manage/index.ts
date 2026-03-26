@@ -641,7 +641,13 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se pudo listar tareas abiertas", category: "BUSINESS", details: error };
       }
 
-      const successPayload = { success: true, data: { items: data ?? [] }, error: null, request_id };
+      const items = (data ?? []).map((row) => ({
+        ...row,
+        task_id: row.id,
+        notes_required: settings.tasks.require_special_task_notes === true,
+      }));
+
+      const successPayload = { success: true, data: { items }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
@@ -668,7 +674,13 @@ serve(async (req: Request) => {
       throw { code: 409, message: "No se pudo listar tareas de supervision", category: "BUSINESS", details: error };
     }
 
-    const successPayload = { success: true, data: { items: data ?? [] }, error: null, request_id };
+    const items = (data ?? []).map((row) => ({
+      ...row,
+      task_id: row.id,
+      notes_required: settings.tasks.require_special_task_notes === true,
+    }));
+
+    const successPayload = { success: true, data: { items }, error: null, request_id };
     await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
     return response(true, successPayload.data, null, request_id);
   } catch (err) {
