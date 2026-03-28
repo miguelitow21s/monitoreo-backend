@@ -152,11 +152,22 @@ serve(async (req: Request) => {
     const { user } = await authGuard(req);
     userId = user.id;
     userRole = user.role;
-    roleGuard(user, ["super_admin"]);
     await requireAcceptedActiveLegalTerm(user.id);
 
     const parsedPayload = await parseBody(req, payloadSchema);
     const payload = parsedPayload as z.infer<typeof payloadSchema>;
+    if (payload.action === "create") {
+      roleGuard(user, ["super_admin", "supervisora"]);
+      if (user.role === "supervisora" && payload.role !== "empleado") {
+        throw {
+          code: 403,
+          message: "Supervisora solo puede crear empleados",
+          category: "PERMISSION",
+        };
+      }
+    } else {
+      roleGuard(user, ["super_admin"]);
+    }
     idempotencyKey = requireIdempotencyKey(req);
 
     const payloadHash = await hashCanonicalJson(payload);

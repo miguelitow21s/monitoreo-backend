@@ -102,11 +102,15 @@ serve(async (req: Request) => {
     const { user, clientUser } = await authGuard(req);
     userId = user.id;
     userRole = user.role;
-    roleGuard(user, ["super_admin"]);
     await requireAcceptedActiveLegalTerm(user.id);
 
     const parsedPayload = await parseBody(req, payloadSchema);
     const payload = parsedPayload as z.infer<typeof payloadSchema>;
+    if (payload.action === "create") {
+      roleGuard(user, ["super_admin", "supervisora"]);
+    } else {
+      roleGuard(user, ["super_admin"]);
+    }
     idempotencyKey = requireIdempotencyKey(req);
 
     const payloadHash = await hashCanonicalJson(payload);

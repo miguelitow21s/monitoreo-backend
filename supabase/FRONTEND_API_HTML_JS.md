@@ -209,6 +209,8 @@ Notes:
 - `supervisor_presence_manage` (request_evidence_upload, finalize_evidence_upload, register, list_my, list_by_restaurant, list_today)
 - `shifts_approve`, `shifts_reject`
 - `incidents_create`
+- `admin_restaurants_manage` (create)
+- `admin_users_manage` (create empleados)
 
 ### Super Admin
 - All supervisora endpoints +
@@ -417,6 +419,9 @@ Actions:
 - `update`
 - `activate`
 - `deactivate`
+
+Notes:
+- Supervisora solo puede usar `create` y únicamente para `role="empleado"`.
 
 ### POST /admin_restaurants_manage
 Actions:
