@@ -422,6 +422,7 @@ Actions:
 
 Notes:
 - Supervisora solo puede usar `create` y únicamente para `role="empleado"`.
+- Si `password` no se envía en `create`, backend crea el usuario con contraseña temporal `123456` y fuerza `must_change_pin=true`.
 
 ### POST /admin_restaurants_manage
 Actions:

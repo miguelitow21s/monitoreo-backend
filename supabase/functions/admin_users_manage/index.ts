@@ -24,7 +24,7 @@ const createAction = z.object({
   action: z.literal("create"),
   email: z.string().email(),
   role: z.enum(["super_admin", "supervisora", "empleado"]),
-  password: z.string().min(8).max(128).optional(),
+  password: z.string().min(6).max(128).optional(),
   first_name: z.string().trim().min(1).max(120).optional().nullable(),
   last_name: z.string().trim().min(1).max(120).optional().nullable(),
   full_name: z.string().trim().min(1).max(200).optional().nullable(),
@@ -193,11 +193,13 @@ serve(async (req: Request) => {
       const phoneNumber = normalizePhoneNumber(payload.phone_number);
       assertRolePhoneRequirement(payload.role, phoneNumber);
       const isActive = payload.is_active ?? true;
-      const mustChangePin = settings.security.force_password_change_on_first_login === true;
+      const usingDefaultPassword = !payload.password;
+      const mustChangePin = usingDefaultPassword ? true : settings.security.force_password_change_on_first_login === true;
+      const password = payload.password ?? "123456";
 
       const { data: createdAuth, error: createAuthError } = await clientAdmin.auth.admin.createUser({
         email: payload.email,
-        password: payload.password ?? randomPassword(),
+        password,
         email_confirm: true,
         user_metadata: {
           first_name: firstName,
