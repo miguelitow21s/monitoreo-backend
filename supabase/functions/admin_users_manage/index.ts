@@ -63,12 +63,21 @@ const listAction = z.object({
   limit: z.number().int().min(1).max(500).default(100),
 });
 
+const resetPasswordAction = z
+  .object({
+    action: z.literal("reset_password"),
+    email: z.string().email(),
+    new_password: z.string().min(4).max(128).optional(),
+  })
+  .strict();
+
 const payloadSchema = z.discriminatedUnion("action", [
   createAction,
   updateAction,
   activateAction,
   deactivateAction,
   listAction,
+  resetPasswordAction,
 ]);
 
 function randomPassword() {
@@ -165,6 +174,8 @@ serve(async (req: Request) => {
           category: "PERMISSION",
         };
       }
+    } else if (payload.action === "reset_password") {
+      roleGuard(user, ["super_admin"]);
     } else {
       roleGuard(user, ["super_admin"]);
     }
@@ -252,6 +263,55 @@ serve(async (req: Request) => {
       });
 
       const successPayload = { success: true, data: { user: createdProfile }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "reset_password") {
+      const settings = await getSystemSettings(clientAdmin);
+      const expectedLen = Number(settings.security?.pin_length ?? 6);
+      const password = payload.new_password ?? "123456";
+
+      if (!/^\d+$/.test(password) || password.length !== expectedLen) {
+        throw {
+          code: 422,
+          message: `PIN invalido. Debe ser numerico de ${expectedLen} digitos`,
+          category: "VALIDATION",
+        };
+      }
+
+      const { data: userRow, error: userRowError } = await clientAdmin
+        .from("users")
+        .select("id, email")
+        .eq("email", payload.email)
+        .single();
+
+      if (userRowError || !userRow?.id) {
+        throw { code: 404, message: "Usuario no encontrado", category: "BUSINESS", details: userRowError };
+      }
+
+      const { error: authUpdateError } = await clientAdmin.auth.admin.updateUserById(userRow.id, { password });
+      if (authUpdateError) {
+        throw { code: 409, message: "No se pudo actualizar password en Auth", category: "BUSINESS", details: authUpdateError };
+      }
+
+      const { error: flagError } = await clientAdmin
+        .from("users")
+        .update({ must_change_pin: true, pin_updated_at: null, updated_at: new Date().toISOString() })
+        .eq("id", userRow.id);
+
+      if (flagError) {
+        throw { code: 409, message: "No se pudo actualizar flag de PIN", category: "BUSINESS", details: flagError };
+      }
+
+      await safeWriteAudit({
+        user_id: user.id,
+        action: "ADMIN_USER_RESET_PASSWORD",
+        context: { target_user_id: userRow.id, email: userRow.email },
+        request_id,
+      });
+
+      const successPayload = { success: true, data: { user_id: userRow.id, email: userRow.email }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
