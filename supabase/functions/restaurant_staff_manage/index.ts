@@ -330,41 +330,6 @@ serve(async (req: Request) => {
           await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
         }
         restaurantIds = [payload.restaurant_id];
-      } else if (user.role === "supervisora") {
-        const { data: scopeLinks, error: scopeError } = await clientAdmin
-          .from("restaurant_employees")
-          .select("restaurant_id")
-          .eq("user_id", user.id);
-
-        if (scopeError) {
-          throw { code: 409, message: "No se pudo resolver alcance de supervisora", category: "BUSINESS", details: scopeError };
-        }
-
-        restaurantIds = [...new Set((scopeLinks ?? []).map((row) => Number(row.restaurant_id)).filter((n) => Number.isFinite(n)))];
-        if (restaurantIds.length === 0) {
-          const emptyPayload = { success: true, data: { items: [] }, error: null, request_id };
-          await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: emptyPayload });
-          return response(true, emptyPayload.data, null, request_id);
-        }
-      }
-
-      let employeeIds: string[] = [];
-      if (restaurantIds) {
-        const { data: staffLinks, error: staffError } = await clientAdmin
-          .from("restaurant_employees")
-          .select("user_id")
-          .in("restaurant_id", restaurantIds);
-
-        if (staffError) {
-          throw { code: 409, message: "No se pudieron cargar empleados asignables", category: "BUSINESS", details: staffError };
-        }
-
-        employeeIds = [...new Set((staffLinks ?? []).map((row) => String(row.user_id)).filter((v) => !!v))];
-        if (employeeIds.length === 0) {
-          const emptyPayload = { success: true, data: { items: [] }, error: null, request_id };
-          await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: emptyPayload });
-          return response(true, emptyPayload.data, null, request_id);
-        }
       }
 
       let query = clientAdmin
@@ -374,13 +339,31 @@ serve(async (req: Request) => {
         .order("full_name", { ascending: true })
         .limit(payload.limit);
 
-      if (employeeIds.length > 0) {
-        query = query.in("id", employeeIds);
-      }
-
       const { data: profiles, error: profilesError } = await query;
       if (profilesError) {
         throw { code: 409, message: "No se pudieron cargar empleados", category: "BUSINESS", details: profilesError };
+      }
+
+      const employeeIds = [...new Set((profiles ?? []).map((row) => String(row.id)).filter((v) => !!v))];
+      const { data: assignments, error: assignmentsError } = employeeIds.length
+        ? await clientAdmin
+            .from("restaurant_employees")
+            .select("user_id, restaurant_id")
+            .in("user_id", employeeIds)
+        : { data: [], error: null };
+
+      if (assignmentsError) {
+        throw { code: 409, message: "No se pudieron cargar asignaciones de empleados", category: "BUSINESS", details: assignmentsError };
+      }
+
+      const assignmentCount = new Map<string, number>();
+      const assignedToTarget = new Set<string>();
+      for (const row of assignments ?? []) {
+        const key = String(row.user_id);
+        assignmentCount.set(key, (assignmentCount.get(key) ?? 0) + 1);
+        if (payload.restaurant_id && Number(row.restaurant_id) === payload.restaurant_id) {
+          assignedToTarget.add(key);
+        }
       }
 
       const items = (profiles ?? []).map((row) => {
@@ -388,6 +371,7 @@ serve(async (req: Request) => {
           row.full_name ??
           [row.first_name, row.last_name].filter((v) => !!v).join(" ").trim() ??
           null;
+        const count = assignmentCount.get(String(row.id)) ?? 0;
         return {
           id: row.id,
           full_name: fullName,
@@ -395,6 +379,8 @@ serve(async (req: Request) => {
           email: row.email ?? null,
           role: row.role,
           is_active: row.is_active,
+          assigned_restaurants_count: count,
+          assigned_to_restaurant: payload.restaurant_id ? assignedToTarget.has(String(row.id)) : undefined,
         };
       });
 
