@@ -256,6 +256,28 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se pudo consultar historial de turnos", category: "BUSINESS", details: shiftsError };
       }
 
+      const shiftIds = [...new Set((shifts ?? []).map((s) => Number(s.id)).filter((id) => Number.isFinite(id)))];
+      const scheduledRes = shiftIds.length
+        ? await clientAdmin
+            .from("scheduled_shifts")
+            .select("started_shift_id, scheduled_start, scheduled_end")
+            .in("started_shift_id", shiftIds)
+        : { data: [], error: null };
+
+      if (scheduledRes.error) {
+        throw { code: 409, message: "No se pudo consultar turnos programados", category: "BUSINESS", details: scheduledRes.error };
+      }
+
+      const scheduledByShiftId = new Map<number, { scheduled_start: string | null; scheduled_end: string | null }>();
+      for (const row of (scheduledRes.data ?? []) as Array<{ started_shift_id: number | null; scheduled_start: string | null; scheduled_end: string | null }>) {
+        if (row.started_shift_id == null) continue;
+        const key = Number(row.started_shift_id);
+        if (!Number.isFinite(key)) continue;
+        if (!scheduledByShiftId.has(key)) {
+          scheduledByShiftId.set(key, { scheduled_start: row.scheduled_start ?? null, scheduled_end: row.scheduled_end ?? null });
+        }
+      }
+
       const restaurantIds = [...new Set((shifts ?? []).map((s) => Number(s.restaurant_id)).filter((n) => Number.isFinite(n)))];
       const restaurantsRes = restaurantIds.length
         ? await clientAdmin
@@ -270,6 +292,8 @@ serve(async (req: Request) => {
 
       const restaurantsById = new Map((restaurantsRes.data ?? []).map((r) => [Number(r.id), r]));
       const items = (shifts ?? []).map((row) => {
+        const scheduled = scheduledByShiftId.get(Number(row.id));
+        const scheduled_hours = diffHours(String(scheduled?.scheduled_start ?? null), String(scheduled?.scheduled_end ?? null));
         const hours_worked = diffHours(String(row.start_time ?? null), String(row.end_time ?? null));
         return {
           shift_id: row.id,
@@ -278,17 +302,22 @@ serve(async (req: Request) => {
           end_time: row.end_time,
           state: row.state,
           hours_worked,
+          scheduled_start: scheduled?.scheduled_start ?? null,
+          scheduled_end: scheduled?.scheduled_end ?? null,
+          scheduled_hours,
           restaurant: restaurantsById.get(Number(row.restaurant_id)) ?? null,
         };
       });
 
       const totalHours = items.reduce((acc, row) => acc + (row.hours_worked ?? 0), 0);
+      const totalScheduledHours = items.reduce((acc, row) => acc + (row.scheduled_hours ?? 0), 0);
 
       const successData = {
         period_start: periodStart,
         period_end: periodEnd,
         total_shifts: items.length,
         total_hours_worked: Number(totalHours.toFixed(2)),
+        total_scheduled_hours: Number(totalScheduledHours.toFixed(2)),
         items,
       };
 

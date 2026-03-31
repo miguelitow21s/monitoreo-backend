@@ -35,6 +35,9 @@ const allowedColumns = [
   "start_time",
   "end_time",
   "hours_worked",
+  "scheduled_start",
+  "scheduled_end",
+  "scheduled_hours",
   "incidents_count",
   "state",
   "status",
@@ -70,6 +73,9 @@ const columnLabel: Record<string, string> = {
   start_time: "Inicio",
   end_time: "Fin",
   hours_worked: "Duracion (HH:MM)",
+  scheduled_start: "Inicio programado",
+  scheduled_end: "Fin programado",
+  scheduled_hours: "Horas programadas",
   incidents_count: "Novedades",
   state: "Estado",
   status: "Status",
@@ -90,6 +96,9 @@ const columnAliases: Record<string, string> = {
   fin: "end_time",
   estado: "state",
   duracion: "hours_worked",
+  inicio_programado: "scheduled_start",
+  fin_programado: "scheduled_end",
+  horas_programadas: "scheduled_hours",
   novedades: "incidents_count",
   evidencia_inicial: "start_evidence_path",
   evidencia_final: "end_evidence_path",
@@ -144,6 +153,13 @@ function formatDuration(hoursValue: number | null) {
   return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
 }
 
+function diffHours(startIso: string | null, endIso: string | null) {
+  if (!startIso || !endIso) return null;
+  const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+  if (Number.isNaN(ms) || ms <= 0) return null;
+  return Number((ms / 3600000).toFixed(2));
+}
+
 function formatState(value: string | null) {
   const map: Record<string, string> = {
     activo: "Activo",
@@ -176,8 +192,11 @@ function formatValue(row: Record<string, unknown>, column: string, mode: "csv" |
   switch (column) {
     case "start_time":
     case "end_time":
+    case "scheduled_start":
+    case "scheduled_end":
       return formatDateTime(row[column] as string | null);
     case "hours_worked":
+    case "scheduled_hours":
       return formatDuration(row[column] as number | null);
     case "state":
     case "status":
@@ -433,7 +452,7 @@ serve(async (req: Request) => {
     const restaurantIds = [restaurant_id];
     const shiftIds = (shifts ?? []).map((s) => s.id);
 
-    const [usersRes, restaurantsRes, photosRes, incidentsRes] = await Promise.all([
+    const [usersRes, restaurantsRes, photosRes, incidentsRes, scheduledRes] = await Promise.all([
       employeeIds.length || supervisorIds.length
         ? clientAdmin.from("users").select("id, full_name").in("id", [...new Set([...employeeIds, ...supervisorIds])])
         : Promise.resolve({ data: [], error: null }),
@@ -454,6 +473,12 @@ serve(async (req: Request) => {
             .select("id, shift_id")
             .in("shift_id", shiftIds)
         : Promise.resolve({ data: [], error: null }),
+      shiftIds.length
+        ? clientAdmin
+            .from("scheduled_shifts")
+            .select("started_shift_id, scheduled_start, scheduled_end")
+            .in("started_shift_id", shiftIds)
+        : Promise.resolve({ data: [], error: null }),
     ]);
 
     if ((usersRes as { error?: unknown }).error) {
@@ -467,6 +492,9 @@ serve(async (req: Request) => {
     }
     if ((incidentsRes as { error?: unknown }).error) {
       throw { code: 409, message: "No se pudieron cargar incidentes", category: "BUSINESS", details: (incidentsRes as { error?: unknown }).error };
+    }
+    if ((scheduledRes as { error?: unknown }).error) {
+      throw { code: 409, message: "No se pudieron cargar turnos programados", category: "BUSINESS", details: (scheduledRes as { error?: unknown }).error };
     }
 
     const userNameMap = new Map((usersRes as { data?: Array<{ id: string; full_name: string | null }> }).data?.map((u) => [String(u.id), u.full_name ?? null]) ?? []);
@@ -483,6 +511,16 @@ serve(async (req: Request) => {
       }
     }
 
+    const scheduledByShiftId = new Map<number, { scheduled_start: string | null; scheduled_end: string | null }>();
+    for (const row of ((scheduledRes as { data?: Array<{ started_shift_id: number | null; scheduled_start: string | null; scheduled_end: string | null }> }).data ?? [])) {
+      if (row.started_shift_id == null) continue;
+      const key = Number(row.started_shift_id);
+      if (!Number.isFinite(key)) continue;
+      if (!scheduledByShiftId.has(key)) {
+        scheduledByShiftId.set(key, { scheduled_start: row.scheduled_start ?? null, scheduled_end: row.scheduled_end ?? null });
+      }
+    }
+
     const incidentsCount = new Map<number, number>();
     for (const incident of ((incidentsRes as { data?: Array<{ shift_id: number }> }).data ?? [])) {
       const key = Number(incident.shift_id);
@@ -493,6 +531,8 @@ serve(async (req: Request) => {
       const start = s.start_time ? new Date(String(s.start_time)) : null;
       const end = s.end_time ? new Date(String(s.end_time)) : null;
       const hours = start && end ? Math.max(0, (end.getTime() - start.getTime()) / 3600000) : null;
+      const scheduled = scheduledByShiftId.get(Number(s.id));
+      const scheduled_hours = diffHours(String(scheduled?.scheduled_start ?? null), String(scheduled?.scheduled_end ?? null));
       return {
         shift_id: s.id,
         employee_id: s.employee_id,
@@ -502,6 +542,9 @@ serve(async (req: Request) => {
         start_time: s.start_time,
         end_time: s.end_time,
         hours_worked: hours == null ? null : Number(hours.toFixed(2)),
+        scheduled_start: scheduled?.scheduled_start ?? null,
+        scheduled_end: scheduled?.scheduled_end ?? null,
+        scheduled_hours,
         state: s.state,
         status: s.status,
         approved_by: s.approved_by ?? null,
@@ -518,6 +561,8 @@ serve(async (req: Request) => {
         incidents_count: incidentsCount.get(Number(s.id)) ?? 0,
       };
     });
+
+    const totalScheduledHours = rows.reduce((acc, r) => acc + (r.scheduled_hours ?? 0), 0);
 
     const csvHeader = selectedColumns;
     const csvHeaderLabels = selectedColumns.map((col) => columnLabel[col] ?? col);
@@ -629,6 +674,7 @@ serve(async (req: Request) => {
       totals: {
         shifts: rows.length,
         hours_worked: Number(rows.reduce((acc, r) => acc + (r.hours_worked ?? 0), 0).toFixed(2)),
+        total_scheduled_hours: Number(totalScheduledHours.toFixed(2)),
       },
       columns: selectedColumns,
       rows,

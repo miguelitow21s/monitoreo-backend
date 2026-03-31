@@ -44,6 +44,13 @@ function toToIso(value: string) {
   return `${value}T23:59:59.999Z`;
 }
 
+function diffHours(startIso: string | null, endIso: string | null) {
+  if (!startIso || !endIso) return null;
+  const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+  if (Number.isNaN(ms) || ms <= 0) return null;
+  return Number((ms / 3600000).toFixed(2));
+}
+
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
   if (preflight) return preflight;
@@ -164,7 +171,107 @@ serve(async (req: Request) => {
       throw { code: 409, message: "No se pudieron listar turnos", category: "BUSINESS", details: shiftsError };
     }
 
-    const successPayload = { success: true, data: { items: shifts ?? [] }, error: null, request_id };
+    const shiftIds = [...new Set((shifts ?? []).map((s) => Number(s.id)).filter((id) => Number.isFinite(id)))];
+
+    const scheduledRes = shiftIds.length
+      ? await clientAdmin
+          .from("scheduled_shifts")
+          .select("started_shift_id, scheduled_start, scheduled_end")
+          .in("started_shift_id", shiftIds)
+      : { data: [], error: null };
+
+    if (scheduledRes.error) {
+      throw { code: 409, message: "No se pudieron cargar turnos programados", category: "BUSINESS", details: scheduledRes.error };
+    }
+
+    const scheduledByShiftId = new Map<number, { scheduled_start: string | null; scheduled_end: string | null }>();
+    for (const row of (scheduledRes.data ?? []) as Array<{ started_shift_id: number | null; scheduled_start: string | null; scheduled_end: string | null }>) {
+      if (row.started_shift_id == null) continue;
+      const key = Number(row.started_shift_id);
+      if (!Number.isFinite(key)) continue;
+      if (!scheduledByShiftId.has(key)) {
+        scheduledByShiftId.set(key, { scheduled_start: row.scheduled_start ?? null, scheduled_end: row.scheduled_end ?? null });
+      }
+    }
+
+    const fromKey = fromIso.slice(0, 10);
+    const toKey = toIso.slice(0, 10);
+    const includeEvidenceUrls = fromKey === toKey;
+
+    const evidenceUrlsByShift = new Map<number, { startUrls: string[]; endUrls: string[] }>();
+    if (includeEvidenceUrls && shiftIds.length > 0) {
+      const { data: photos, error: photosError } = await clientAdmin
+        .from("shift_photos")
+        .select("shift_id, type, storage_path, created_at")
+        .in("shift_id", shiftIds)
+        .in("type", ["inicio", "fin"])
+        .order("created_at", { ascending: true });
+
+      if (photosError) {
+        throw { code: 409, message: "No se pudieron cargar evidencias de turnos", category: "BUSINESS", details: photosError };
+      }
+
+      const paths: string[] = [];
+      const pathsByShift = new Map<number, { start: string[]; end: string[] }>();
+      for (const photo of (photos ?? []) as Array<{ shift_id: number; type: string; storage_path: string | null }>) {
+        if (!photo.storage_path) continue;
+        const shiftId = Number(photo.shift_id);
+        if (!Number.isFinite(shiftId)) continue;
+        const entry = pathsByShift.get(shiftId) ?? { start: [], end: [] };
+        if (photo.type === "inicio") {
+          entry.start.push(photo.storage_path);
+        } else if (photo.type === "fin") {
+          entry.end.push(photo.storage_path);
+        }
+        pathsByShift.set(shiftId, entry);
+        paths.push(photo.storage_path);
+      }
+
+      const uniquePaths = [...new Set(paths)];
+      const signedMap = new Map<string, string>();
+      if (uniquePaths.length > 0) {
+        const { data: signedUrls, error: signedError } = await clientAdmin.storage
+          .from("shift-evidence")
+          .createSignedUrls(uniquePaths, 60 * 60);
+
+        if (signedError) {
+          throw { code: 500, message: "No se pudieron firmar evidencias", category: "SYSTEM", details: signedError };
+        }
+
+        for (const item of (signedUrls ?? []) as Array<{ path: string; signedUrl?: string | null }>) {
+          if (item?.signedUrl) signedMap.set(item.path, item.signedUrl);
+        }
+      }
+
+      for (const [shiftId, entry] of pathsByShift.entries()) {
+        const startUrls = entry.start.map((p) => signedMap.get(p)).filter(Boolean) as string[];
+        const endUrls = entry.end.map((p) => signedMap.get(p)).filter(Boolean) as string[];
+        evidenceUrlsByShift.set(shiftId, { startUrls, endUrls });
+      }
+    }
+
+    const items = (shifts ?? []).map((s) => {
+      const scheduled = scheduledByShiftId.get(Number(s.id));
+      const scheduled_hours = diffHours(String(scheduled?.scheduled_start ?? null), String(scheduled?.scheduled_end ?? null));
+      const evidence = evidenceUrlsByShift.get(Number(s.id));
+      return {
+        ...s,
+        scheduled_start: scheduled?.scheduled_start ?? null,
+        scheduled_end: scheduled?.scheduled_end ?? null,
+        scheduled_hours,
+        start_evidence_urls: evidence?.startUrls ?? [],
+        end_evidence_urls: evidence?.endUrls ?? [],
+      };
+    });
+
+    const totalScheduledHours = items.reduce((acc, row) => acc + (row.scheduled_hours ?? 0), 0);
+
+    const successPayload = {
+      success: true,
+      data: { items, total_scheduled_hours: Number(totalScheduledHours.toFixed(2)) },
+      error: null,
+      request_id,
+    };
     await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
     return response(true, successPayload.data, null, request_id);
   } catch (err) {

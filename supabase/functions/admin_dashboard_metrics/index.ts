@@ -32,6 +32,13 @@ type ShiftRow = {
   state: string | null;
 };
 
+type ScheduledRow = {
+  id: number;
+  restaurant_id: number | null;
+  scheduled_start: string | null;
+  scheduled_end: string | null;
+};
+
 type TaskRow = {
   id: number;
   restaurant_id: number | null;
@@ -51,6 +58,13 @@ type SupplyRow = {
   id: number;
   unit_cost: number | null;
 };
+
+function diffHours(startIso: string | null, endIso: string | null) {
+  if (!startIso || !endIso) return null;
+  const ms = new Date(endIso).getTime() - new Date(startIso).getTime();
+  if (Number.isNaN(ms) || ms <= 0) return null;
+  return Number((ms / 3600000).toFixed(2));
+}
 
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
@@ -122,6 +136,18 @@ serve(async (req: Request) => {
       throw { code: 409, message: "No se pudieron cargar turnos", category: "BUSINESS", details: shiftsError };
     }
 
+    let scheduledQuery = clientAdmin
+      .from("scheduled_shifts")
+      .select("id, restaurant_id, scheduled_start, scheduled_end")
+      .gte("scheduled_start", fromIso)
+      .lte("scheduled_start", toIso);
+    if (payload.restaurant_id) scheduledQuery = scheduledQuery.eq("restaurant_id", payload.restaurant_id);
+    const { data: scheduledRaw, error: scheduledError } = await scheduledQuery;
+
+    if (scheduledError) {
+      throw { code: 409, message: "No se pudieron cargar turnos programados", category: "BUSINESS", details: scheduledError };
+    }
+
     let tasksQuery = clientAdmin
       .from("operational_tasks")
       .select("id, restaurant_id, status, updated_at")
@@ -159,6 +185,7 @@ serve(async (req: Request) => {
     }
 
     const shifts = (shiftsRaw ?? []) as ShiftRow[];
+    const scheduledShifts = (scheduledRaw ?? []) as ScheduledRow[];
     const tasks = (tasksRaw ?? []) as TaskRow[];
     const deliveries = (deliveriesRaw ?? []) as DeliveryRow[];
     const incidents = incidentsRaw ?? [];
@@ -182,6 +209,12 @@ serve(async (req: Request) => {
           hoursWorked += delta / 3600000;
         }
       }
+    }
+
+    let scheduledHoursTotal = 0;
+    for (const s of scheduledShifts) {
+      const hours = diffHours(s.scheduled_start ?? null, s.scheduled_end ?? null);
+      if (hours != null) scheduledHoursTotal += hours;
     }
 
     let totalSuppliesUnits = 0;
@@ -234,6 +267,7 @@ serve(async (req: Request) => {
       },
       shifts: {
         total: shiftsInRange.length,
+        scheduled_total: scheduledShifts.length,
         active: shiftsInRange.filter((s) => String(s.state) === "activo").length,
         approved: shiftsInRange.filter((s) => String(s.state) === "aprobado").length,
         rejected: shiftsInRange.filter((s) => String(s.state) === "rechazado").length,
@@ -242,6 +276,8 @@ serve(async (req: Request) => {
       productivity: {
         hours_worked_total: Number(hoursWorked.toFixed(2)),
         average_hours_per_shift: shiftsInRange.length > 0 ? Number((hoursWorked / shiftsInRange.length).toFixed(2)) : 0,
+        scheduled_hours_total: Number(scheduledHoursTotal.toFixed(2)),
+        average_scheduled_hours_per_shift: scheduledShifts.length > 0 ? Number((scheduledHoursTotal / scheduledShifts.length).toFixed(2)) : 0,
         operational_tasks_completed: tasksInRange.filter((t) => String(t.status) === "completed").length,
         operational_tasks_pending: tasksInRange.filter((t) => String(t.status) === "pending" || String(t.status) === "in_progress").length,
       },
