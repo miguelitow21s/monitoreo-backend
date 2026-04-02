@@ -118,7 +118,7 @@ serve(async (req) => {
       return replayIdempotentResponse(claim.stored, request_id);
     }
 
-    await rateLimiter({ user_id: user.id, ip, endpoint, limit: 20, window_seconds: 60 });
+    await rateLimiter({ user_id: user.id, ip, endpoint, limit: 120, window_seconds: 60 });
 
     if (payload.action === "request_upload") {
       const shift = await getOwnedShift(clientUser, user.id, payload.shift_id);
