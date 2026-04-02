@@ -198,11 +198,14 @@ serve(async (req: Request) => {
     const toKey = toIso.slice(0, 10);
     const includeEvidenceUrls = fromKey === toKey;
 
-    const evidenceUrlsByShift = new Map<number, { startUrls: string[]; endUrls: string[] }>();
+    const evidenceByShift = new Map<
+      number,
+      { startUrls: string[]; endUrls: string[]; startEvidences: Array<Record<string, unknown>>; endEvidences: Array<Record<string, unknown>> }
+    >();
     if (includeEvidenceUrls && shiftIds.length > 0) {
       const { data: photos, error: photosError } = await clientAdmin
         .from("shift_photos")
-        .select("shift_id, type, storage_path, created_at")
+        .select("shift_id, type, storage_path, captured_at, meta, created_at")
         .in("shift_id", shiftIds)
         .in("type", ["inicio", "fin"])
         .order("created_at", { ascending: true });
@@ -212,18 +215,25 @@ serve(async (req: Request) => {
       }
 
       const paths: string[] = [];
-      const pathsByShift = new Map<number, { start: string[]; end: string[] }>();
-      for (const photo of (photos ?? []) as Array<{ shift_id: number; type: string; storage_path: string | null }>) {
+      const photosByShift = new Map<number, Array<{ type: string; storage_path: string; captured_at: string | null; meta: Record<string, unknown> }>>();
+      for (const photo of (photos ?? []) as Array<{
+        shift_id: number;
+        type: string;
+        storage_path: string | null;
+        captured_at: string | null;
+        meta: Record<string, unknown> | null;
+      }>) {
         if (!photo.storage_path) continue;
         const shiftId = Number(photo.shift_id);
         if (!Number.isFinite(shiftId)) continue;
-        const entry = pathsByShift.get(shiftId) ?? { start: [], end: [] };
-        if (photo.type === "inicio") {
-          entry.start.push(photo.storage_path);
-        } else if (photo.type === "fin") {
-          entry.end.push(photo.storage_path);
-        }
-        pathsByShift.set(shiftId, entry);
+        const list = photosByShift.get(shiftId) ?? [];
+        list.push({
+          type: photo.type,
+          storage_path: photo.storage_path,
+          captured_at: photo.captured_at ?? null,
+          meta: (photo.meta && typeof photo.meta === "object") ? (photo.meta as Record<string, unknown>) : {},
+        });
+        photosByShift.set(shiftId, list);
         paths.push(photo.storage_path);
       }
 
@@ -243,17 +253,44 @@ serve(async (req: Request) => {
         }
       }
 
-      for (const [shiftId, entry] of pathsByShift.entries()) {
-        const startUrls = entry.start.map((p) => signedMap.get(p)).filter(Boolean) as string[];
-        const endUrls = entry.end.map((p) => signedMap.get(p)).filter(Boolean) as string[];
-        evidenceUrlsByShift.set(shiftId, { startUrls, endUrls });
+      for (const [shiftId, list] of photosByShift.entries()) {
+        const startUrls: string[] = [];
+        const endUrls: string[] = [];
+        const startEvidences: Array<Record<string, unknown>> = [];
+        const endEvidences: Array<Record<string, unknown>> = [];
+
+        for (const item of list) {
+          const url = signedMap.get(item.storage_path);
+          if (!url) continue;
+          const areaLabel = typeof item.meta.area_label === "string" ? item.meta.area_label : null;
+          const subareaLabel = typeof item.meta.subarea_label === "string" ? item.meta.subarea_label : null;
+          const photoLabel = typeof item.meta.photo_label === "string" ? item.meta.photo_label : null;
+
+          const payload = {
+            url,
+            captured_at: item.captured_at ?? null,
+            area_label: areaLabel,
+            subarea_label: subareaLabel,
+            photo_label: photoLabel,
+          };
+
+          if (item.type === "inicio") {
+            startUrls.push(url);
+            startEvidences.push(payload);
+          } else if (item.type === "fin") {
+            endUrls.push(url);
+            endEvidences.push(payload);
+          }
+        }
+
+        evidenceByShift.set(shiftId, { startUrls, endUrls, startEvidences, endEvidences });
       }
     }
 
     const items = (shifts ?? []).map((s) => {
       const scheduled = scheduledByShiftId.get(Number(s.id));
       const scheduled_hours = diffHours(String(scheduled?.scheduled_start ?? null), String(scheduled?.scheduled_end ?? null));
-      const evidence = evidenceUrlsByShift.get(Number(s.id));
+      const evidence = evidenceByShift.get(Number(s.id));
       return {
         ...s,
         scheduled_start: scheduled?.scheduled_start ?? null,
@@ -261,6 +298,8 @@ serve(async (req: Request) => {
         scheduled_hours,
         start_evidence_urls: evidence?.startUrls ?? [],
         end_evidence_urls: evidence?.endUrls ?? [],
+        start_evidences: evidence?.startEvidences ?? [],
+        end_evidences: evidence?.endEvidences ?? [],
       };
     });
 

@@ -197,6 +197,32 @@ serve(async (req: Request) => {
         ])
       );
 
+      let active_shift = activeShiftRes.data ?? null;
+      if (active_shift) {
+        const { data: scheduledActive, error: scheduledActiveError } = await clientAdmin
+          .from("scheduled_shifts")
+          .select("scheduled_start, scheduled_end")
+          .eq("started_shift_id", active_shift.id)
+          .order("scheduled_start", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (scheduledActiveError) {
+          throw { code: 409, message: "No se pudo consultar turno programado activo", category: "BUSINESS", details: scheduledActiveError };
+        }
+
+        const restaurant = restaurantsById.get(Number(active_shift.restaurant_id)) ?? null;
+        const scheduled_hours = diffHours(String(scheduledActive?.scheduled_start ?? null), String(scheduledActive?.scheduled_end ?? null));
+        active_shift = {
+          ...active_shift,
+          restaurant,
+          restaurant_name: restaurant?.name ?? null,
+          scheduled_start: scheduledActive?.scheduled_start ?? null,
+          scheduled_end: scheduledActive?.scheduled_end ?? null,
+          scheduled_hours,
+        };
+      }
+
       const assigned_restaurants = (linksRes.data ?? []).map((row) => ({
         restaurant_id: row.restaurant_id,
         assigned_at: row.created_at,
@@ -216,8 +242,8 @@ serve(async (req: Request) => {
       const workedHoursLast30d = (shiftsRes.data ?? []).reduce((acc, row) => acc + (diffHours(String(row.start_time ?? null), String(row.end_time ?? null)) ?? 0), 0);
 
       const successData = {
-        active_shift: activeShiftRes.data ?? null,
-        can_start_shift: !activeShiftRes.data,
+        active_shift,
+        can_start_shift: !active_shift,
         assigned_restaurants,
         scheduled_shifts,
         pending_tasks_count: (tasksRes.data ?? []).length,

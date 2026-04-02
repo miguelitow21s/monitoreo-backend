@@ -462,7 +462,7 @@ serve(async (req: Request) => {
       (shifts ?? []).length
         ? clientAdmin
             .from("shift_photos")
-            .select("shift_id, type, storage_path, created_at")
+            .select("shift_id, type, storage_path, captured_at, meta, created_at")
             .in("shift_id", (shifts ?? []).map((s) => s.id))
             .in("type", ["inicio", "fin"])
             .order("created_at", { ascending: true })
@@ -502,13 +502,40 @@ serve(async (req: Request) => {
 
     const startEvidence = new Map<number, string>();
     const endEvidence = new Map<number, string>();
-    for (const photo of ((photosRes as { data?: Array<{ shift_id: number; type: string; storage_path: string | null }> }).data ?? [])) {
+    const evidenceByShift = new Map<
+      number,
+      { start: Array<Record<string, unknown>>; end: Array<Record<string, unknown>> }
+    >();
+
+    for (const photo of ((photosRes as {
+      data?: Array<{ shift_id: number; type: string; storage_path: string | null; captured_at: string | null; meta: Record<string, unknown> | null }>;
+    }).data ?? [])) {
+      if (!photo.storage_path) continue;
+
       if (photo.type === "inicio" && !startEvidence.has(photo.shift_id)) {
-        if (photo.storage_path) startEvidence.set(photo.shift_id, photo.storage_path);
+        startEvidence.set(photo.shift_id, photo.storage_path);
       }
       if (photo.type === "fin" && !endEvidence.has(photo.shift_id)) {
-        if (photo.storage_path) endEvidence.set(photo.shift_id, photo.storage_path);
+        endEvidence.set(photo.shift_id, photo.storage_path);
       }
+
+      const meta = (photo.meta && typeof photo.meta === "object") ? (photo.meta as Record<string, unknown>) : {};
+      const areaLabel = typeof meta.area_label === "string" ? meta.area_label : null;
+      const subareaLabel = typeof meta.subarea_label === "string" ? meta.subarea_label : null;
+      const photoLabel = typeof meta.photo_label === "string" ? meta.photo_label : null;
+
+      const entry = evidenceByShift.get(photo.shift_id) ?? { start: [], end: [] };
+      const payload = {
+        path: photo.storage_path,
+        captured_at: photo.captured_at ?? null,
+        area_label: areaLabel,
+        subarea_label: subareaLabel,
+        photo_label: photoLabel,
+      };
+
+      if (photo.type === "inicio") entry.start.push(payload);
+      if (photo.type === "fin") entry.end.push(payload);
+      evidenceByShift.set(photo.shift_id, entry);
     }
 
     const scheduledByShiftId = new Map<number, { scheduled_start: string | null; scheduled_end: string | null }>();
@@ -558,6 +585,8 @@ serve(async (req: Request) => {
             : null,
         start_evidence_path: startEvidence.get(Number(s.id)) ?? null,
         end_evidence_path: endEvidence.get(Number(s.id)) ?? null,
+        start_evidences: evidenceByShift.get(Number(s.id))?.start ?? [],
+        end_evidences: evidenceByShift.get(Number(s.id))?.end ?? [],
         incidents_count: incidentsCount.get(Number(s.id)) ?? 0,
       };
     });

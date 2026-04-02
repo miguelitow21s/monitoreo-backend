@@ -25,6 +25,19 @@ const cleaningAreaSchema = z
   })
   .strict();
 
+const cleaningAreaGroupSchema = z
+  .object({
+    area: z.string().trim().min(1).max(120),
+    subareas: z.array(z.string().trim().min(1).max(120)).max(200).default([]),
+  })
+  .strict();
+
+const cleaningAreaItemSchema = z.union([
+  cleaningAreaSchema,
+  cleaningAreaGroupSchema,
+  z.string().trim().min(1).max(120),
+]);
+
 const createAction = z.object({
   action: z.literal("create"),
   name: z.string().trim().min(2).max(160),
@@ -38,7 +51,7 @@ const createAction = z.object({
   country: z.string().trim().max(120).optional().nullable(),
   place_id: z.string().trim().max(250).optional().nullable(),
   is_active: z.boolean().optional(),
-  cleaning_areas: z.array(cleaningAreaSchema).max(200).optional(),
+  cleaning_areas: z.array(cleaningAreaItemSchema).max(200).optional(),
 });
 
 const updateAction = z.object({
@@ -55,7 +68,7 @@ const updateAction = z.object({
   country: z.string().trim().max(120).optional().nullable(),
   place_id: z.string().trim().max(250).optional().nullable(),
   is_active: z.boolean().optional(),
-  cleaning_areas: z.array(cleaningAreaSchema).max(200).optional().nullable(),
+  cleaning_areas: z.array(cleaningAreaItemSchema).max(200).optional().nullable(),
 });
 
 const activateAction = z.object({
