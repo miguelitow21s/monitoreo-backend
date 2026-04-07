@@ -239,8 +239,9 @@ serve(async (req: Request) => {
         if (error || !data) {
           const errorMessage = String((error as { message?: string })?.message ?? "");
           const isInvalidScheduledShift = errorMessage.includes("Turno invalido para crear tarea");
+          const isAuthError = errorMessage.includes("No autenticado");
 
-          if (isInvalidScheduledShift) {
+          if (isInvalidScheduledShift || isAuthError) {
             const { data: membership, error: membershipError } = await clientAdmin
               .from("restaurant_employees")
               .select("id")
