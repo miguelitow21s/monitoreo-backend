@@ -196,6 +196,7 @@ serve(async (req: Request) => {
         failed: number;
         created_ids: number[];
         errors: unknown;
+        created_items?: unknown;
       };
 
       await safeWriteAudit({
@@ -217,6 +218,7 @@ serve(async (req: Request) => {
           failed: summary.failed,
           created_ids: summary.created_ids ?? [],
           errors: summary.errors ?? [],
+          created_items: summary.created_items ?? [],
         },
         error: null,
         request_id,

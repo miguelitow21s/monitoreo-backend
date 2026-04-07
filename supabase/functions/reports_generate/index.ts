@@ -38,6 +38,7 @@ const allowedColumns = [
   "scheduled_start",
   "scheduled_end",
   "scheduled_hours",
+  "early_end_reason",
   "incidents_count",
   "state",
   "status",
@@ -76,6 +77,7 @@ const columnLabel: Record<string, string> = {
   scheduled_start: "Inicio programado",
   scheduled_end: "Fin programado",
   scheduled_hours: "Horas programadas",
+  early_end_reason: "Motivo salida anticipada",
   incidents_count: "Novedades",
   state: "Estado",
   status: "Status",
@@ -99,6 +101,7 @@ const columnAliases: Record<string, string> = {
   inicio_programado: "scheduled_start",
   fin_programado: "scheduled_end",
   horas_programadas: "scheduled_hours",
+  motivo_salida_anticipada: "early_end_reason",
   novedades: "incidents_count",
   evidencia_inicial: "start_evidence_path",
   evidencia_final: "end_evidence_path",
@@ -198,6 +201,8 @@ function formatValue(row: Record<string, unknown>, column: string, mode: "csv" |
     case "hours_worked":
     case "scheduled_hours":
       return formatDuration(row[column] as number | null);
+    case "early_end_reason":
+      return row[column] ?? "";
     case "state":
     case "status":
       return formatState(row[column] ? String(row[column]) : null);
@@ -437,7 +442,7 @@ serve(async (req: Request) => {
 
     const { data: shifts, error: shiftsError } = await clientUser
       .from("shifts")
-      .select("id, employee_id, restaurant_id, start_time, end_time, state, status, approved_by, rejected_by")
+      .select("id, employee_id, restaurant_id, start_time, end_time, state, status, approved_by, rejected_by, early_end_reason")
       .eq("restaurant_id", restaurant_id)
       .gte("start_time", fromIso)
       .lte("start_time", toIso)
@@ -580,6 +585,7 @@ serve(async (req: Request) => {
         state: s.state,
         status: s.status,
         ended_early,
+        early_end_reason: (s as { early_end_reason?: string | null }).early_end_reason ?? null,
         approved_by: s.approved_by ?? null,
         approved_by_name: s.approved_by ? userNameMap.get(String(s.approved_by)) ?? null : null,
         rejected_by: s.rejected_by ?? null,

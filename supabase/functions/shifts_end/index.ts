@@ -189,6 +189,7 @@ serve(async (req) => {
         end_lat: lat,
         end_lng: lng,
         state: "finalizado",
+        early_end_reason: early_end_reason ?? null,
         updated_at: new Date().toISOString(),
       })
       .eq("id", shift_id)

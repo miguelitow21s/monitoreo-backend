@@ -130,7 +130,7 @@ serve(async (req: Request) => {
 
     let query = clientAdmin
       .from("shifts")
-      .select("id, employee_id, restaurant_id, start_time, end_time, state, status, approved_by, rejected_by")
+      .select("id, employee_id, restaurant_id, start_time, end_time, state, status, approved_by, rejected_by, early_end_reason")
       .gte("start_time", fromIso)
       .lte("start_time", toIso)
       .order("start_time", { ascending: false })
@@ -304,6 +304,7 @@ serve(async (req: Request) => {
         hours_worked,
         worked_hours: hours_worked,
         ended_early,
+        early_end_reason: (s as { early_end_reason?: string | null }).early_end_reason ?? null,
         start_evidence_urls: evidence?.startUrls ?? [],
         end_evidence_urls: evidence?.endUrls ?? [],
         start_evidences: evidence?.startEvidences ?? [],
