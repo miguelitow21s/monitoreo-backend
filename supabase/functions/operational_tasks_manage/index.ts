@@ -238,8 +238,15 @@ serve(async (req: Request) => {
 
         if (error || !data) {
           const errorMessage = String((error as { message?: string })?.message ?? "");
-          const isInvalidScheduledShift = errorMessage.includes("Turno invalido para crear tarea");
-          const isAuthError = errorMessage.includes("No autenticado");
+          const rawDetails = (error as { details?: unknown })?.details;
+          const detailMessage =
+            typeof rawDetails === "string"
+              ? rawDetails
+              : typeof (rawDetails as { message?: string } | null)?.message === "string"
+                ? String((rawDetails as { message?: string }).message)
+                : "";
+          const isInvalidScheduledShift = errorMessage.includes("Turno invalido para crear tarea") || detailMessage.includes("Turno invalido para crear tarea");
+          const isAuthError = errorMessage.includes("No autenticado") || detailMessage.includes("No autenticado");
 
           if (isInvalidScheduledShift || isAuthError) {
             const { data: membership, error: membershipError } = await clientAdmin
