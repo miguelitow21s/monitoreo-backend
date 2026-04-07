@@ -38,6 +38,7 @@ const allowedColumns = [
   "scheduled_start",
   "scheduled_end",
   "scheduled_hours",
+  "ended_early",
   "early_end_reason",
   "incidents_count",
   "state",
@@ -48,6 +49,10 @@ const allowedColumns = [
   "rejected_by_name",
   "start_evidence_path",
   "end_evidence_path",
+  "start_evidence_urls",
+  "end_evidence_urls",
+  "start_evidence_count",
+  "end_evidence_count",
 ] as const;
 
 const defaultColumns = [
@@ -57,11 +62,16 @@ const defaultColumns = [
   "supervisor_name",
   "start_time",
   "end_time",
+  "scheduled_start",
+  "scheduled_end",
+  "scheduled_hours",
   "hours_worked",
+  "ended_early",
   "state",
+  "early_end_reason",
   "incidents_count",
-  "start_evidence_path",
-  "end_evidence_path",
+  "start_evidence_count",
+  "end_evidence_count",
 ] as const;
 
 const columnLabel: Record<string, string> = {
@@ -77,6 +87,7 @@ const columnLabel: Record<string, string> = {
   scheduled_start: "Inicio programado",
   scheduled_end: "Fin programado",
   scheduled_hours: "Horas programadas",
+  ended_early: "Salida anticipada",
   early_end_reason: "Motivo salida anticipada",
   incidents_count: "Novedades",
   state: "Estado",
@@ -87,6 +98,10 @@ const columnLabel: Record<string, string> = {
   rejected_by_name: "Rechazado por",
   start_evidence_path: "Evidencia inicial",
   end_evidence_path: "Evidencia final",
+  start_evidence_urls: "URLs evidencia inicio",
+  end_evidence_urls: "URLs evidencia fin",
+  start_evidence_count: "Fotos inicio",
+  end_evidence_count: "Fotos fin",
 };
 
 const columnAliases: Record<string, string> = {
@@ -101,10 +116,15 @@ const columnAliases: Record<string, string> = {
   inicio_programado: "scheduled_start",
   fin_programado: "scheduled_end",
   horas_programadas: "scheduled_hours",
+  salida_anticipada: "ended_early",
   motivo_salida_anticipada: "early_end_reason",
   novedades: "incidents_count",
   evidencia_inicial: "start_evidence_path",
   evidencia_final: "end_evidence_path",
+  urls_evidencia_inicial: "start_evidence_urls",
+  urls_evidencia_final: "end_evidence_urls",
+  fotos_inicio: "start_evidence_count",
+  fotos_fin: "end_evidence_count",
 };
 
 function csvEscape(value: unknown) {
@@ -201,6 +221,8 @@ function formatValue(row: Record<string, unknown>, column: string, mode: "csv" |
     case "hours_worked":
     case "scheduled_hours":
       return formatDuration(row[column] as number | null);
+    case "ended_early":
+      return row[column] ? "SI" : "NO";
     case "early_end_reason":
       return row[column] ?? "";
     case "state":
@@ -222,6 +244,21 @@ function formatValue(row: Record<string, unknown>, column: string, mode: "csv" |
       return formatEvidence(row.start_evidence_path as string | null, mode);
     case "end_evidence_path":
       return formatEvidence(row.end_evidence_path as string | null, mode);
+    case "start_evidence_urls": {
+      const urls = row.start_evidence_urls as string[] | null | undefined;
+      if (!urls || urls.length === 0) return "";
+      const joined = urls.join(" | ");
+      return mode === "pdf" ? formatCell(joined, 60) : joined;
+    }
+    case "end_evidence_urls": {
+      const urls = row.end_evidence_urls as string[] | null | undefined;
+      if (!urls || urls.length === 0) return "";
+      const joined = urls.join(" | ");
+      return mode === "pdf" ? formatCell(joined, 60) : joined;
+    }
+    case "start_evidence_count":
+    case "end_evidence_count":
+      return row[column] == null ? "0" : String(row[column]);
     default:
       return row[column] ?? "";
   }
@@ -238,6 +275,7 @@ function buildXlsxWorkbook(
     generatedAt: string;
     totalShifts: number;
     totalHours: number;
+    totalScheduledHours: number;
   }
 ) {
   const dataRows = rows.map((r) => columns.map((col) => formatValue(r, col, "csv")));
@@ -252,7 +290,9 @@ function buildXlsxWorkbook(
     headerLabels,
     ...dataRows,
     [],
-    [`Totales: turnos ${meta.totalShifts}, horas ${formatDuration(meta.totalHours)}`],
+    [
+      `Totales: turnos ${meta.totalShifts}, horas trabajadas ${formatDuration(meta.totalHours)}, horas programadas ${formatDuration(meta.totalScheduledHours)}`,
+    ],
   ];
 
   const worksheet = XLSX.utils.aoa_to_sheet(sheetData);
@@ -509,12 +549,31 @@ serve(async (req: Request) => {
     const endEvidence = new Map<number, string>();
     const evidenceByShift = new Map<
       number,
-      { start: Array<Record<string, unknown>>; end: Array<Record<string, unknown>> }
+      { start: Array<Record<string, unknown>>; end: Array<Record<string, unknown>>; startUrls: string[]; endUrls: string[] }
     >();
+    const includeEvidenceUrls = period_start === period_end;
+    const signedMap = new Map<string, string>();
 
-    for (const photo of ((photosRes as {
+    const photosList = (photosRes as {
       data?: Array<{ shift_id: number; type: string; storage_path: string | null; captured_at: string | null; meta: Record<string, unknown> | null }>;
-    }).data ?? [])) {
+    }).data ?? [];
+
+    if (includeEvidenceUrls && photosList.length > 0) {
+      const uniquePaths = [...new Set(photosList.map((p) => p.storage_path).filter((p): p is string => !!p))];
+      if (uniquePaths.length > 0) {
+        const { data: signedUrls, error: signedError } = await clientAdmin.storage
+          .from("shift-evidence")
+          .createSignedUrls(uniquePaths, 60 * 60);
+        if (signedError) {
+          throw { code: 500, message: "No se pudieron firmar evidencias", category: "SYSTEM", details: signedError };
+        }
+        for (const item of (signedUrls ?? []) as Array<{ path: string; signedUrl?: string | null }>) {
+          if (item?.signedUrl) signedMap.set(item.path, item.signedUrl);
+        }
+      }
+    }
+
+    for (const photo of photosList) {
       if (!photo.storage_path) continue;
 
       if (photo.type === "inicio" && !startEvidence.has(photo.shift_id)) {
@@ -529,7 +588,7 @@ serve(async (req: Request) => {
       const subareaLabel = typeof meta.subarea_label === "string" ? meta.subarea_label : null;
       const photoLabel = typeof meta.photo_label === "string" ? meta.photo_label : null;
 
-      const entry = evidenceByShift.get(photo.shift_id) ?? { start: [], end: [] };
+      const entry = evidenceByShift.get(photo.shift_id) ?? { start: [], end: [], startUrls: [], endUrls: [] };
       const payload = {
         path: photo.storage_path,
         captured_at: photo.captured_at ?? null,
@@ -538,8 +597,16 @@ serve(async (req: Request) => {
         photo_label: photoLabel,
       };
 
-      if (photo.type === "inicio") entry.start.push(payload);
-      if (photo.type === "fin") entry.end.push(payload);
+      if (photo.type === "inicio") {
+        entry.start.push(payload);
+        const url = signedMap.get(photo.storage_path);
+        if (url) entry.startUrls.push(url);
+      }
+      if (photo.type === "fin") {
+        entry.end.push(payload);
+        const url = signedMap.get(photo.storage_path);
+        if (url) entry.endUrls.push(url);
+      }
       evidenceByShift.set(photo.shift_id, entry);
     }
 
@@ -569,6 +636,9 @@ serve(async (req: Request) => {
         !!scheduled?.scheduled_end &&
         !!s.end_time &&
         new Date(String(s.end_time)).getTime() < new Date(String(scheduled.scheduled_end)).getTime();
+      const evidenceEntry = evidenceByShift.get(Number(s.id));
+      const startUrls = evidenceEntry?.startUrls ?? [];
+      const endUrls = evidenceEntry?.endUrls ?? [];
       return {
         shift_id: s.id,
         employee_id: s.employee_id,
@@ -597,8 +667,12 @@ serve(async (req: Request) => {
             : null,
         start_evidence_path: startEvidence.get(Number(s.id)) ?? null,
         end_evidence_path: endEvidence.get(Number(s.id)) ?? null,
-        start_evidences: evidenceByShift.get(Number(s.id))?.start ?? [],
-        end_evidences: evidenceByShift.get(Number(s.id))?.end ?? [],
+        start_evidences: evidenceEntry?.start ?? [],
+        end_evidences: evidenceEntry?.end ?? [],
+        start_evidence_urls: startUrls,
+        end_evidence_urls: endUrls,
+        start_evidence_count: startUrls.length,
+        end_evidence_count: endUrls.length,
         incidents_count: incidentsCount.get(Number(s.id)) ?? 0,
       };
     });
@@ -677,7 +751,8 @@ serve(async (req: Request) => {
       `Periodo: ${period_start} a ${period_end}`,
       `Generado: ${formatDateTime(generatedAt)}`,
       `Total turnos: ${rows.length}`,
-      `Horas acumuladas: ${formatDuration(totalHours)}`,
+      `Horas trabajadas: ${formatDuration(totalHours)}`,
+      `Horas programadas: ${formatDuration(totalScheduledHours)}`,
     ];
 
     const maxLinesPerPage = 60;
@@ -752,6 +827,7 @@ serve(async (req: Request) => {
         generatedAt,
         totalShifts: rows.length,
         totalHours,
+        totalScheduledHours,
       });
       uploadOperations.push(
         clientAdmin.storage.from("reports").upload(
