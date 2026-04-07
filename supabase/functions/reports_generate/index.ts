@@ -205,13 +205,13 @@ function shortenEvidencePath(path: string, maxLen = 40) {
   return `${tail.slice(0, Math.max(0, maxLen - 3))}...`;
 }
 
-function formatEvidence(path: string | null, mode: "csv" | "pdf") {
+function formatEvidence(path: string | null, mode: "csv" | "pdf" | "xlsx") {
   if (!path) return "NO";
   if (mode === "pdf") return "SI";
   return `SI (${shortenEvidencePath(path, 48)})`;
 }
 
-function formatValue(row: Record<string, unknown>, column: string, mode: "csv" | "pdf") {
+function formatValue(row: Record<string, unknown>, column: string, mode: "csv" | "pdf" | "xlsx") {
   switch (column) {
     case "start_time":
     case "end_time":
@@ -248,13 +248,17 @@ function formatValue(row: Record<string, unknown>, column: string, mode: "csv" |
       const urls = row.start_evidence_urls as string[] | null | undefined;
       if (!urls || urls.length === 0) return "";
       const joined = urls.join(" | ");
-      return mode === "pdf" ? formatCell(joined, 60) : joined;
+      if (mode === "pdf") return formatCell(joined, 60);
+      if (mode === "xlsx") return formatCell(joined, 200);
+      return joined;
     }
     case "end_evidence_urls": {
       const urls = row.end_evidence_urls as string[] | null | undefined;
       if (!urls || urls.length === 0) return "";
       const joined = urls.join(" | ");
-      return mode === "pdf" ? formatCell(joined, 60) : joined;
+      if (mode === "pdf") return formatCell(joined, 60);
+      if (mode === "xlsx") return formatCell(joined, 200);
+      return joined;
     }
     case "start_evidence_count":
     case "end_evidence_count":
@@ -278,7 +282,7 @@ function buildXlsxWorkbook(
     totalScheduledHours: number;
   }
 ) {
-  const dataRows = rows.map((r) => columns.map((col) => formatValue(r, col, "csv")));
+  const dataRows = rows.map((r) => columns.map((col) => formatValue(r, col, "xlsx")));
   const title = `Reporte de turnos`;
   const headerOffset = 5;
   const sheetData: Array<Array<string | number>> = [
@@ -320,7 +324,7 @@ function buildXlsxWorkbook(
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, "Reporte");
-  return XLSX.write(workbook, { type: "array", bookType: "xlsx" });
+  return XLSX.write(workbook, { type: "array", bookType: "xlsx", compression: true });
 }
 function buildSimplePdf(lines: string[]): Uint8Array {
   const escaped = lines.map((line) => line.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)").replaceAll("\r", " ").replaceAll("\n", " "));
@@ -353,11 +357,23 @@ function buildSimplePdf(lines: string[]): Uint8Array {
   return new TextEncoder().encode(body);
 }
 
-function buildPagedPdf(pages: string[][]): Uint8Array {
-  const fontSize = 10;
-  const lineHeight = 12;
-  const startX = 40;
-  const startY = 800;
+function buildPagedPdf(
+  pages: string[][],
+  options?: {
+    pageWidth?: number;
+    pageHeight?: number;
+    fontSize?: number;
+    lineHeight?: number;
+    startX?: number;
+    startY?: number;
+  }
+): Uint8Array {
+  const pageWidth = options?.pageWidth ?? 842;
+  const pageHeight = options?.pageHeight ?? 595;
+  const fontSize = options?.fontSize ?? 8;
+  const lineHeight = options?.lineHeight ?? 10;
+  const startX = options?.startX ?? 30;
+  const startY = options?.startY ?? pageHeight - 40;
 
   const fontObjId = 3 + pages.length * 2;
   const objects: string[] = [];
@@ -377,7 +393,7 @@ function buildPagedPdf(pages: string[][]): Uint8Array {
     const stream = `BT\n/F1 ${fontSize} Tf\n${startX} ${startY} Td\n${lineHeight} TL\n${textCommands}\nET`;
 
     objects.push(
-      `${pageObjId} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 ${fontObjId} 0 R >> >> /Contents ${contentObjId} 0 R >> endobj\n`
+      `${pageObjId} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 ${fontObjId} 0 R >> >> /Contents ${contentObjId} 0 R >> endobj\n`
     );
     objects.push(`${contentObjId} 0 obj << /Length ${stream.length} >> stream\n${stream}\nendstream endobj\n`);
   });
@@ -698,30 +714,43 @@ serve(async (req: Request) => {
 
     const baseWidths = selectedColumns.map((col) => {
       const widthMap: Record<string, number> = {
-        restaurant_name: 22,
-        employee_name: 18,
-        start_time: 16,
-        end_time: 16,
-        hours_worked: 8,
-        incidents_count: 8,
-        state: 10,
-        status: 10,
-        start_evidence_path: 12,
-        end_evidence_path: 12,
-        employee_id: 12,
-        restaurant_id: 10,
+        restaurant_name: 24,
+        employee_name: 20,
+        supervisor_name: 20,
+        start_time: 17,
+        end_time: 17,
+        scheduled_start: 17,
+        scheduled_end: 17,
+        scheduled_hours: 10,
+        hours_worked: 10,
+        incidents_count: 9,
+        state: 12,
+        status: 12,
+        early_end_reason: 18,
+        start_evidence_path: 14,
+        end_evidence_path: 14,
+        start_evidence_count: 10,
+        end_evidence_count: 10,
+        employee_id: 14,
+        restaurant_id: 12,
         shift_id: 10,
-        approved_by: 12,
-        approved_by_name: 16,
-        rejected_by: 12,
-        rejected_by_name: 16,
-        supervisor_name: 18,
+        approved_by: 14,
+        approved_by_name: 18,
+        rejected_by: 14,
+        rejected_by_name: 18,
       };
       return widthMap[col] ?? Math.max(10, (columnLabel[col] ?? col).length);
     });
 
     const minWidths = selectedColumns.map(() => 6);
-    const maxLineWidth = 110;
+    const pdfFontSize = 8;
+    const pdfLineHeight = 10;
+    const pdfPageWidth = 842;
+    const pdfPageHeight = 595;
+    const pdfStartX = 30;
+    const approxCharWidth = pdfFontSize * 0.6;
+    const availableWidth = pdfPageWidth - pdfStartX - 30;
+    const maxLineWidth = Math.max(100, Math.min(170, Math.floor(availableWidth / approxCharWidth)));
     const widths = [...baseWidths];
     const totalWidth = () => widths.reduce((acc, w) => acc + w, 0) + Math.max(0, widths.length - 1) * 3;
     while (totalWidth() > maxLineWidth) {
@@ -755,7 +784,7 @@ serve(async (req: Request) => {
       `Horas programadas: ${formatDuration(totalScheduledHours)}`,
     ];
 
-    const maxLinesPerPage = 60;
+    const maxLinesPerPage = Math.max(25, Math.floor((pdfPageHeight - 60) / pdfLineHeight));
     const pages: string[][] = [];
     let current: string[] = [];
     const pushPage = () => {
@@ -845,10 +874,26 @@ serve(async (req: Request) => {
 
     if (includePdf) {
       uploadOperations.push(
-        clientAdmin.storage.from("reports").upload(pdfPath, new Blob([buildPagedPdf(pages)], { type: "application/pdf" }), {
+        clientAdmin.storage.from("reports").upload(
+          pdfPath,
+          new Blob(
+            [
+              buildPagedPdf(pages, {
+                pageWidth: pdfPageWidth,
+                pageHeight: pdfPageHeight,
+                fontSize: pdfFontSize,
+                lineHeight: pdfLineHeight,
+                startX: pdfStartX,
+                startY: pdfPageHeight - 40,
+              }),
+            ],
+            { type: "application/pdf" }
+          ),
+          {
           contentType: "application/pdf",
           upsert: true,
-        })
+          }
+        )
       );
     }
 
