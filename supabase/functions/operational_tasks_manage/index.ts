@@ -237,6 +237,68 @@ serve(async (req: Request) => {
         });
 
         if (error || !data) {
+          const errorMessage = String((error as { message?: string })?.message ?? "");
+          const isInvalidScheduledShift = errorMessage.includes("Turno invalido para crear tarea");
+
+          if (isInvalidScheduledShift) {
+            const { data: membership, error: membershipError } = await clientAdmin
+              .from("restaurant_employees")
+              .select("id")
+              .eq("restaurant_id", scheduledShift.restaurant_id as number)
+              .eq("user_id", payload.assigned_employee_id)
+              .maybeSingle();
+
+            if (membershipError || !membership) {
+              throw {
+                code: 409,
+                message: "Empleado asignado no pertenece al restaurante",
+                category: "BUSINESS",
+                details: membershipError ?? { message: "Empleado sin relacion restaurante" },
+              };
+            }
+
+            const { data: inserted, error: insertError } = await clientAdmin
+              .from("operational_tasks")
+              .insert({
+                shift_id: null,
+                scheduled_shift_id: payload.scheduled_shift_id,
+                restaurant_id: scheduledShift.restaurant_id,
+                assigned_employee_id: payload.assigned_employee_id,
+                created_by: user.id,
+                title: payload.title,
+                description: payload.description,
+                priority: payload.priority,
+                status: "pending",
+                due_at: payload.due_at ?? null,
+                requires_evidence: payload.requires_evidence ?? true,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              })
+              .select("id")
+              .single();
+
+            if (insertError || !inserted) {
+              throw { code: 409, message: "No se pudo crear tarea operativa", category: "BUSINESS", details: insertError };
+            }
+
+            await safeWriteAudit({
+              user_id: user.id,
+              action: "OPERATIONAL_TASK_CREATE",
+              context: {
+                task_id: inserted.id,
+                scheduled_shift_id: payload.scheduled_shift_id,
+                assigned_employee_id: payload.assigned_employee_id,
+                priority: payload.priority,
+                fallback: "direct_insert",
+              },
+              request_id,
+            });
+
+            const successPayload = { success: true, data: { task_id: inserted.id }, error: null, request_id };
+            await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+            return response(true, successPayload.data, null, request_id);
+          }
+
           throw { code: 409, message: "No se pudo crear tarea operativa", category: "BUSINESS", details: error };
         }
 
