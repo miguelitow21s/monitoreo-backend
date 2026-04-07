@@ -167,6 +167,12 @@ serve(async (req) => {
       .update({ status: "started", started_shift_id: data.id, updated_at: new Date().toISOString() })
       .eq("id", scheduledShift.id);
 
+    const { error: taskLinkError } = await clientAdmin
+      .from("operational_tasks")
+      .update({ shift_id: data.id, updated_at: new Date().toISOString() })
+      .eq("scheduled_shift_id", scheduledShift.id)
+      .is("shift_id", null);
+
     const { error: healthError } = await clientUser
       .from("shift_health_forms")
       .upsert(
@@ -196,6 +202,7 @@ serve(async (req) => {
         fit_for_work,
         scheduled_shift_id: scheduledShift.id,
         schedule_linked: !scheduleUpdateError,
+        tasks_linked: !taskLinkError,
       },
       request_id,
     });

@@ -21,7 +21,8 @@ const evidenceBucket = "shift-evidence";
 
 const createAction = z.object({
   action: z.literal("create"),
-  shift_id: z.number().int().positive(),
+  shift_id: z.number().int().positive().optional(),
+  scheduled_shift_id: z.number().int().positive().optional(),
   assigned_employee_id: z.string().uuid(),
   title: z.string().trim().min(3).max(200),
   description: z.string().trim().min(5).max(5000),
@@ -188,6 +189,73 @@ serve(async (req: Request) => {
 
     if (payload.action === "create") {
       roleGuard(user, ["supervisora", "super_admin"]);
+
+      const hasShiftId = typeof payload.shift_id === "number";
+      const hasScheduledShiftId = typeof payload.scheduled_shift_id === "number";
+
+      if (hasShiftId === hasScheduledShiftId) {
+        throw {
+          code: 422,
+          message: "Debe enviar shift_id o scheduled_shift_id (solo uno)",
+          category: "VALIDATION",
+        };
+      }
+
+      await ensureEmployeeUser(payload.assigned_employee_id);
+
+      if (hasScheduledShiftId) {
+        const { data: scheduledShift, error: scheduledShiftError } = await clientUser
+          .from("scheduled_shifts")
+          .select("id, restaurant_id, employee_id, status")
+          .eq("id", payload.scheduled_shift_id)
+          .single();
+
+        if (scheduledShiftError || !scheduledShift) {
+          throw { code: 404, message: "Turno programado no encontrado", category: "BUSINESS", details: scheduledShiftError };
+        }
+
+        if (scheduledShift.status !== "scheduled") {
+          throw { code: 409, message: "Solo se pueden asignar tareas a turnos programados", category: "BUSINESS" };
+        }
+
+        if (String(scheduledShift.employee_id) !== payload.assigned_employee_id) {
+          throw { code: 422, message: "Empleado no coincide con el turno programado", category: "VALIDATION" };
+        }
+
+        if (user.role === "supervisora") {
+          await ensureSupervisorRestaurantAccess(user.id, scheduledShift.restaurant_id as number);
+        }
+
+        const { data, error } = await clientUser.rpc("create_operational_task_for_schedule", {
+          p_scheduled_shift_id: payload.scheduled_shift_id,
+          p_assigned_employee_id: payload.assigned_employee_id,
+          p_title: payload.title,
+          p_description: payload.description,
+          p_priority: payload.priority,
+          p_due_at: payload.due_at ?? null,
+          p_requires_evidence: payload.requires_evidence ?? true,
+        });
+
+        if (error || !data) {
+          throw { code: 409, message: "No se pudo crear tarea operativa", category: "BUSINESS", details: error };
+        }
+
+        await safeWriteAudit({
+          user_id: user.id,
+          action: "OPERATIONAL_TASK_CREATE",
+          context: {
+            task_id: data,
+            scheduled_shift_id: payload.scheduled_shift_id,
+            assigned_employee_id: payload.assigned_employee_id,
+            priority: payload.priority,
+          },
+          request_id,
+        });
+
+        const successPayload = { success: true, data: { task_id: data }, error: null, request_id };
+        await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+        return response(true, successPayload.data, null, request_id);
+      }
 
       if (user.role === "supervisora") {
         const { data: shift, error: shiftError } = await clientUser
@@ -628,7 +696,7 @@ serve(async (req: Request) => {
 
       let query = clientUser
         .from("operational_tasks")
-        .select("id, shift_id, restaurant_id, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
+        .select("id, shift_id, scheduled_shift_id, restaurant_id, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
         .eq("assigned_employee_id", user.id)
         .in("status", ["pending", "in_progress"])
         .order("updated_at", { ascending: false })
@@ -656,7 +724,7 @@ serve(async (req: Request) => {
 
     let query = clientUser
       .from("operational_tasks")
-      .select("id, shift_id, restaurant_id, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
+      .select("id, shift_id, scheduled_shift_id, restaurant_id, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
       .order("updated_at", { ascending: false })
       .limit(payload.limit);
 

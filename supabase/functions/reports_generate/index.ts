@@ -560,6 +560,10 @@ serve(async (req: Request) => {
       const hours = start && end ? Math.max(0, (end.getTime() - start.getTime()) / 3600000) : null;
       const scheduled = scheduledByShiftId.get(Number(s.id));
       const scheduled_hours = diffHours(String(scheduled?.scheduled_start ?? null), String(scheduled?.scheduled_end ?? null));
+      const ended_early =
+        !!scheduled?.scheduled_end &&
+        !!s.end_time &&
+        new Date(String(s.end_time)).getTime() < new Date(String(scheduled.scheduled_end)).getTime();
       return {
         shift_id: s.id,
         employee_id: s.employee_id,
@@ -569,11 +573,13 @@ serve(async (req: Request) => {
         start_time: s.start_time,
         end_time: s.end_time,
         hours_worked: hours == null ? null : Number(hours.toFixed(2)),
+        worked_hours: hours == null ? null : Number(hours.toFixed(2)),
         scheduled_start: scheduled?.scheduled_start ?? null,
         scheduled_end: scheduled?.scheduled_end ?? null,
         scheduled_hours,
         state: s.state,
         status: s.status,
+        ended_early,
         approved_by: s.approved_by ?? null,
         approved_by_name: s.approved_by ? userNameMap.get(String(s.approved_by)) ?? null : null,
         rejected_by: s.rejected_by ?? null,
@@ -592,6 +598,7 @@ serve(async (req: Request) => {
     });
 
     const totalScheduledHours = rows.reduce((acc, r) => acc + (r.scheduled_hours ?? 0), 0);
+    const totalWorkedHours = rows.reduce((acc, r) => acc + (r.hours_worked ?? 0), 0);
 
     const csvHeader = selectedColumns;
     const csvHeaderLabels = selectedColumns.map((col) => columnLabel[col] ?? col);
@@ -704,6 +711,9 @@ serve(async (req: Request) => {
         shifts: rows.length,
         hours_worked: Number(rows.reduce((acc, r) => acc + (r.hours_worked ?? 0), 0).toFixed(2)),
         total_scheduled_hours: Number(totalScheduledHours.toFixed(2)),
+        total_worked_hours: Number(totalWorkedHours.toFixed(2)),
+        restaurant_worked_hours_total: Number(totalWorkedHours.toFixed(2)),
+        restaurant_scheduled_hours_total: Number(totalScheduledHours.toFixed(2)),
       },
       columns: selectedColumns,
       rows,
@@ -847,6 +857,7 @@ serve(async (req: Request) => {
         hash_documento: data.hash_documento ?? hash_documento,
         url_pdf: data.url_pdf ?? url_pdf,
         url_excel: data.url_excel ?? url_excel,
+        totals: reportJson.totals,
       },
       error: null,
       request_id,

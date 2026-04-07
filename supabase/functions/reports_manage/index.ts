@@ -130,7 +130,7 @@ serve(async (req: Request) => {
 
     let query = clientAdmin
       .from("shifts")
-      .select("id, employee_id, restaurant_id, start_time, end_time, state, approved_by, rejected_by")
+      .select("id, employee_id, restaurant_id, start_time, end_time, state, status, approved_by, rejected_by")
       .gte("start_time", fromIso)
       .lte("start_time", toIso)
       .order("start_time", { ascending: false })
@@ -290,12 +290,20 @@ serve(async (req: Request) => {
     const items = (shifts ?? []).map((s) => {
       const scheduled = scheduledByShiftId.get(Number(s.id));
       const scheduled_hours = diffHours(String(scheduled?.scheduled_start ?? null), String(scheduled?.scheduled_end ?? null));
+      const hours_worked = diffHours(String(s.start_time ?? null), String(s.end_time ?? null));
+      const ended_early =
+        !!scheduled?.scheduled_end &&
+        !!s.end_time &&
+        new Date(String(s.end_time)).getTime() < new Date(String(scheduled.scheduled_end)).getTime();
       const evidence = evidenceByShift.get(Number(s.id));
       return {
         ...s,
         scheduled_start: scheduled?.scheduled_start ?? null,
         scheduled_end: scheduled?.scheduled_end ?? null,
         scheduled_hours,
+        hours_worked,
+        worked_hours: hours_worked,
+        ended_early,
         start_evidence_urls: evidence?.startUrls ?? [],
         end_evidence_urls: evidence?.endUrls ?? [],
         start_evidences: evidence?.startEvidences ?? [],
@@ -303,11 +311,18 @@ serve(async (req: Request) => {
       };
     });
 
+    const totalWorkedHours = items.reduce((acc, row) => acc + (row.hours_worked ?? 0), 0);
     const totalScheduledHours = items.reduce((acc, row) => acc + (row.scheduled_hours ?? 0), 0);
 
     const successPayload = {
       success: true,
-      data: { items, total_scheduled_hours: Number(totalScheduledHours.toFixed(2)) },
+      data: {
+        items,
+        total_worked_hours: Number(totalWorkedHours.toFixed(2)),
+        total_scheduled_hours: Number(totalScheduledHours.toFixed(2)),
+        restaurant_worked_hours_total: Number(totalWorkedHours.toFixed(2)),
+        restaurant_scheduled_hours_total: Number(totalScheduledHours.toFixed(2)),
+      },
       error: null,
       request_id,
     };
