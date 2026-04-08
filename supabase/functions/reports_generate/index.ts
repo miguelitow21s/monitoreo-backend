@@ -4,7 +4,6 @@ import { z } from "npm:zod@3.23.8";
 import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
-import { ensureSupervisorRestaurantAccess } from "../_shared/scopeGuard.ts";
 import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp, commonSchemas } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
@@ -458,9 +457,7 @@ serve(async (req: Request) => {
       throw { code: 422, message: "Rango de fechas invalido", category: "VALIDATION" };
     }
 
-    if (user.role === "supervisora") {
-      await ensureSupervisorRestaurantAccess(user.id, restaurant_id);
-    }
+    // Supervisora can operate on any active restaurant; scope enforced at UI level.
 
     const generatedAt = new Date().toISOString();
     const rawColumns = payload.columns && payload.columns.length > 0
@@ -496,7 +493,8 @@ serve(async (req: Request) => {
     const fromIso = `${period_start}T00:00:00.000Z`;
     const toIso = `${period_end}T23:59:59.999Z`;
 
-    const { data: shifts, error: shiftsError } = await clientUser
+    const shiftsClient = user.role === "supervisora" ? clientAdmin : clientUser;
+    const { data: shifts, error: shiftsError } = await shiftsClient
       .from("shifts")
       .select("id, employee_id, restaurant_id, start_time, end_time, state, status, approved_by, rejected_by, early_end_reason")
       .eq("restaurant_id", restaurant_id)
