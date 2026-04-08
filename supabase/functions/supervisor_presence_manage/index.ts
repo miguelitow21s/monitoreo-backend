@@ -4,7 +4,6 @@ import { z } from "npm:zod@3.23.8";
 import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
-import { ensureSupervisorRestaurantAccess } from "../_shared/scopeGuard.ts";
 import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
@@ -297,7 +296,8 @@ serve(async (req: Request) => {
     }
 
     if (payload.action === "list_my") {
-      const { data, error } = await clientUser
+      const listClient = user.role === "supervisora" ? clientAdmin : clientUser;
+      const { data, error } = await listClient
         .from("supervisor_presence_logs")
         .select(
           "id, supervisor_id, restaurant_id, phase, lat, lng, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, recorded_at, notes"
@@ -311,7 +311,7 @@ serve(async (req: Request) => {
       }
 
       const items = data ?? [];
-      const evidenceMap = await fetchEvidences(clientUser, items.map((row) => row.id));
+      const evidenceMap = await fetchEvidences(listClient, items.map((row) => row.id));
       const withEvidence = items.map((row) => ({
         ...row,
         evidences: evidenceMap.get(String(row.id)) ?? [],
@@ -323,10 +323,6 @@ serve(async (req: Request) => {
 
     if (payload.action === "list_by_restaurant") {
       roleGuard(user, ["supervisora", "super_admin"]);
-
-      if (user.role === "supervisora") {
-        await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
-      }
 
       if ((payload.from && !payload.to) || (!payload.from && payload.to)) {
         throw { code: 422, message: "from y to son requeridos juntos", category: "VALIDATION" };
@@ -343,7 +339,8 @@ serve(async (req: Request) => {
         }
       }
 
-      let query = clientUser
+      const listClient = user.role === "supervisora" ? clientAdmin : clientUser;
+      let query = listClient
         .from("supervisor_presence_logs")
         .select(
           "id, supervisor_id, restaurant_id, phase, lat, lng, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, recorded_at, notes"
@@ -363,7 +360,7 @@ serve(async (req: Request) => {
       }
 
       const items = data ?? [];
-      const evidenceMap = await fetchEvidences(clientUser, items.map((row) => row.id));
+      const evidenceMap = await fetchEvidences(listClient, items.map((row) => row.id));
       const withEvidence = items.map((row) => ({
         ...row,
         evidences: evidenceMap.get(String(row.id)) ?? [],
@@ -437,10 +434,6 @@ serve(async (req: Request) => {
     }
 
     if (payload.action === "register") {
-      if (user.role === "supervisora") {
-        await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
-      }
-
       if (settings.gps.require_gps_for_supervision) {
         await geoValidatorByRestaurant(clientUser, payload.restaurant_id, payload.lat, payload.lng, {
           settings,
@@ -504,7 +497,8 @@ serve(async (req: Request) => {
 
       const primaryEvidence = normalizedEvidences[0] ?? null;
 
-      const { data, error } = await clientUser
+      const insertClient = user.role === "supervisora" ? clientAdmin : clientUser;
+      const { data, error } = await insertClient
         .from("supervisor_presence_logs")
         .insert({
           supervisor_id: user.id,
@@ -537,7 +531,7 @@ serve(async (req: Request) => {
           created_at: new Date().toISOString(),
         }));
 
-        const { error: evidenceInsertError } = await clientUser.from("supervisor_presence_evidences").insert(evidenceRows);
+        const { error: evidenceInsertError } = await insertClient.from("supervisor_presence_evidences").insert(evidenceRows);
         if (evidenceInsertError) {
           throw { code: 409, message: "No se pudo guardar evidencias de supervision", category: "BUSINESS", details: evidenceInsertError };
         }

@@ -4,7 +4,6 @@ import { z } from "npm:zod@3.23.8";
 import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
-import { ensureSupervisorRestaurantAccess } from "../_shared/scopeGuard.ts";
 import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp, commonSchemas } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
@@ -120,11 +119,8 @@ serve(async (req: Request) => {
     if (payload.action === "assign_employee") {
       roleGuard(user, ["super_admin", "supervisora"]);
       await ensureEmployeeUser(payload.employee_id);
-      if (user.role === "supervisora") {
-        await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
-      }
-
-      const { error } = await clientUser
+      const writeClient = user.role === "supervisora" ? clientAdmin : clientUser;
+      const { error } = await writeClient
         .from("restaurant_employees")
         .upsert(
           {
@@ -166,11 +162,8 @@ serve(async (req: Request) => {
 
     if (payload.action === "unassign_employee") {
       roleGuard(user, ["super_admin", "supervisora"]);
-      if (user.role === "supervisora") {
-        await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
-      }
-
-      const { error } = await clientUser
+      const writeClient = user.role === "supervisora" ? clientAdmin : clientUser;
+      const { error } = await writeClient
         .from("restaurant_employees")
         .delete()
         .eq("restaurant_id", payload.restaurant_id)
@@ -208,35 +201,9 @@ serve(async (req: Request) => {
 
     if (payload.action === "list_by_restaurant") {
       roleGuard(user, ["super_admin", "supervisora"]);
-      let restaurantId = payload.restaurant_id ?? null;
+      const restaurantId = payload.restaurant_id ?? null;
       if (!restaurantId) {
-        if (user.role === "super_admin") {
-          throw { code: 422, message: "restaurant_id requerido", category: "VALIDATION" };
-        }
-
-        const { data: scopeLinks, error: scopeError } = await clientAdmin
-          .from("restaurant_employees")
-          .select("restaurant_id")
-          .eq("user_id", user.id);
-
-        if (scopeError) {
-          throw { code: 409, message: "No se pudo resolver alcance de supervisora", category: "BUSINESS", details: scopeError };
-        }
-
-        const restaurantIds = [...new Set((scopeLinks ?? []).map((row) => Number(row.restaurant_id)).filter((n) => Number.isFinite(n)))];
-        if (restaurantIds.length === 0) {
-          const emptyPayload = { success: true, data: { items: [] }, error: null, request_id };
-          await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey!, statusCode: 200, responseBody: emptyPayload });
-          return response(true, emptyPayload.data, null, request_id);
-        }
-        if (restaurantIds.length > 1) {
-          throw { code: 422, message: "restaurant_id requerido (supervisora con multiples restaurantes)", category: "VALIDATION" };
-        }
-        restaurantId = restaurantIds[0]!;
-      }
-
-      if (user.role === "supervisora") {
-        await ensureSupervisorRestaurantAccess(user.id, restaurantId);
+        throw { code: 422, message: "restaurant_id requerido", category: "VALIDATION" };
       }
 
       const { data: links, error: linksError } = await clientAdmin
@@ -284,6 +251,28 @@ serve(async (req: Request) => {
       roleGuard(user, ["empleado", "supervisora"]);
 
       const settings = await getSystemSettings(clientAdmin);
+
+      if (user.role === "supervisora") {
+        const { data: restaurants, error: restaurantsError } = await clientAdmin
+          .from("restaurants")
+          .select("id, name, address_line, lat, lng, geofence_radius_m, is_active, cleaning_areas")
+          .eq("is_active", true)
+          .order("name", { ascending: true });
+
+        if (restaurantsError) {
+          throw { code: 409, message: "No se pudieron cargar restaurantes", category: "BUSINESS", details: restaurantsError };
+        }
+
+        const items = (restaurants ?? []).map((row) => ({
+          ...row,
+          cleaning_areas: resolveCleaningAreas(settings, row.cleaning_areas),
+        }));
+
+        const successPayload = { success: true, data: { items }, error: null, request_id };
+        await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+        return response(true, successPayload.data, null, request_id);
+      }
+
       const { data: links, error: linksError } = await clientAdmin
         .from("restaurant_employees")
         .select("restaurant_id, created_at")
@@ -326,9 +315,6 @@ serve(async (req: Request) => {
 
       let restaurantIds: number[] | null = null;
       if (payload.restaurant_id) {
-        if (user.role === "supervisora") {
-          await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
-        }
         restaurantIds = [payload.restaurant_id];
       }
 
@@ -400,13 +386,6 @@ serve(async (req: Request) => {
 
       if (linksError) {
         throw { code: 409, message: "No se pudo listar restaurantes del empleado", category: "BUSINESS", details: linksError };
-      }
-
-      if (user.role === "supervisora") {
-        const restaurantIdsToCheck = [...new Set((links ?? []).map((x) => Number(x.restaurant_id)))];
-        for (const restaurantId of restaurantIdsToCheck) {
-          await ensureSupervisorRestaurantAccess(user.id, restaurantId);
-        }
       }
 
       const restaurantIds = [...new Set((links ?? []).map((x) => Number(x.restaurant_id)))];

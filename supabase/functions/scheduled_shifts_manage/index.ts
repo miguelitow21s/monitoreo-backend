@@ -4,7 +4,6 @@ import { z } from "npm:zod@3.23.8";
 import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
-import { ensureSupervisorRestaurantAccess } from "../_shared/scopeGuard.ts";
 import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp, commonSchemas } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
@@ -126,10 +125,6 @@ serve(async (req: Request) => {
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 40, window_seconds: 60 });
 
     if (payload.action === "assign") {
-      if (user.role === "supervisora") {
-        await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
-      }
-
       assertDurationWindow(payload.scheduled_start, payload.scheduled_end);
 
       const { data, error } = await clientUser.rpc("assign_scheduled_shift", {
@@ -171,41 +166,61 @@ serve(async (req: Request) => {
         notes?: string | null;
       }>;
 
-      if (user.role === "supervisora") {
-        const uniqueRestaurantIds = [...new Set(entries.map((e) => e.restaurant_id))];
-        for (const restaurantId of uniqueRestaurantIds) {
-          await ensureSupervisorRestaurantAccess(user.id, restaurantId);
-        }
-      }
-
       for (const entry of entries) {
         assertDurationWindow(entry.scheduled_start, entry.scheduled_end);
       }
 
-      const { data, error } = await clientUser.rpc("bulk_assign_scheduled_shifts", {
-        p_entries: entries,
-      });
+      let created = 0;
+      let failed = 0;
+      const created_ids: number[] = [];
+      const errors: Array<Record<string, unknown>> = [];
+      const created_items: Array<Record<string, unknown>> = [];
 
-      if (error || !data?.[0]) {
-        throw { code: 409, message: "No se pudo ejecutar programacion masiva", category: "BUSINESS", details: error };
+      for (let i = 0; i < entries.length; i += 1) {
+        const entry = entries[i];
+        const index = i + 1;
+        try {
+          const { data, error } = await clientUser.rpc("assign_scheduled_shift", {
+            p_employee_id: entry.employee_id,
+            p_restaurant_id: entry.restaurant_id,
+            p_scheduled_start: entry.scheduled_start,
+            p_scheduled_end: entry.scheduled_end,
+            p_notes: entry.notes ?? null,
+          });
+
+          if (error || !data) {
+            throw error ?? { message: "No se pudo programar turno" };
+          }
+
+          created += 1;
+          created_ids.push(Number(data));
+          created_items.push({
+            index,
+            scheduled_shift_id: data,
+            employee_id: entry.employee_id,
+            restaurant_id: entry.restaurant_id,
+            scheduled_start: entry.scheduled_start,
+            scheduled_end: entry.scheduled_end,
+            notes: entry.notes ?? null,
+          });
+        } catch (err) {
+          failed += 1;
+          const errorMessage = String((err as { message?: string })?.message ?? err ?? "Error");
+          errors.push({
+            index,
+            error: errorMessage,
+            payload: entry,
+          });
+        }
       }
-
-      const summary = data[0] as {
-        total: number;
-        created: number;
-        failed: number;
-        created_ids: number[];
-        errors: unknown;
-        created_items?: unknown;
-      };
 
       await safeWriteAudit({
         user_id: user.id,
         action: "SCHEDULED_SHIFT_BULK_ASSIGN",
         context: {
-          total: summary.total,
-          created: summary.created,
-          failed: summary.failed,
+          total: entries.length,
+          created,
+          failed,
         },
         request_id,
       });
@@ -213,12 +228,12 @@ serve(async (req: Request) => {
       const successPayload = {
         success: true,
         data: {
-          total: summary.total,
-          created: summary.created,
-          failed: summary.failed,
-          created_ids: summary.created_ids ?? [],
-          errors: summary.errors ?? [],
-          created_items: summary.created_items ?? [],
+          total: entries.length,
+          created,
+          failed,
+          created_ids,
+          errors,
+          created_items,
         },
         error: null,
         request_id,
@@ -229,31 +244,78 @@ serve(async (req: Request) => {
     }
 
     if (payload.action === "reschedule") {
-      const { data: row, error: rowError } = await clientUser
-        .from("scheduled_shifts")
-        .select("id, restaurant_id")
-        .eq("id", payload.scheduled_shift_id)
-        .single();
-
-      if (rowError || !row) {
-        throw { code: 404, message: "Turno programado no encontrado", category: "BUSINESS", details: rowError };
-      }
-
       if (user.role === "supervisora") {
-        await ensureSupervisorRestaurantAccess(user.id, row.restaurant_id as number);
-      }
+        const { data: row, error: rowError } = await clientAdmin
+          .from("scheduled_shifts")
+          .select("id, restaurant_id, employee_id, status, notes")
+          .eq("id", payload.scheduled_shift_id)
+          .single();
 
-      assertDurationWindow(payload.scheduled_start, payload.scheduled_end);
+        if (rowError || !row) {
+          throw { code: 404, message: "Turno programado no encontrado", category: "BUSINESS", details: rowError };
+        }
 
-      const { error } = await clientUser.rpc("reschedule_scheduled_shift", {
-        p_scheduled_shift_id: payload.scheduled_shift_id,
-        p_scheduled_start: payload.scheduled_start,
-        p_scheduled_end: payload.scheduled_end,
-        p_notes: payload.notes ?? null,
-      });
+        assertDurationWindow(payload.scheduled_start, payload.scheduled_end);
 
-      if (error) {
-        throw { code: 409, message: "No se pudo reprogramar turno", category: "BUSINESS", details: error };
+        if (row.status !== "scheduled") {
+          throw { code: 409, message: "Solo se puede reprogramar un turno en estado scheduled", category: "BUSINESS" };
+        }
+
+        const { data: overlap, error: overlapError } = await clientAdmin
+          .from("scheduled_shifts")
+          .select("id")
+          .eq("employee_id", row.employee_id)
+          .in("status", ["scheduled", "started"])
+          .lt("scheduled_start", payload.scheduled_end)
+          .gt("scheduled_end", payload.scheduled_start)
+          .neq("id", payload.scheduled_shift_id)
+          .limit(1);
+
+        if (overlapError) {
+          throw { code: 409, message: "No se pudo validar cruce de turnos", category: "BUSINESS", details: overlapError };
+        }
+
+        if (overlap && overlap.length > 0) {
+          throw { code: 409, message: "El empleado ya tiene un turno programado en ese rango", category: "BUSINESS" };
+        }
+
+        const newNotes = payload.notes ? payload.notes.trim() : null;
+        const { error: updateError } = await clientAdmin
+          .from("scheduled_shifts")
+          .update({
+            scheduled_start: payload.scheduled_start,
+            scheduled_end: payload.scheduled_end,
+            notes: newNotes || row.notes || null,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", payload.scheduled_shift_id);
+
+        if (updateError) {
+          throw { code: 409, message: "No se pudo reprogramar turno", category: "BUSINESS", details: updateError };
+        }
+      } else {
+        const { data: row, error: rowError } = await clientUser
+          .from("scheduled_shifts")
+          .select("id, restaurant_id")
+          .eq("id", payload.scheduled_shift_id)
+          .single();
+
+        if (rowError || !row) {
+          throw { code: 404, message: "Turno programado no encontrado", category: "BUSINESS", details: rowError };
+        }
+
+        assertDurationWindow(payload.scheduled_start, payload.scheduled_end);
+
+        const { error } = await clientUser.rpc("reschedule_scheduled_shift", {
+          p_scheduled_shift_id: payload.scheduled_shift_id,
+          p_scheduled_start: payload.scheduled_start,
+          p_scheduled_end: payload.scheduled_end,
+          p_notes: payload.notes ?? null,
+        });
+
+        if (error) {
+          throw { code: 409, message: "No se pudo reprogramar turno", category: "BUSINESS", details: error };
+        }
       }
 
       await safeWriteAudit({
@@ -273,27 +335,56 @@ serve(async (req: Request) => {
     }
 
     if (payload.action === "cancel") {
-      const { data: row, error: rowError } = await clientUser
-        .from("scheduled_shifts")
-        .select("id, restaurant_id")
-        .eq("id", payload.scheduled_shift_id)
-        .single();
-
-      if (rowError || !row) {
-        throw { code: 404, message: "Turno programado no encontrado", category: "BUSINESS", details: rowError };
-      }
-
       if (user.role === "supervisora") {
-        await ensureSupervisorRestaurantAccess(user.id, row.restaurant_id as number);
-      }
+        const { data: row, error: rowError } = await clientAdmin
+          .from("scheduled_shifts")
+          .select("id, restaurant_id, status, notes")
+          .eq("id", payload.scheduled_shift_id)
+          .single();
 
-      const { error } = await clientUser.rpc("cancel_scheduled_shift", {
-        p_scheduled_shift_id: payload.scheduled_shift_id,
-        p_reason: payload.reason ?? null,
-      });
+        if (rowError || !row) {
+          throw { code: 404, message: "Turno programado no encontrado", category: "BUSINESS", details: rowError };
+        }
 
-      if (error) {
-        throw { code: 409, message: "No se pudo cancelar turno", category: "BUSINESS", details: error };
+        if (!["scheduled", "started"].includes(String(row.status))) {
+          throw { code: 409, message: "Solo se pueden cancelar turnos scheduled o started", category: "BUSINESS" };
+        }
+
+        const reason = payload.reason?.trim();
+        const notes =
+          reason == null || reason === ""
+            ? row.notes
+            : row.notes == null || row.notes === ""
+              ? `[CANCELLED] ${reason}`
+              : `${row.notes}\n[CANCELLED] ${reason}`;
+
+        const { error: updateError } = await clientAdmin
+          .from("scheduled_shifts")
+          .update({ status: "cancelled", notes, updated_at: new Date().toISOString() })
+          .eq("id", payload.scheduled_shift_id);
+
+        if (updateError) {
+          throw { code: 409, message: "No se pudo cancelar turno", category: "BUSINESS", details: updateError };
+        }
+      } else {
+        const { data: row, error: rowError } = await clientUser
+          .from("scheduled_shifts")
+          .select("id, restaurant_id")
+          .eq("id", payload.scheduled_shift_id)
+          .single();
+
+        if (rowError || !row) {
+          throw { code: 404, message: "Turno programado no encontrado", category: "BUSINESS", details: rowError };
+        }
+
+        const { error } = await clientUser.rpc("cancel_scheduled_shift", {
+          p_scheduled_shift_id: payload.scheduled_shift_id,
+          p_reason: payload.reason ?? null,
+        });
+
+        if (error) {
+          throw { code: 409, message: "No se pudo cancelar turno", category: "BUSINESS", details: error };
+        }
       }
 
       await safeWriteAudit({
@@ -311,46 +402,8 @@ serve(async (req: Request) => {
       return response(true, successPayload.data, null, request_id);
     }
 
-    if (!payload.restaurant_id && user.role === "supervisora") {
-      const { data: scope, error: scopeError } = await clientAdmin
-        .from("restaurant_employees")
-        .select("restaurant_id")
-        .eq("user_id", user.id);
-
-      if (scopeError) {
-        throw { code: 409, message: "No se pudo validar alcance de supervisora", category: "BUSINESS", details: scopeError };
-      }
-
-      const restaurantIds = (scope ?? []).map((r) => Number(r.restaurant_id)).filter((id) => Number.isFinite(id));
-      if (restaurantIds.length === 0) {
-        const successPayload = { success: true, data: { items: [] }, error: null, request_id };
-        await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
-        return response(true, successPayload.data, null, request_id);
-      }
-
-      let scopedQuery = clientUser
-        .from("scheduled_shifts")
-        .select("id, employee_id, restaurant_id, scheduled_start, scheduled_end, status, notes, started_shift_id, created_by, created_at, updated_at")
-        .in("restaurant_id", restaurantIds)
-        .order("scheduled_start", { ascending: false })
-        .limit(payload.limit);
-
-      if (payload.employee_id) scopedQuery = scopedQuery.eq("employee_id", payload.employee_id);
-      if (payload.status) scopedQuery = scopedQuery.eq("status", payload.status);
-      if (payload.from) scopedQuery = scopedQuery.gte("scheduled_start", payload.from);
-      if (payload.to) scopedQuery = scopedQuery.lte("scheduled_end", payload.to);
-
-      const { data, error } = await scopedQuery;
-      if (error) {
-        throw { code: 409, message: "No se pudo listar agenda", category: "BUSINESS", details: error };
-      }
-
-      const successPayload = { success: true, data: { items: data ?? [] }, error: null, request_id };
-      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
-      return response(true, successPayload.data, null, request_id);
-    }
-
-    let query = clientUser
+    const listClient = user.role === "supervisora" ? clientAdmin : clientUser;
+    let query = listClient
       .from("scheduled_shifts")
       .select("id, employee_id, restaurant_id, scheduled_start, scheduled_end, status, notes, started_shift_id, created_by, created_at, updated_at")
       .order("scheduled_start", { ascending: false })
