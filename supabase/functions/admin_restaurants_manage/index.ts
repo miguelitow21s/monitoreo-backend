@@ -4,6 +4,7 @@ import { z } from "npm:zod@3.23.8";
 import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
+import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp, commonSchemas } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
 import { claimIdempotency, replayIdempotentResponse, safeFinalizeIdempotency } from "../_shared/idempotency.ts";
@@ -137,7 +138,8 @@ serve(async (req: Request) => {
 
     if (payload.action === "create") {
       const now = new Date().toISOString();
-      const { data, error } = await clientUser
+      const insertClient = user.role === "supervisora" ? clientAdmin : clientUser;
+      const { data, error } = await insertClient
         .from("restaurants")
         .insert({
           name: payload.name,
