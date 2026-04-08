@@ -120,7 +120,7 @@ serve(async (req: Request) => {
 
     const parsedPayload = await parseBody(req, payloadSchema);
     const payload = parsedPayload as z.infer<typeof payloadSchema>;
-    if (payload.action === "create") {
+    if (payload.action === "create" || payload.action === "list") {
       roleGuard(user, ["super_admin", "supervisora"]);
     } else {
       roleGuard(user, ["super_admin"]);
@@ -242,7 +242,8 @@ serve(async (req: Request) => {
       return response(true, successPayload.data, null, request_id);
     }
 
-    let query = clientUser
+    const listClient = user.role === "supervisora" ? clientAdmin : clientUser;
+    let query = listClient
       .from("restaurants")
       .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, cleaning_areas, created_at, updated_at")
       .order("name", { ascending: true });
