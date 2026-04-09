@@ -23,6 +23,24 @@ const bucket = "shift-evidence";
 const maxBytes = 8 * 1024 * 1024;
 const allowedMime = new Set(["image/jpeg", "image/png", "image/webp"]);
 
+async function ensureBucketExists(name: string) {
+  const { data, error } = await clientAdmin.storage.getBucket(name);
+  if (data?.id) return;
+  if (error) {
+    const message = (error as { message?: string })?.message?.toLowerCase() ?? "";
+    if (!message.includes("not found")) {
+      throw error;
+    }
+  }
+  const { error: createError } = await clientAdmin.storage.createBucket(name, { public: false });
+  if (createError) {
+    const message = (createError as { message?: string })?.message?.toLowerCase() ?? "";
+    if (!message.includes("exists")) {
+      throw createError;
+    }
+  }
+}
+
 const requestUploadSchema = z.object({
   action: z.literal("request_upload"),
   shift_id: commonSchemas.shiftId,
@@ -121,6 +139,12 @@ serve(async (req) => {
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 120, window_seconds: 60 });
 
     if (payload.action === "request_upload") {
+      try {
+        await ensureBucketExists(bucket);
+      } catch (bucketError) {
+        throw { code: 500, message: "No se pudo preparar bucket de evidencia", category: "SYSTEM", details: bucketError };
+      }
+
       const shift = await getOwnedShift(clientUser, user.id, payload.shift_id);
       ensureShiftState(shift.state, ["activo", "finalizado"], "No se puede cargar evidencia en este estado");
       // Allow multiple photos per phase (inicio/fin); no duplicate blocking.

@@ -21,6 +21,24 @@ const evidenceBucket = "shift-evidence";
 const evidenceMaxBytes = 8 * 1024 * 1024;
 const allowedMime = new Set(["image/jpeg", "image/png", "image/webp"]);
 
+async function ensureBucketExists(name: string) {
+  const { data, error } = await clientAdmin.storage.getBucket(name);
+  if (data?.id) return;
+  if (error) {
+    const message = (error as { message?: string })?.message?.toLowerCase() ?? "";
+    if (!message.includes("not found")) {
+      throw error;
+    }
+  }
+  const { error: createError } = await clientAdmin.storage.createBucket(name, { public: false });
+  if (createError) {
+    const message = (createError as { message?: string })?.message?.toLowerCase() ?? "";
+    if (!message.includes("exists")) {
+      throw createError;
+    }
+  }
+}
+
 const evidenceItemSchema = z
   .object({
     path: z.string().min(5).max(500),
@@ -237,6 +255,12 @@ serve(async (req: Request) => {
     };
 
     if (payload.action === "request_evidence_upload") {
+      try {
+        await ensureBucketExists(evidenceBucket);
+      } catch (bucketError) {
+        throw { code: 500, message: "No se pudo preparar bucket de evidencia", category: "SYSTEM", details: bucketError };
+      }
+
       const extension = mimeToExtension(payload.mime_type);
       const path = `users/${user.id}/supervisor-${payload.phase}/${request_id}.${extension}`;
       const { data, error } = await clientAdmin.storage.from(evidenceBucket).createSignedUploadUrl(path);
