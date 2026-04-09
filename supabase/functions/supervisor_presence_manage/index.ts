@@ -465,6 +465,30 @@ serve(async (req: Request) => {
         });
       }
 
+      let writeLat = payload.lat;
+      let writeLng = payload.lng;
+      if (!settings.gps.require_gps_for_supervision) {
+        // DB trigger still enforces restaurant geofence. When supervision GPS is disabled
+        // in settings, anchor stored coordinates to restaurant center to avoid false rejects.
+        const { data: restaurantGeo, error: restaurantGeoError } = await clientAdmin
+          .from("restaurants")
+          .select("lat, lng")
+          .eq("id", payload.restaurant_id)
+          .single();
+
+        if (restaurantGeoError || restaurantGeo?.lat == null || restaurantGeo?.lng == null) {
+          throw {
+            code: 409,
+            message: "No se pudo resolver geocerca de restaurante",
+            category: "BUSINESS",
+            details: restaurantGeoError,
+          };
+        }
+
+        writeLat = Number(restaurantGeo.lat);
+        writeLng = Number(restaurantGeo.lng);
+      }
+
       const incomingEvidences = payload.evidences ?? [];
       const legacyEvidence =
         payload.evidence_path && payload.evidence_hash && payload.evidence_mime_type && payload.evidence_size_bytes
@@ -528,8 +552,8 @@ serve(async (req: Request) => {
           supervisor_id: user.id,
           restaurant_id: payload.restaurant_id,
           phase: payload.phase,
-          lat: payload.lat,
-          lng: payload.lng,
+          lat: writeLat,
+          lng: writeLng,
           evidence_path: primaryEvidence?.storage_path ?? null,
           evidence_hash: primaryEvidence?.sha256 ?? null,
           evidence_mime_type: primaryEvidence?.mime_type ?? null,
