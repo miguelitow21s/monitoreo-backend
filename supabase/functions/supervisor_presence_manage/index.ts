@@ -45,21 +45,21 @@ const evidenceItemSchema = z
     label: z.string().trim().min(1).max(200).optional(),
     hash: z.string().min(16).max(200).optional(),
     mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]).optional(),
-    size_bytes: z.number().int().positive().max(50_000_000).optional(),
+    size_bytes: z.coerce.number().int().positive().max(50_000_000).optional(),
   })
   .strict();
 
 const registerAction = z.object({
   action: z.literal("register"),
-  restaurant_id: z.number().int().positive(),
+  restaurant_id: z.coerce.number().int().positive(),
   phase: z.enum(["start", "end"]),
-  lat: z.number().min(-90).max(90),
-  lng: z.number().min(-180).max(180),
-  accuracy: z.number().min(0).max(10000).optional(),
+  lat: z.coerce.number().min(-90).max(90),
+  lng: z.coerce.number().min(-180).max(180),
+  accuracy: z.coerce.number().min(0).max(10000).optional(),
   evidence_path: z.string().min(5).max(500).optional(),
   evidence_hash: z.string().min(16).max(200).optional(),
   evidence_mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]).optional(),
-  evidence_size_bytes: z.number().int().positive().max(50000000).optional(),
+  evidence_size_bytes: z.coerce.number().int().positive().max(50000000).optional(),
   evidences: z.array(evidenceItemSchema).min(1).max(20).optional(),
   notes: z.string().trim().max(1000).optional().nullable(),
 });
