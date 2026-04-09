@@ -556,3 +556,240 @@ const payload = await res.json();
 ---
 
 If you need additional examples per role, we can attach full sample payloads and responses.
+
+---
+
+## 12) Canonical Variable Dictionary (nombres oficiales)
+
+Use these names exactly as written.
+
+### 12.1) Identity and ownership
+- `id`: internal record id (generic)
+- `user_id`: generic user reference
+- `employee_id`: empleado reference in scheduling/staff
+- `assigned_employee_id`: empleado assigned to task
+- `supervisor_id`: supervisora reference (reports/presence filters)
+- `generated_by`: user that generated report
+- `created_by`: user that created task
+- `approved_by`, `rejected_by`: supervisor/admin that approved/rejected shift
+
+### 12.2) Restaurant keys
+- `restaurant_id`: restaurant reference
+- `name`: restaurant name (in create/update)
+- `restaurant_name`: resolved name in report/dashboard rows
+- `lat`, `lng`: restaurant coordinates and also GPS capture coordinates
+- `radius`: geofence radius in meters (create/update)
+- `geofence_radius_m`: normalized geofence field in DB/list responses
+- `address_line`, `city`, `state`, `postal_code`, `country`, `place_id`: address metadata
+- `is_active`: active/inactive status
+- `cleaning_areas`: taxonomy for evidence capture
+
+### 12.3) Shift and schedule keys
+- `shift_id`: executed shift id (`shifts`)
+- `scheduled_shift_id`: scheduled shift id (`scheduled_shifts`)
+- `started_shift_id`: link from scheduled shift to real shift
+- `scheduled_start`, `scheduled_end`: ISO datetime for planned shift
+- `start_time`, `end_time`: ISO datetime for real shift
+- `state`: main state (`activo`, `finalizado`, etc.)
+- `status`: secondary status used in some responses
+- `early_end_reason`: required when ending early
+- `ended_early`: derived boolean in reports
+- `hours_worked`: computed from real start/end
+- `scheduled_hours`: computed from scheduled start/end
+
+### 12.4) Evidence keys
+- `type`: evidence phase (`inicio` or `fin`) in employee flow
+- `phase`: supervision phase (`start` or `end`)
+- `path`: storage path
+- `storage_path`: persisted storage path
+- `captured_at`: capture timestamp from frontend
+- `taken_at`: server timestamp for evidence insert
+- `meta`: JSON metadata per photo
+- `meta.area_label`, `meta.subarea_label`, `meta.photo_label`: UI labels
+- `mime_type`: evidence MIME
+- `size_bytes` / `file_size`: file size in bytes
+- `sha256` / `evidence_hash`: evidence checksum
+- `start_evidence_urls`, `end_evidence_urls`: signed URL arrays for 1-day report
+- `start_evidences`, `end_evidences`: enriched evidence arrays with metadata
+
+### 12.5) Geo and precision keys
+- `lat`, `lng`: point received from device
+- `accuracy`: GPS accuracy in meters
+- `default_radius_meters`: default geofence in settings
+- `min_accuracy_meters`: max accepted inaccuracy in settings
+- `require_gps_for_shift_start`: enforce geofence for start/end + evidence flow
+- `require_gps_for_supervision`: enforce geofence for supervision register
+
+### 12.6) Task keys
+- `task_id`: operational task id
+- `title`, `description`: task text
+- `priority`: `low | normal | high | critical`
+- `due_at`: ISO datetime deadline
+- `requires_evidence`: boolean
+- `notes`: completion notes
+- `status`: `pending | in_progress | completed | cancelled`
+- `scheduled_shift_id` or `shift_id`: exactly one for task creation
+
+### 12.7) Report keys
+- `period_start`, `period_end`: `YYYY-MM-DD`
+- `export_format`: `csv | pdf | both | xlsx`
+- `columns`: selected output columns (aliases allowed)
+- `filtros_json`: custom filter payload
+- `url_pdf`, `url_excel`: signed output URLs
+- `totals`: consolidated totals
+- `restaurant_worked_hours_total`, `restaurant_scheduled_hours_total`: per-restaurant totals
+
+---
+
+## 13) Contract by Endpoint (payload/action exactos)
+
+### 13.1) Global/Auth
+
+#### `POST /users_manage`
+- `action: "me"` -> no extra fields
+- `action: "change_my_pin"` -> required: `new_pin`
+
+#### `POST /legal_consent`
+- `action: "status"` -> no extra fields
+- `action: "accept"` -> required: `terms_code`, `version`
+
+#### `POST /trusted_device_validate`
+- required: `device_fingerprint`
+
+#### `POST /trusted_device_register`
+- required: `device_fingerprint`, `device_name` (optional depending UI)
+
+#### `POST /phone_otp_send`
+- required: `channel` (or backend defaults by mode)
+
+#### `POST /phone_otp_verify`
+- required: `code`
+
+### 13.2) Empleado flow
+
+#### `POST /employee_self_service`
+- `action: "my_dashboard"` -> optional: `schedule_limit`, `pending_tasks_limit`
+- `action: "my_active_shift"` -> no extra fields
+- `action: "my_hours_history"` -> optional: `period_start`, `period_end`, `limit`
+- `action: "create_observation"` -> required: `shift_id`, `kind`, `message`
+
+#### `POST /shifts_start`
+Required:
+- `restaurant_id`, `lat`, `lng`, `fit_for_work`
+Optional:
+- `declaration`, `scheduled_shift_id`
+Headers required:
+- `x-device-fingerprint`, `x-shift-otp-token`
+
+#### `POST /evidence_upload`
+- `action: "request_upload"` -> required: `shift_id`, `type`
+- `action: "finalize_upload"` -> required: `shift_id`, `type`, `path`, `lat`, `lng`, `accuracy`, `captured_at`
+- optional on finalize: `meta`
+Headers required:
+- `x-device-fingerprint`, `x-shift-otp-token`
+
+#### `POST /shifts_end`
+Required:
+- `shift_id`, `lat`, `lng`, `fit_for_work`
+Optional:
+- `declaration`, `early_end_reason`
+Headers required:
+- `x-device-fingerprint`, `x-shift-otp-token`
+
+#### `POST /operational_tasks_manage` (empleado)
+- `action: "list_my_open"` -> optional: `shift_id`, `limit`
+- `action: "request_evidence_upload"` -> required: `task_id`; optional: `mime_type`
+- `action: "request_manifest_upload"` -> required: `task_id`
+- `action: "complete"` -> required: `task_id`, `evidence_path`; optional: `notes`
+- `action: "close"` -> required: `task_id`; optional: `reason`, `notes`
+
+### 13.3) Supervisora flow
+
+#### `POST /restaurant_staff_manage`
+- `action: "list_by_restaurant"` -> required: `restaurant_id`
+- `action: "list_my_restaurants"` -> no extra fields
+- `action: "list_assignable_employees"` -> optional: `restaurant_id`, `limit`
+- `action: "assign_employee"` -> required: `employee_id`, `restaurant_id`
+- `action: "unassign_employee"` -> required: `employee_id`, `restaurant_id`
+- `action: "list_by_employee"` -> required: `employee_id`
+
+#### `POST /scheduled_shifts_manage`
+- `action: "list"` -> optional: `employee_id`, `restaurant_id`, `status`, `from`, `to`, `limit`
+- `action: "assign"` -> required: `employee_id`, `restaurant_id`, `scheduled_start`, `scheduled_end`; optional: `notes`
+- `action: "bulk_assign"` -> required: `entries[]` with same fields as `assign`
+- `action: "reschedule"` -> required: `scheduled_shift_id`, `scheduled_start`, `scheduled_end`; optional: `notes`
+- `action: "cancel"` -> required: `scheduled_shift_id`; optional: `reason`
+
+#### `POST /operational_tasks_manage` (supervisora)
+- `action: "list_supervision"` -> optional: `restaurant_id`, `status`, `limit`
+- `action: "create"` -> required: `assigned_employee_id`, `title`, `description` and exactly one of `shift_id` or `scheduled_shift_id`; optional: `priority`, `due_at`, `requires_evidence`
+- `action: "update"` -> required: `task_id`; optional: `title`, `description`, `priority`, `due_at`, `assigned_employee_id`, `requires_evidence`
+- `action: "cancel"` -> required: `task_id`; optional: `reason`
+- `action: "mark_in_progress"` -> required: `task_id`
+- `action: "close"` -> required: `task_id`; optional: `reason`, `notes`
+- `action: "request_evidence_upload"` -> required: `task_id`; optional: `mime_type`
+- `action: "request_manifest_upload"` -> required: `task_id`
+- `action: "complete"` -> required: `task_id`, `evidence_path`; optional: `notes`
+
+#### `POST /supervisor_presence_manage`
+- `action: "request_evidence_upload"` -> required: `phase`; optional: `mime_type`
+- `action: "finalize_evidence_upload"` -> required: `path`
+- `action: "register"` -> required: `restaurant_id`, `phase`, `lat`, `lng`; optional: `accuracy`, `notes`, `evidences[]`, legacy `evidence_*`
+- `action: "list_my"` -> optional: `limit`
+- `action: "list_by_restaurant"` -> required: `restaurant_id`; optional: `from`, `to`, `limit`
+- `action: "list_today"` -> optional: `from`, `to`, `limit`
+Notes:
+- `observed_at` is currently ignored by backend in `register`.
+- If outside geofence and GPS enforcement is active, backend returns explicit 422.
+
+### 13.4) Admin/Super Admin flow
+
+#### `POST /admin_users_manage`
+- `action: "list"` -> optional: `role`, `is_active`, `search`, `limit`
+- `action: "create"` -> required: `email`, `role`; optional: `password`, `first_name`, `last_name`, `full_name`, `phone_number`, `is_active`
+- `action: "update"` -> required: `user_id`; optional: `email`, `role`, `first_name`, `last_name`, `full_name`, `phone_number`, `is_active`
+- `action: "activate"` -> required: `user_id`
+- `action: "deactivate"` -> required: `user_id`; optional: `reason`
+- `action: "reset_password"` -> required: `email`; optional: `new_password`
+
+#### `POST /admin_restaurants_manage`
+- `action: "list"` -> optional: `is_active`, `search`, `limit`
+- `action: "create"` -> required: `name`, `lat`, `lng`, `radius`; optional: `address_line`, `city`, `state`, `postal_code`, `country`, `place_id`, `is_active`, `cleaning_areas`
+- `action: "update"` -> required: `restaurant_id`; optional: all editable restaurant fields
+- `action: "activate"` -> required: `restaurant_id`
+- `action: "deactivate"` -> required: `restaurant_id`
+
+#### `POST /admin_dashboard_metrics`
+- required: `action: "summary"`
+- optional: `restaurant_id`, `period_start`, `period_end`
+
+#### `POST /reports_manage`
+- `action: "list_shifts"` -> required: `from`, `to`; optional: `restaurant_id`, `employee_id`, `supervisor_id`, `status`, `limit`
+- `action: "list_history"` -> optional: `limit`
+
+#### `POST /reports_generate`
+Required:
+- `restaurant_id`, `period_start`, `period_end`
+Optional:
+- `filtros_json`, `columns`, `export_format`
+Notes:
+- `columns` accepts canonical names and aliases (e.g. `Turno`, `Restaurante`, `Empleado`, `Duracion`, `Novedades`).
+- returns `url_pdf`, `url_excel`, `totals`.
+
+---
+
+## 14) Recommended frontend naming map (JS constants)
+
+Suggested names to avoid drift:
+- `accessToken` -> `Authorization: Bearer <token>`
+- `anonKey` -> `apikey`
+- `idempotencyKey` -> `Idempotency-Key`
+- `deviceFingerprint` -> `x-device-fingerprint`
+- `shiftOtpToken` -> `x-shift-otp-token`
+- `restaurantId` -> `restaurant_id`
+- `employeeId` -> `employee_id`
+- `assignedEmployeeId` -> `assigned_employee_id`
+- `scheduledShiftId` -> `scheduled_shift_id`
+- `shiftId` -> `shift_id`
+- `periodStart` -> `period_start`
+- `periodEnd` -> `period_end`
