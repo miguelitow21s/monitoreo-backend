@@ -937,7 +937,8 @@ serve(async (req: Request) => {
       url_pdf = pdfSigned.signedUrl;
     }
 
-    const { data, error } = await clientUser
+    const insertClient = user.role === "supervisora" ? clientAdmin : clientUser;
+    const { data, error } = await insertClient
       .from("reports")
       .insert({
         restaurant_id,
