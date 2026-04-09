@@ -170,6 +170,49 @@ function getBogotaDayRange() {
   return { startIso: startUtc.toISOString(), endIso: endUtc.toISOString() };
 }
 
+function mapPresenceInsertError(raw: unknown) {
+  const normalized = String(
+    (raw as { message?: string; details?: string; hint?: string })?.message ??
+      (raw as { details?: string })?.details ??
+      (raw as { hint?: string })?.hint ??
+      ""
+  ).toLowerCase();
+
+  if (normalized.includes("gps fuera de geocerca")) {
+    return {
+      code: 422,
+      message: "Ubicacion fuera del rango permitido para este restaurante",
+      category: "VALIDATION" as const,
+      details: raw,
+    };
+  }
+
+  if (normalized.includes("ya existe un start abierto")) {
+    return {
+      code: 409,
+      message: "Ya existe una supervision de inicio abierta para este restaurante hoy",
+      category: "BUSINESS" as const,
+      details: raw,
+    };
+  }
+
+  if (normalized.includes("supervisora no asignada al restaurante")) {
+    return {
+      code: 403,
+      message: "La supervisora no tiene alcance sobre este restaurante",
+      category: "PERMISSION" as const,
+      details: raw,
+    };
+  }
+
+  return {
+    code: 409,
+    message: "No se pudo registrar presencia",
+    category: "BUSINESS" as const,
+    details: raw,
+  };
+}
+
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
   if (preflight) return preflight;
@@ -459,10 +502,23 @@ serve(async (req: Request) => {
 
     if (payload.action === "register") {
       if (settings.gps.require_gps_for_supervision) {
-        await geoValidatorByRestaurant(clientUser, payload.restaurant_id, payload.lat, payload.lng, {
-          settings,
-          accuracy: payload.accuracy,
-        });
+        try {
+          await geoValidatorByRestaurant(clientUser, payload.restaurant_id, payload.lat, payload.lng, {
+            settings,
+            accuracy: payload.accuracy,
+          });
+        } catch (geoError) {
+          const geoMessage = String((geoError as { message?: string })?.message ?? "").toLowerCase();
+          if (geoMessage.includes("gps fuera de radio")) {
+            throw {
+              code: 422,
+              message: "Ubicacion fuera del rango permitido para este restaurante",
+              category: "VALIDATION",
+              details: geoError,
+            };
+          }
+          throw geoError;
+        }
       }
 
       let writeLat = payload.lat;
@@ -565,7 +621,7 @@ serve(async (req: Request) => {
         .single();
 
       if (error || !data?.id) {
-        throw { code: 409, message: "No se pudo registrar presencia", category: "BUSINESS", details: error };
+        throw mapPresenceInsertError(error);
       }
 
       if (normalizedEvidences.length > 0) {
