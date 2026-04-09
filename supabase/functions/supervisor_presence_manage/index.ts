@@ -170,6 +170,48 @@ function getBogotaDayRange() {
   return { startIso: startUtc.toISOString(), endIso: endUtc.toISOString() };
 }
 
+function getUtcDayRange(baseDate: Date = new Date()) {
+  const startUtc = new Date(Date.UTC(baseDate.getUTCFullYear(), baseDate.getUTCMonth(), baseDate.getUTCDate(), 0, 0, 0, 0));
+  const endUtc = new Date(Date.UTC(baseDate.getUTCFullYear(), baseDate.getUTCMonth(), baseDate.getUTCDate() + 1, 0, 0, 0, 0));
+  return { startIso: startUtc.toISOString(), endIso: endUtc.toISOString() };
+}
+
+async function findOpenStartPresenceForUtcDay(
+  supabase: any,
+  supervisorId: string,
+  restaurantId: number,
+) {
+  const { startIso, endIso } = getUtcDayRange();
+
+  const { data: rows, error } = await supabase
+    .from("supervisor_presence_logs")
+    .select("id, phase, recorded_at")
+    .eq("supervisor_id", supervisorId)
+    .eq("restaurant_id", restaurantId)
+    .gte("recorded_at", startIso)
+    .lt("recorded_at", endIso)
+    .order("recorded_at", { ascending: true });
+
+  if (error || !rows || rows.length === 0) {
+    return null;
+  }
+
+  const starts = rows.filter((row: { phase?: string }) => row.phase === "start");
+  const ends = rows.filter((row: { phase?: string }) => row.phase === "end");
+
+  let openStart: { id: number; recorded_at: string } | null = null;
+  for (const start of starts) {
+    const hasEndAfter = ends.some(
+      (end) => new Date(end.recorded_at).getTime() >= new Date(start.recorded_at).getTime(),
+    );
+    if (!hasEndAfter) {
+      openStart = { id: start.id, recorded_at: start.recorded_at };
+    }
+  }
+
+  return openStart;
+}
+
 function mapPresenceInsertError(raw: unknown) {
   const normalized = String(
     (raw as { message?: string; details?: string; hint?: string })?.message ??
@@ -621,6 +663,37 @@ serve(async (req: Request) => {
         .single();
 
       if (error || !data?.id) {
+        const normalizedInsertError = String(
+          (error as { message?: string; details?: string; hint?: string })?.message ??
+            (error as { details?: string })?.details ??
+            (error as { hint?: string })?.hint ??
+            "",
+        ).toLowerCase();
+
+        if (payload.phase === "start" && normalizedInsertError.includes("ya existe un start abierto")) {
+          const existing = await findOpenStartPresenceForUtcDay(insertClient, user.id, payload.restaurant_id);
+          if (existing?.id) {
+            const successPayload = {
+              success: true,
+              data: {
+                presence_id: existing.id,
+                already_exists: true,
+              },
+              error: null,
+              request_id,
+            };
+
+            await safeFinalizeIdempotency({
+              userId: user.id,
+              endpoint,
+              key: idempotencyKey,
+              statusCode: 200,
+              responseBody: successPayload,
+            });
+            return response(true, successPayload.data, null, request_id);
+          }
+        }
+
         throw mapPresenceInsertError(error);
       }
 

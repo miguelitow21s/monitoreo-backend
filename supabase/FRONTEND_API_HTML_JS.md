@@ -409,6 +409,9 @@ Then upload to signed URL and call:
 ```
 
 Responses from `list_*` include `evidences: []`.
+For `action: "register"` with `phase: "start"`, if a start is already open for the same supervisor/restaurant/day, backend can return success with:
+- `presence_id`
+- `already_exists: true`
 
 ---
 
@@ -741,6 +744,7 @@ Headers required:
 Notes:
 - `observed_at` is currently ignored by backend in `register`.
 - If outside geofence and GPS enforcement is active, backend returns explicit 422.
+- If `register` with `phase: "start"` is retried and there is already an open start for that day, backend may return `200` with `{ presence_id, already_exists: true }`.
 
 ### 13.4) Admin/Super Admin flow
 
