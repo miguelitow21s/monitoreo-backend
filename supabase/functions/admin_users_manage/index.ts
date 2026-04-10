@@ -174,6 +174,8 @@ serve(async (req: Request) => {
           category: "PERMISSION",
         };
       }
+    } else if (payload.action === "deactivate") {
+      roleGuard(user, ["super_admin", "supervisora"]);
     } else if (payload.action === "reset_password") {
       roleGuard(user, ["super_admin"]);
     } else {
@@ -375,6 +377,23 @@ serve(async (req: Request) => {
 
     if (payload.action === "activate" || payload.action === "deactivate") {
       const isActive = payload.action === "activate";
+
+      if (user.role === "supervisora" && payload.action === "deactivate") {
+        const { data: targetProfile, error: targetProfileError } = await clientAdmin
+          .from("profiles")
+          .select("id, role")
+          .eq("id", payload.user_id)
+          .single();
+
+        if (targetProfileError || !targetProfile) {
+          throw { code: 404, message: "Usuario no encontrado", category: "BUSINESS", details: targetProfileError };
+        }
+
+        if (targetProfile.role !== "empleado") {
+          throw { code: 403, message: "Supervisora solo puede desactivar empleados", category: "PERMISSION" };
+        }
+      }
+
       const { error: patchError } = await clientAdmin
         .from("users")
         .update({ is_active: isActive, updated_at: new Date().toISOString() })

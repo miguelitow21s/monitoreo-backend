@@ -210,7 +210,7 @@ Notes:
 - `shifts_approve`, `shifts_reject`
 - `incidents_create`
 - `admin_restaurants_manage` (create, deactivate)
-- `admin_users_manage` (create empleados)
+- `admin_users_manage` (create empleados, deactivate empleados)
 
 ### Super Admin
 - All supervisora endpoints +
@@ -427,7 +427,7 @@ Actions:
 - `reset_password`
 
 Notes:
-- Supervisora solo puede usar `create` y únicamente para `role="empleado"`.
+- Supervisora puede usar `create` y `deactivate`, únicamente sobre usuarios `role="empleado"`.
 - Si `password` no se envía en `create`, backend crea el usuario con contraseña temporal `123456` y fuerza `must_change_pin=true`.
 - `reset_password` es solo para `super_admin` y fuerza `must_change_pin=true`. Si no se envía `new_password`, usa `123456`.
 
@@ -756,6 +756,9 @@ Notes:
 - `action: "activate"` -> required: `user_id`
 - `action: "deactivate"` -> required: `user_id`; optional: `reason`
 - `action: "reset_password"` -> required: `email`; optional: `new_password`
+Notes:
+- `deactivate` puede ejecutarlo `super_admin`; `supervisora` solo puede desactivar usuarios con rol `empleado`.
+- `activate`, `update` y `reset_password` se mantienen como acciones de `super_admin`.
 
 #### `POST /admin_restaurants_manage`
 - `action: "list"` -> optional: `is_active`, `search`, `limit`
