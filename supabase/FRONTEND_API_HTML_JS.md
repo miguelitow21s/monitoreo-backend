@@ -209,7 +209,7 @@ Notes:
 - `supervisor_presence_manage` (request_evidence_upload, finalize_evidence_upload, register, list_my, list_by_restaurant, list_today)
 - `shifts_approve`, `shifts_reject`
 - `incidents_create`
-- `admin_restaurants_manage` (create)
+- `admin_restaurants_manage` (create, deactivate)
 - `admin_users_manage` (create empleados)
 
 ### Super Admin
@@ -441,6 +441,7 @@ Actions:
 
 Notes:
 - `cleaning_areas` is supported in create/update and returned in list.
+- `deactivate` (eliminacion logica) esta permitido para `super_admin` y `supervisora`.
 - En endpoints operativos (empleado/supervisora) se entrega ya resuelto con fallback.
 
 ### POST /admin_dashboard_metrics
@@ -762,6 +763,9 @@ Notes:
 - `action: "update"` -> required: `restaurant_id`; optional: all editable restaurant fields
 - `action: "activate"` -> required: `restaurant_id`
 - `action: "deactivate"` -> required: `restaurant_id`
+Notes:
+- `deactivate` puede ejecutarlo `super_admin` o `supervisora`.
+- `activate` y `update` se mantienen como acciones de `super_admin`.
 
 #### `POST /admin_dashboard_metrics`
 - required: `action: "summary"`

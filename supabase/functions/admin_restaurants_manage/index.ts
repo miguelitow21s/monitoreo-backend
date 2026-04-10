@@ -120,7 +120,7 @@ serve(async (req: Request) => {
 
     const parsedPayload = await parseBody(req, payloadSchema);
     const payload = parsedPayload as z.infer<typeof payloadSchema>;
-    if (payload.action === "create" || payload.action === "list") {
+    if (payload.action === "create" || payload.action === "list" || payload.action === "deactivate") {
       roleGuard(user, ["super_admin", "supervisora"]);
     } else {
       roleGuard(user, ["super_admin"]);
@@ -219,7 +219,8 @@ serve(async (req: Request) => {
 
     if (payload.action === "activate" || payload.action === "deactivate") {
       const isActive = payload.action === "activate";
-      const { data, error } = await clientUser
+      const statusClient = user.role === "supervisora" && payload.action === "deactivate" ? clientAdmin : clientUser;
+      const { data, error } = await statusClient
         .from("restaurants")
         .update({ is_active: isActive, updated_at: new Date().toISOString() })
         .eq("id", payload.restaurant_id)
