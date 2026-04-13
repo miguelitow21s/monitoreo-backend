@@ -290,6 +290,7 @@ function buildXlsxWorkbook(
     captured_at: string;
     zone: string;
     restaurant_name: string;
+    employee_name: string;
     watermark_text: string;
   }>
 ) {
@@ -346,7 +347,8 @@ function buildXlsxWorkbook(
       "Capturada",
       "Zona",
       "Restaurante",
-      "Marca de agua",
+      "Empleado",
+      "Trazabilidad",
     ];
     const evidenceData: Array<Array<string | number | { f: string }>> = [evidenceHeader];
     for (const row of evidenceRows) {
@@ -360,6 +362,7 @@ function buildXlsxWorkbook(
         row.captured_at,
         row.zone,
         row.restaurant_name,
+        row.employee_name,
         row.watermark_text,
       ]);
     }
@@ -373,6 +376,7 @@ function buildXlsxWorkbook(
       { wch: 8 },
       { wch: 18 },
       { wch: 24 },
+      { wch: 28 },
       { wch: 28 },
       { wch: 60 },
     ];
@@ -391,6 +395,7 @@ type EvidenceForExport = {
   captured_at: string | null;
   zone: string;
   restaurant_name: string;
+  employee_name: string;
   watermark_text: string;
 };
 
@@ -418,9 +423,10 @@ function buildEvidenceWatermarkText(evidence: {
   captured_at: string | null;
   zone: string;
   restaurant_name: string;
+  employee_name: string;
 }) {
   const captured = evidence.captured_at ? formatDateTime(evidence.captured_at) : "Fecha/hora no disponible";
-  return `Fecha/Hora: ${captured} | Zona: ${evidence.zone} | Restaurante: ${evidence.restaurant_name}`;
+  return `Fecha/Hora: ${captured} | Zona: ${evidence.zone} | Restaurante: ${evidence.restaurant_name} | Empleado: ${evidence.employee_name}`;
 }
 
 async function buildSingleDayPdfWithEvidence(params: {
@@ -445,7 +451,7 @@ async function buildSingleDayPdfWithEvidence(params: {
   summaryPage.drawText(`Total turnos: ${params.totalShifts}`, { x: 40, y: 716, size: 11, font });
   summaryPage.drawText(`Horas trabajadas: ${formatDuration(params.totalHours)}`, { x: 40, y: 698, size: 11, font });
   summaryPage.drawText(`Horas programadas: ${formatDuration(params.totalScheduledHours)}`, { x: 40, y: 680, size: 11, font });
-  summaryPage.drawText("Las siguientes paginas incluyen fotos Antes/Despues con marca de agua para trazabilidad.", {
+  summaryPage.drawText("Las siguientes paginas incluyen fotos Antes/Despues con datos de trazabilidad.", {
     x: 40,
     y: 650,
     size: 10,
@@ -457,11 +463,16 @@ async function buildSingleDayPdfWithEvidence(params: {
     const page = pdfDoc.addPage([595, 842]);
     page.drawText(`Turno ${ev.shift_id} - ${ev.phase} #${ev.index}`, { x: 40, y: 810, size: 14, font: bold });
     page.drawText(`Restaurante: ${ev.restaurant_name}`, { x: 40, y: 790, size: 10, font });
+    page.drawText(`Empleado: ${ev.employee_name}`, { x: 40, y: 775, size: 10, font });
 
     const imageX = 40;
     const imageY = 250;
     const imageW = 515;
     const imageH = 510;
+    let frameX = imageX;
+    let frameY = imageY;
+    let frameW = imageW;
+    let frameH = imageH;
 
     let imageDrawn = false;
     try {
@@ -482,6 +493,10 @@ async function buildSingleDayPdfWithEvidence(params: {
         const drawX = imageX + (imageW - drawW) / 2;
         const drawY = imageY + (imageH - drawH) / 2;
         page.drawImage(img, { x: drawX, y: drawY, width: drawW, height: drawH });
+        frameX = drawX;
+        frameY = drawY;
+        frameW = drawW;
+        frameH = drawH;
         imageDrawn = true;
       }
     } catch {
@@ -494,11 +509,42 @@ async function buildSingleDayPdfWithEvidence(params: {
       page.drawText(ev.signed_url.slice(0, 95), { x: 50, y: imageY + imageH - 48, size: 8, font, color: rgb(0.2, 0.2, 0.2) });
     }
 
-    page.drawRectangle({ x: 46, y: 268, width: 503, height: 58, color: rgb(1, 1, 1), opacity: 0.65 });
-    page.drawText("Marca de agua", { x: 52, y: 308, size: 10, font: bold, color: rgb(0, 0, 0) });
-    page.drawText(`Fecha/Hora: ${ev.captured_at ? formatDateTime(ev.captured_at) : "No disponible"}`, { x: 52, y: 294, size: 9, font });
-    page.drawText(`Zona: ${ev.zone}`, { x: 52, y: 281, size: 9, font });
-    page.drawText(`Restaurante: ${ev.restaurant_name}`, { x: 280, y: 281, size: 9, font });
+    const overlayPadding = 8;
+    const overlayH = Math.min(74, Math.max(52, frameH * 0.22));
+    const overlayX = frameX + overlayPadding;
+    const overlayW = Math.max(120, frameW - overlayPadding * 2);
+    const overlayY = frameY + overlayPadding;
+    const fit = (txt: string, max = 88) => (txt.length > max ? `${txt.slice(0, max - 3)}...` : txt);
+
+    page.drawRectangle({ x: overlayX, y: overlayY, width: overlayW, height: overlayH, color: rgb(1, 1, 1), opacity: 0.6 });
+    page.drawText(fit(`Fecha/Hora: ${ev.captured_at ? formatDateTime(ev.captured_at) : "No disponible"}`), {
+      x: overlayX + 6,
+      y: overlayY + overlayH - 16,
+      size: 9,
+      font,
+      color: rgb(0, 0, 0),
+    });
+    page.drawText(fit(`Zona: ${ev.zone}`), {
+      x: overlayX + 6,
+      y: overlayY + overlayH - 29,
+      size: 9,
+      font,
+      color: rgb(0, 0, 0),
+    });
+    page.drawText(fit(`Restaurante: ${ev.restaurant_name}`), {
+      x: overlayX + 6,
+      y: overlayY + overlayH - 42,
+      size: 9,
+      font,
+      color: rgb(0, 0, 0),
+    });
+    page.drawText(fit(`Empleado: ${ev.employee_name}`), {
+      x: overlayX + 6,
+      y: overlayY + overlayH - 55,
+      size: 9,
+      font,
+      color: rgb(0, 0, 0),
+    });
   }
 
   const bytes = await pdfDoc.save();
@@ -767,6 +813,11 @@ serve(async (req: Request) => {
       }
     }
 
+    const shiftEmployeeMap = new Map<number, string>();
+    for (const shift of (shifts ?? [])) {
+      shiftEmployeeMap.set(Number(shift.id), String(shift.employee_id));
+    }
+
     for (const photo of photosList) {
       if (!photo.storage_path) continue;
 
@@ -783,6 +834,8 @@ serve(async (req: Request) => {
       const photoLabel = typeof meta.photo_label === "string" ? meta.photo_label : null;
       const zone = normalizeZone(meta);
       const restaurantName = restaurantNameMap.get(Number(restaurant_id)) ?? `#${restaurant_id}`;
+      const employeeIdForShift = shiftEmployeeMap.get(Number(photo.shift_id)) ?? "";
+      const employeeName = userNameMap.get(employeeIdForShift) ?? "Sin nombre";
 
       const entry = evidenceByShift.get(photo.shift_id) ?? { start: [], end: [], startUrls: [], endUrls: [] };
       const signedUrl = signedMap.get(photo.storage_path) ?? "";
@@ -795,7 +848,8 @@ serve(async (req: Request) => {
         zone,
         restaurant_name: restaurantName,
         signed_url: signedUrl,
-        watermark_text: buildEvidenceWatermarkText({ captured_at: photo.captured_at ?? null, zone, restaurant_name: restaurantName }),
+        employee_name: employeeName,
+        watermark_text: buildEvidenceWatermarkText({ captured_at: photo.captured_at ?? null, zone, restaurant_name: restaurantName, employee_name: employeeName }),
       };
 
       if (photo.type === "inicio") {
@@ -896,6 +950,7 @@ serve(async (req: Request) => {
             captured_at: (ev.captured_at as string | null) ?? null,
             zone: String(ev.zone ?? "Zona no especificada"),
             restaurant_name: String(ev.restaurant_name ?? (restaurantNameMap.get(Number(restaurant_id)) ?? `#${restaurant_id}`)),
+            employee_name: String(ev.employee_name ?? (row.employee_name ?? "Sin nombre")),
             watermark_text: String(ev.watermark_text ?? ""),
           });
         });
@@ -912,6 +967,7 @@ serve(async (req: Request) => {
             captured_at: (ev.captured_at as string | null) ?? null,
             zone: String(ev.zone ?? "Zona no especificada"),
             restaurant_name: String(ev.restaurant_name ?? (restaurantNameMap.get(Number(restaurant_id)) ?? `#${restaurant_id}`)),
+            employee_name: String(ev.employee_name ?? (row.employee_name ?? "Sin nombre")),
             watermark_text: String(ev.watermark_text ?? ""),
           });
         });
@@ -1091,6 +1147,7 @@ serve(async (req: Request) => {
         captured_at: ev.captured_at ? formatDateTime(ev.captured_at) : "No disponible",
         zone: ev.zone,
         restaurant_name: ev.restaurant_name,
+        employee_name: ev.employee_name,
         watermark_text: ev.watermark_text,
       })));
       uploadOperations.push(
