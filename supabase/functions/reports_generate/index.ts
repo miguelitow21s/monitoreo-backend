@@ -18,7 +18,8 @@ import { hashCanonicalJson } from "../_shared/crypto.ts";
 
 const endpoint = "reports_generate";
 const payloadSchema = z.object({
-  restaurant_id: commonSchemas.restaurantId,
+  restaurant_id: z.union([commonSchemas.restaurantId, z.literal("all"), z.null()]).optional(),
+  employee_id: z.union([z.string().uuid(), z.literal("all"), z.null()]).optional(),
   period_start: commonSchemas.dateYmd,
   period_end: commonSchemas.dateYmd,
   filtros_json: z.record(z.any()).optional(),
@@ -678,10 +679,13 @@ serve(async (req: Request) => {
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 10, window_seconds: 60 });
 
-    const { restaurant_id, period_start, period_end } = payload;
+    const { restaurant_id, employee_id, period_start, period_end } = payload;
     if (period_start > period_end) {
       throw { code: 422, message: "Rango de fechas invalido", category: "VALIDATION" };
     }
+
+    const requestedRestaurantId = typeof restaurant_id === "number" ? restaurant_id : null;
+    const requestedEmployeeId = typeof employee_id === "string" && employee_id !== "all" ? employee_id : null;
 
     // Supervisora can operate on any active restaurant; scope enforced at UI level.
 
@@ -708,25 +712,37 @@ serve(async (req: Request) => {
     const filtros_json = {
       period_start,
       period_end,
+      restaurant_scope: requestedRestaurantId == null ? "all" : requestedRestaurantId,
+      employee_scope: requestedEmployeeId == null ? "all" : requestedEmployeeId,
       filters: payload.filtros_json ?? {},
       columns: selectedColumns,
       export_format: payload.export_format ?? "both",
     };
     const hash_documento = await hashCanonicalJson(filtros_json);
-    const basePath = `reports/${restaurant_id}/${period_start}_${period_end}/${request_id}`;
+    const scopeRestaurantPath = requestedRestaurantId == null ? "all" : String(requestedRestaurantId);
+    const scopeEmployeePath = requestedEmployeeId == null ? "all" : requestedEmployeeId;
+    const basePath = `reports/${scopeRestaurantPath}/${scopeEmployeePath}/${period_start}_${period_end}/${request_id}`;
     const file_path = `${basePath}.json`;
 
     const fromIso = `${period_start}T00:00:00.000Z`;
     const toIso = `${period_end}T23:59:59.999Z`;
 
     const shiftsClient = user.role === "supervisora" ? clientAdmin : clientUser;
-    const { data: shifts, error: shiftsError } = await shiftsClient
+    let shiftsQuery = shiftsClient
       .from("shifts")
       .select("id, employee_id, restaurant_id, start_time, end_time, state, status, approved_by, rejected_by, early_end_reason")
-      .eq("restaurant_id", restaurant_id)
       .gte("start_time", fromIso)
       .lte("start_time", toIso)
       .order("start_time", { ascending: true });
+
+    if (requestedRestaurantId != null) {
+      shiftsQuery = shiftsQuery.eq("restaurant_id", requestedRestaurantId);
+    }
+    if (requestedEmployeeId != null) {
+      shiftsQuery = shiftsQuery.eq("employee_id", requestedEmployeeId);
+    }
+
+    const { data: shifts, error: shiftsError } = await shiftsQuery;
 
     if (shiftsError) {
       throw { code: 409, message: "No se pudieron consultar turnos para el reporte", category: "BUSINESS", details: shiftsError };
@@ -734,7 +750,7 @@ serve(async (req: Request) => {
 
     const employeeIds = [...new Set((shifts ?? []).map((s) => String(s.employee_id)).filter((id) => id && id !== "null"))];
     const supervisorIds = [...new Set((shifts ?? []).map((s) => [s.approved_by, s.rejected_by]).flat().filter(Boolean).map((id) => String(id)))];
-    const restaurantIds = [restaurant_id];
+    const restaurantIds = [...new Set((shifts ?? []).map((s) => Number(s.restaurant_id)).filter((id) => Number.isFinite(id)))];
     const shiftIds = (shifts ?? []).map((s) => s.id);
 
     const [usersRes, restaurantsRes, photosRes, incidentsRes, scheduledRes] = await Promise.all([
@@ -833,7 +849,10 @@ serve(async (req: Request) => {
       const subareaLabel = typeof meta.subarea_label === "string" ? meta.subarea_label : null;
       const photoLabel = typeof meta.photo_label === "string" ? meta.photo_label : null;
       const zone = normalizeZone(meta);
-      const restaurantName = restaurantNameMap.get(Number(restaurant_id)) ?? `#${restaurant_id}`;
+      const shiftRestaurantId = Number((shifts ?? []).find((s) => Number(s.id) === Number(photo.shift_id))?.restaurant_id ?? NaN);
+      const restaurantName = Number.isFinite(shiftRestaurantId)
+        ? (restaurantNameMap.get(shiftRestaurantId) ?? `#${shiftRestaurantId}`)
+        : "N/A";
       const employeeIdForShift = shiftEmployeeMap.get(Number(photo.shift_id)) ?? "";
       const employeeName = userNameMap.get(employeeIdForShift) ?? "Sin nombre";
 
@@ -949,7 +968,7 @@ serve(async (req: Request) => {
             signed_url: signedUrl,
             captured_at: (ev.captured_at as string | null) ?? null,
             zone: String(ev.zone ?? "Zona no especificada"),
-            restaurant_name: String(ev.restaurant_name ?? (restaurantNameMap.get(Number(restaurant_id)) ?? `#${restaurant_id}`)),
+            restaurant_name: String(ev.restaurant_name ?? (row.restaurant_name ?? "N/A")),
             employee_name: String(ev.employee_name ?? (row.employee_name ?? "Sin nombre")),
             watermark_text: String(ev.watermark_text ?? ""),
           });
@@ -966,7 +985,7 @@ serve(async (req: Request) => {
             signed_url: signedUrl,
             captured_at: (ev.captured_at as string | null) ?? null,
             zone: String(ev.zone ?? "Zona no especificada"),
-            restaurant_name: String(ev.restaurant_name ?? (restaurantNameMap.get(Number(restaurant_id)) ?? `#${restaurant_id}`)),
+            restaurant_name: String(ev.restaurant_name ?? (row.restaurant_name ?? "N/A")),
             employee_name: String(ev.employee_name ?? (row.employee_name ?? "Sin nombre")),
             watermark_text: String(ev.watermark_text ?? ""),
           });
@@ -1055,7 +1074,9 @@ serve(async (req: Request) => {
     );
 
     const totalHours = rows.reduce((acc, r) => acc + (r.hours_worked ?? 0), 0);
-    const restaurantLabel = restaurantNameMap.get(Number(restaurant_id)) ?? `#${restaurant_id}`;
+    const restaurantLabel = requestedRestaurantId == null
+      ? "TODOS"
+      : (restaurantNameMap.get(Number(requestedRestaurantId)) ?? `#${requestedRestaurantId}`);
     const infoLines = [
       `Reporte restaurante: ${restaurantLabel}`,
       `Periodo: ${period_start} a ${period_end}`,
@@ -1204,6 +1225,29 @@ serve(async (req: Request) => {
       })
     );
 
+    let persistRestaurantId = requestedRestaurantId;
+    if (persistRestaurantId == null) {
+      persistRestaurantId = restaurantIds.length > 0 ? Number(restaurantIds[0]) : null;
+    }
+    if (persistRestaurantId == null) {
+      const { data: fallbackRestaurant, error: fallbackRestaurantError } = await clientAdmin
+        .from("restaurants")
+        .select("id")
+        .eq("is_active", true)
+        .order("id", { ascending: true })
+        .limit(1)
+        .single();
+      if (fallbackRestaurantError || !fallbackRestaurant?.id) {
+        throw {
+          code: 409,
+          message: "No se encontro restaurante de referencia para guardar el reporte",
+          category: "BUSINESS",
+          details: fallbackRestaurantError,
+        };
+      }
+      persistRestaurantId = Number(fallbackRestaurant.id);
+    }
+
     const uploads = await Promise.all(uploadOperations);
     for (const uploaded of uploads) {
       const typed = uploaded as { error?: unknown };
@@ -1243,7 +1287,7 @@ serve(async (req: Request) => {
     const { data, error } = await insertClient
       .from("reports")
       .insert({
-        restaurant_id,
+        restaurant_id: persistRestaurantId,
         period_start,
         period_end,
         generated_by: user.id,
@@ -1267,6 +1311,8 @@ serve(async (req: Request) => {
       action: "REPORT_GENERATE",
       context: {
         report_id: data.id,
+        requested_restaurant_scope: requestedRestaurantId == null ? "all" : requestedRestaurantId,
+        requested_employee_scope: requestedEmployeeId == null ? "all" : requestedEmployeeId,
         restaurant_id,
         period_start,
         period_end,

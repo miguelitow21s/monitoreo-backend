@@ -492,6 +492,7 @@ Example request:
 POST /reports_generate
 {
   "restaurant_id": 5,
+  "employee_id": "5f0d9bb8-4b48-4f9f-9e0a-f6d8c31fbbe7",
   "period_start": "2026-02-22",
   "period_end": "2026-03-24",
   "export_format": "both",
@@ -499,6 +500,32 @@ POST /reports_generate
     "Turno","Restaurante","Empleado","Supervisora","Inicio","Fin",
     "Estado","Duracion","Novedades","Evidencia inicial","Evidencia final"
   ]
+}
+```
+
+Scope "todos" (oficial):
+- `restaurant_id`: omitir, `null` o `"all"` => todos los restaurantes en alcance.
+- `employee_id`: omitir, `null` o `"all"` => todos los empleados en alcance.
+- `period_start` y `period_end` siguen siendo obligatorios.
+
+Ejemplos adicionales:
+```json
+{
+  "employee_id": "5f0d9bb8-4b48-4f9f-9e0a-f6d8c31fbbe7",
+  "restaurant_id": "all",
+  "period_start": "2026-04-01",
+  "period_end": "2026-04-13",
+  "export_format": "both"
+}
+```
+
+```json
+{
+  "restaurant_id": "all",
+  "employee_id": "all",
+  "period_start": "2026-04-01",
+  "period_end": "2026-04-13",
+  "export_format": "both"
 }
 ```
 
@@ -781,14 +808,15 @@ Notes:
 
 #### `POST /reports_generate`
 Required:
-- `restaurant_id`, `period_start`, `period_end`
+- `period_start`, `period_end`
 Optional:
-- `filtros_json`, `columns`, `export_format`
+- `restaurant_id`, `employee_id`, `filtros_json`, `columns`, `export_format`
 Notes:
+- Representacion oficial de "todos": omitir campo, `null` o `"all"`.
 - `columns` accepts canonical names and aliases (e.g. `Turno`, `Restaurante`, `Empleado`, `Duracion`, `Novedades`).
-- Si `period_start == period_end`, el PDF incluye paginas de evidencias (Antes/Despues) con marca de agua por foto.
-- Si `period_start == period_end`, el XLSX incluye hoja `Evidencias` con foto (IMAGE), URL y marca de agua por evidencia.
-- La marca de agua incluye: fecha/hora de captura, zona/lugar y restaurante.
+- Si `period_start == period_end`, el PDF incluye paginas de evidencias (Antes/Despues) con datos de trazabilidad sobre la foto.
+- Si `period_start == period_end`, el XLSX incluye hoja `Evidencias` con foto (IMAGE), URL y trazabilidad por evidencia.
+- La trazabilidad incluye: fecha/hora de captura, zona/lugar, restaurante y empleado.
 - returns `url_pdf`, `url_excel`, `totals`.
 
 ---
