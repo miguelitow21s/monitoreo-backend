@@ -4,7 +4,6 @@ import { z } from "npm:zod@3.23.8";
 import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
-import { ensureSupervisorRestaurantAccess } from "../_shared/scopeGuard.ts";
 import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { requireMethod, parseBody, requireIdempotencyKey, getClientIp } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
@@ -236,38 +235,6 @@ serve(async (req: Request) => {
           };
         }
 
-        const { data: scheduledShiftVisible, error: scheduledShiftVisibleError } = await clientUser
-          .from("scheduled_shifts")
-          .select("id")
-          .eq("id", payload.scheduled_shift_id)
-          .maybeSingle();
-
-        if (scheduledShiftVisibleError) {
-          throw {
-            code: 409,
-            message: "No se pudo validar alcance del turno programado",
-            category: "BUSINESS",
-            details: {
-              diagnostic_code: "SCHEDULED_SHIFT_RLS_LOOKUP_FAILED",
-              scheduled_shift_id: payload.scheduled_shift_id,
-              source: "user_scope_lookup",
-              error: scheduledShiftVisibleError,
-            },
-          };
-        }
-
-        if (!scheduledShiftVisible) {
-          throw {
-            code: 403,
-            message: "Sin permisos para acceder al turno programado",
-            category: "PERMISSION",
-            details: {
-              diagnostic_code: "SCHEDULED_SHIFT_FORBIDDEN",
-              scheduled_shift_id: payload.scheduled_shift_id,
-            },
-          };
-        }
-
         if (scheduledShift.status !== "scheduled") {
           throw {
             code: 409,
@@ -292,31 +259,6 @@ serve(async (req: Request) => {
               scheduled_shift_id: payload.scheduled_shift_id,
               expected_employee_id: String(scheduledShift.employee_id),
               received_employee_id: payload.assigned_employee_id,
-            },
-          };
-        }
-
-        if (user.role === "supervisora") {
-          await ensureSupervisorRestaurantAccess(user.id, scheduledShift.restaurant_id as number);
-        }
-
-        const { data: membership, error: membershipError } = await clientAdmin
-          .from("restaurant_employees")
-          .select("id")
-          .eq("restaurant_id", scheduledShift.restaurant_id as number)
-          .eq("user_id", payload.assigned_employee_id)
-          .maybeSingle();
-
-        if (membershipError || !membership) {
-          throw {
-            code: 409,
-            message: "Empleado asignado no pertenece al restaurante",
-            category: "BUSINESS",
-            details: membershipError ?? {
-              diagnostic_code: "EMPLOYEE_NOT_IN_RESTAURANT",
-              scheduled_shift_id: payload.scheduled_shift_id,
-              restaurant_id: scheduledShift.restaurant_id,
-              assigned_employee_id: payload.assigned_employee_id,
             },
           };
         }
@@ -364,17 +306,15 @@ serve(async (req: Request) => {
       }
 
       if (user.role === "supervisora") {
-        const { data: shift, error: shiftError } = await clientUser
+        const { data: shift, error: shiftError } = await clientAdmin
           .from("shifts")
-          .select("id, restaurant_id")
+          .select("id")
           .eq("id", payload.shift_id)
-          .single();
+          .maybeSingle();
 
         if (shiftError || !shift) {
           throw { code: 404, message: "Turno no encontrado", category: "BUSINESS", details: shiftError };
         }
-
-        await ensureSupervisorRestaurantAccess(user.id, shift.restaurant_id as number);
       }
 
       const { data, error } = await clientUser.rpc("create_operational_task", {
