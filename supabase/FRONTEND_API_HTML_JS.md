@@ -454,6 +454,7 @@ Actions:
 
 ### POST /reports_generate
 Genera PDF + XLSX (excel nativo).
+Para reportes de un solo dia (`period_start == period_end`), ambos formatos incluyen evidencias de inicio/fin (Antes/Despues) con metadatos de trazabilidad.
 
 ---
 
@@ -785,6 +786,9 @@ Optional:
 - `filtros_json`, `columns`, `export_format`
 Notes:
 - `columns` accepts canonical names and aliases (e.g. `Turno`, `Restaurante`, `Empleado`, `Duracion`, `Novedades`).
+- Si `period_start == period_end`, el PDF incluye paginas de evidencias (Antes/Despues) con marca de agua por foto.
+- Si `period_start == period_end`, el XLSX incluye hoja `Evidencias` con foto (IMAGE), URL y marca de agua por evidencia.
+- La marca de agua incluye: fecha/hora de captura, zona/lugar y restaurante.
 - returns `url_pdf`, `url_excel`, `totals`.
 
 ---

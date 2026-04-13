@@ -1,6 +1,8 @@
+// @ts-nocheck
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import * as XLSX from "https://esm.sh/xlsx@0.18.5";
 import { z } from "npm:zod@3.23.8";
+import { PDFDocument, StandardFonts, rgb } from "npm:pdf-lib@1.17.1";
 import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
@@ -279,7 +281,17 @@ function buildXlsxWorkbook(
     totalShifts: number;
     totalHours: number;
     totalScheduledHours: number;
-  }
+  },
+  evidenceRows?: Array<{
+    shift_id: number;
+    phase: "Antes" | "Despues";
+    index: number;
+    photo_url: string;
+    captured_at: string;
+    zone: string;
+    restaurant_name: string;
+    watermark_text: string;
+  }>
 ) {
   const dataRows = rows.map((r) => columns.map((col) => formatValue(r, col, "xlsx")));
   const title = `Reporte de turnos`;
@@ -323,8 +335,176 @@ function buildXlsxWorkbook(
 
   const workbook = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(workbook, worksheet, "Reporte");
+
+  if (evidenceRows && evidenceRows.length > 0) {
+    const evidenceHeader = [
+      "Foto",
+      "URL Foto",
+      "Turno",
+      "Fase",
+      "Indice",
+      "Capturada",
+      "Zona",
+      "Restaurante",
+      "Marca de agua",
+    ];
+    const evidenceData: Array<Array<string | number | { f: string }>> = [evidenceHeader];
+    for (const row of evidenceRows) {
+      const safeUrl = row.photo_url.replaceAll('"', '""');
+      evidenceData.push([
+        { f: `IFERROR(IMAGE("${safeUrl}"),"Ver URL")` },
+        row.photo_url,
+        row.shift_id,
+        row.phase,
+        row.index,
+        row.captured_at,
+        row.zone,
+        row.restaurant_name,
+        row.watermark_text,
+      ]);
+    }
+
+    const evidenceSheet = XLSX.utils.aoa_to_sheet(evidenceData as unknown[][]);
+    evidenceSheet["!cols"] = [
+      { wch: 24 },
+      { wch: 58 },
+      { wch: 10 },
+      { wch: 10 },
+      { wch: 8 },
+      { wch: 18 },
+      { wch: 24 },
+      { wch: 28 },
+      { wch: 60 },
+    ];
+    XLSX.utils.book_append_sheet(workbook, evidenceSheet, "Evidencias");
+  }
+
   return XLSX.write(workbook, { type: "array", bookType: "xlsx", compression: true });
 }
+
+type EvidenceForExport = {
+  shift_id: number;
+  phase: "Antes" | "Despues";
+  index: number;
+  path: string;
+  signed_url: string;
+  captured_at: string | null;
+  zone: string;
+  restaurant_name: string;
+  watermark_text: string;
+};
+
+function normalizeZone(meta: Record<string, unknown>) {
+  const candidates = [
+    meta.zone,
+    meta.zone_name,
+    meta.location,
+    meta.location_label,
+    meta.place,
+    meta.place_label,
+    meta.area_label,
+    meta.subarea_label,
+  ];
+
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim();
+    }
+  }
+  return "Zona no especificada";
+}
+
+function buildEvidenceWatermarkText(evidence: {
+  captured_at: string | null;
+  zone: string;
+  restaurant_name: string;
+}) {
+  const captured = evidence.captured_at ? formatDateTime(evidence.captured_at) : "Fecha/hora no disponible";
+  return `Fecha/Hora: ${captured} | Zona: ${evidence.zone} | Restaurante: ${evidence.restaurant_name}`;
+}
+
+async function buildSingleDayPdfWithEvidence(params: {
+  restaurantLabel: string;
+  periodStart: string;
+  periodEnd: string;
+  generatedAt: string;
+  totalShifts: number;
+  totalHours: number;
+  totalScheduledHours: number;
+  evidenceRows: EvidenceForExport[];
+}): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.create();
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+  const summaryPage = pdfDoc.addPage([595, 842]);
+  summaryPage.drawText("Reporte de turnos - Evidencias dia unico", { x: 40, y: 800, size: 16, font: bold, color: rgb(0, 0, 0) });
+  summaryPage.drawText(`Restaurante: ${params.restaurantLabel}`, { x: 40, y: 770, size: 11, font });
+  summaryPage.drawText(`Periodo: ${params.periodStart} a ${params.periodEnd}`, { x: 40, y: 752, size: 11, font });
+  summaryPage.drawText(`Generado: ${formatDateTime(params.generatedAt)}`, { x: 40, y: 734, size: 11, font });
+  summaryPage.drawText(`Total turnos: ${params.totalShifts}`, { x: 40, y: 716, size: 11, font });
+  summaryPage.drawText(`Horas trabajadas: ${formatDuration(params.totalHours)}`, { x: 40, y: 698, size: 11, font });
+  summaryPage.drawText(`Horas programadas: ${formatDuration(params.totalScheduledHours)}`, { x: 40, y: 680, size: 11, font });
+  summaryPage.drawText("Las siguientes paginas incluyen fotos Antes/Despues con marca de agua para trazabilidad.", {
+    x: 40,
+    y: 650,
+    size: 10,
+    font,
+    color: rgb(0.2, 0.2, 0.2),
+  });
+
+  for (const ev of params.evidenceRows) {
+    const page = pdfDoc.addPage([595, 842]);
+    page.drawText(`Turno ${ev.shift_id} - ${ev.phase} #${ev.index}`, { x: 40, y: 810, size: 14, font: bold });
+    page.drawText(`Restaurante: ${ev.restaurant_name}`, { x: 40, y: 790, size: 10, font });
+
+    const imageX = 40;
+    const imageY = 250;
+    const imageW = 515;
+    const imageH = 510;
+
+    let imageDrawn = false;
+    try {
+      const resp = await fetch(ev.signed_url);
+      if (resp.ok) {
+        const contentType = (resp.headers.get("content-type") ?? "").toLowerCase();
+        const bytes = new Uint8Array(await resp.arrayBuffer());
+        let img;
+        if (contentType.includes("png")) {
+          img = await pdfDoc.embedPng(bytes);
+        } else {
+          img = await pdfDoc.embedJpg(bytes);
+        }
+
+        const scale = Math.min(imageW / img.width, imageH / img.height);
+        const drawW = img.width * scale;
+        const drawH = img.height * scale;
+        const drawX = imageX + (imageW - drawW) / 2;
+        const drawY = imageY + (imageH - drawH) / 2;
+        page.drawImage(img, { x: drawX, y: drawY, width: drawW, height: drawH });
+        imageDrawn = true;
+      }
+    } catch {
+      imageDrawn = false;
+    }
+
+    if (!imageDrawn) {
+      page.drawRectangle({ x: imageX, y: imageY, width: imageW, height: imageH, borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 1 });
+      page.drawText("No se pudo incrustar la imagen. URL firmada:", { x: 50, y: imageY + imageH - 30, size: 10, font });
+      page.drawText(ev.signed_url.slice(0, 95), { x: 50, y: imageY + imageH - 48, size: 8, font, color: rgb(0.2, 0.2, 0.2) });
+    }
+
+    page.drawRectangle({ x: 46, y: 268, width: 503, height: 58, color: rgb(1, 1, 1), opacity: 0.65 });
+    page.drawText("Marca de agua", { x: 52, y: 308, size: 10, font: bold, color: rgb(0, 0, 0) });
+    page.drawText(`Fecha/Hora: ${ev.captured_at ? formatDateTime(ev.captured_at) : "No disponible"}`, { x: 52, y: 294, size: 9, font });
+    page.drawText(`Zona: ${ev.zone}`, { x: 52, y: 281, size: 9, font });
+    page.drawText(`Restaurante: ${ev.restaurant_name}`, { x: 280, y: 281, size: 9, font });
+  }
+
+  const bytes = await pdfDoc.save();
+  return bytes;
+}
+
 function buildSimplePdf(lines: string[]): Uint8Array {
   const escaped = lines.map((line) => line.replaceAll("\\", "\\\\").replaceAll("(", "\\(").replaceAll(")", "\\)").replaceAll("\r", " ").replaceAll("\n", " "));
   const textCommands = escaped.map((line, idx) => `${idx === 0 ? "" : "T* "}(${line}) Tj`).join("\n");
@@ -601,14 +781,21 @@ serve(async (req: Request) => {
       const areaLabel = typeof meta.area_label === "string" ? meta.area_label : null;
       const subareaLabel = typeof meta.subarea_label === "string" ? meta.subarea_label : null;
       const photoLabel = typeof meta.photo_label === "string" ? meta.photo_label : null;
+      const zone = normalizeZone(meta);
+      const restaurantName = restaurantNameMap.get(Number(restaurant_id)) ?? `#${restaurant_id}`;
 
       const entry = evidenceByShift.get(photo.shift_id) ?? { start: [], end: [], startUrls: [], endUrls: [] };
+      const signedUrl = signedMap.get(photo.storage_path) ?? "";
       const payload = {
         path: photo.storage_path,
         captured_at: photo.captured_at ?? null,
         area_label: areaLabel,
         subarea_label: subareaLabel,
         photo_label: photoLabel,
+        zone,
+        restaurant_name: restaurantName,
+        signed_url: signedUrl,
+        watermark_text: buildEvidenceWatermarkText({ captured_at: photo.captured_at ?? null, zone, restaurant_name: restaurantName }),
       };
 
       if (photo.type === "inicio") {
@@ -685,11 +872,51 @@ serve(async (req: Request) => {
         end_evidences: evidenceEntry?.end ?? [],
         start_evidence_urls: startUrls,
         end_evidence_urls: endUrls,
-        start_evidence_count: startUrls.length,
-        end_evidence_count: endUrls.length,
+        start_evidence_count: evidenceEntry?.start.length ?? 0,
+        end_evidence_count: evidenceEntry?.end.length ?? 0,
         incidents_count: incidentsCount.get(Number(s.id)) ?? 0,
       };
     });
+
+    const evidenceRowsForExport: EvidenceForExport[] = [];
+    if (includeEvidenceUrls) {
+      for (const row of rows) {
+        const startEvidences = (row.start_evidences as Array<Record<string, unknown>> | undefined) ?? [];
+        const endEvidences = (row.end_evidences as Array<Record<string, unknown>> | undefined) ?? [];
+
+        startEvidences.forEach((ev, idx) => {
+          const signedUrl = typeof ev.signed_url === "string" ? ev.signed_url : "";
+          if (!signedUrl) return;
+          evidenceRowsForExport.push({
+            shift_id: Number(row.shift_id),
+            phase: "Antes",
+            index: idx + 1,
+            path: String(ev.path ?? ""),
+            signed_url: signedUrl,
+            captured_at: (ev.captured_at as string | null) ?? null,
+            zone: String(ev.zone ?? "Zona no especificada"),
+            restaurant_name: String(ev.restaurant_name ?? (restaurantNameMap.get(Number(restaurant_id)) ?? `#${restaurant_id}`)),
+            watermark_text: String(ev.watermark_text ?? ""),
+          });
+        });
+
+        endEvidences.forEach((ev, idx) => {
+          const signedUrl = typeof ev.signed_url === "string" ? ev.signed_url : "";
+          if (!signedUrl) return;
+          evidenceRowsForExport.push({
+            shift_id: Number(row.shift_id),
+            phase: "Despues",
+            index: idx + 1,
+            path: String(ev.path ?? ""),
+            signed_url: signedUrl,
+            captured_at: (ev.captured_at as string | null) ?? null,
+            zone: String(ev.zone ?? "Zona no especificada"),
+            restaurant_name: String(ev.restaurant_name ?? (restaurantNameMap.get(Number(restaurant_id)) ?? `#${restaurant_id}`)),
+            watermark_text: String(ev.watermark_text ?? ""),
+          });
+        });
+      }
+    }
 
     const totalScheduledHours = rows.reduce((acc, r) => acc + (r.scheduled_hours ?? 0), 0);
     const totalWorkedHours = rows.reduce((acc, r) => acc + (r.hours_worked ?? 0), 0);
@@ -824,6 +1051,7 @@ serve(async (req: Request) => {
         restaurant_scheduled_hours_total: Number(totalScheduledHours.toFixed(2)),
       },
       columns: selectedColumns,
+      evidence_mode: includeEvidenceUrls ? "single_day_with_watermark" : "standard",
       rows,
     };
 
@@ -855,7 +1083,16 @@ serve(async (req: Request) => {
         totalShifts: rows.length,
         totalHours,
         totalScheduledHours,
-      });
+      }, evidenceRowsForExport.map((ev) => ({
+        shift_id: ev.shift_id,
+        phase: ev.phase,
+        index: ev.index,
+        photo_url: ev.signed_url,
+        captured_at: ev.captured_at ? formatDateTime(ev.captured_at) : "No disponible",
+        zone: ev.zone,
+        restaurant_name: ev.restaurant_name,
+        watermark_text: ev.watermark_text,
+      })));
       uploadOperations.push(
         clientAdmin.storage.from("reports").upload(
           xlsxPath,
@@ -871,22 +1108,30 @@ serve(async (req: Request) => {
     }
 
     if (includePdf) {
+      const pdfBytes = includeEvidenceUrls
+        ? await buildSingleDayPdfWithEvidence({
+            restaurantLabel,
+            periodStart: period_start,
+            periodEnd: period_end,
+            generatedAt,
+            totalShifts: rows.length,
+            totalHours,
+            totalScheduledHours,
+            evidenceRows: evidenceRowsForExport,
+          })
+        : buildPagedPdf(pages, {
+            pageWidth: pdfPageWidth,
+            pageHeight: pdfPageHeight,
+            fontSize: pdfFontSize,
+            lineHeight: pdfLineHeight,
+            startX: pdfStartX,
+            startY: pdfPageHeight - 40,
+          });
+
       uploadOperations.push(
         clientAdmin.storage.from("reports").upload(
           pdfPath,
-          new Blob(
-            [
-              buildPagedPdf(pages, {
-                pageWidth: pdfPageWidth,
-                pageHeight: pdfPageHeight,
-                fontSize: pdfFontSize,
-                lineHeight: pdfLineHeight,
-                startX: pdfStartX,
-                startY: pdfPageHeight - 40,
-              }),
-            ],
-            { type: "application/pdf" }
-          ),
+          new Blob([pdfBytes], { type: "application/pdf" }),
           {
           contentType: "application/pdf",
           upsert: true,
