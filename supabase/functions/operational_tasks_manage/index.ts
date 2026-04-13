@@ -204,22 +204,96 @@ serve(async (req: Request) => {
       await ensureEmployeeUser(payload.assigned_employee_id);
 
       if (hasScheduledShiftId) {
-        const { data: scheduledShift, error: scheduledShiftError } = await clientUser
+        const { data: scheduledShift, error: scheduledShiftAdminError } = await clientAdmin
           .from("scheduled_shifts")
           .select("id, restaurant_id, employee_id, status")
           .eq("id", payload.scheduled_shift_id)
-          .single();
+          .maybeSingle();
 
-        if (scheduledShiftError || !scheduledShift) {
-          throw { code: 404, message: "Turno programado no encontrado", category: "BUSINESS", details: scheduledShiftError };
+        if (scheduledShiftAdminError) {
+          throw {
+            code: 409,
+            message: "No se pudo validar turno programado",
+            category: "BUSINESS",
+            details: {
+              diagnostic_code: "SCHEDULED_SHIFT_LOOKUP_FAILED",
+              scheduled_shift_id: payload.scheduled_shift_id,
+              source: "admin_lookup",
+              error: scheduledShiftAdminError,
+            },
+          };
+        }
+
+        if (!scheduledShift) {
+          throw {
+            code: 404,
+            message: "Turno programado no existe en este ambiente",
+            category: "BUSINESS",
+            details: {
+              diagnostic_code: "SCHEDULED_SHIFT_NOT_FOUND",
+              scheduled_shift_id: payload.scheduled_shift_id,
+            },
+          };
+        }
+
+        const { data: scheduledShiftVisible, error: scheduledShiftVisibleError } = await clientUser
+          .from("scheduled_shifts")
+          .select("id")
+          .eq("id", payload.scheduled_shift_id)
+          .maybeSingle();
+
+        if (scheduledShiftVisibleError) {
+          throw {
+            code: 409,
+            message: "No se pudo validar alcance del turno programado",
+            category: "BUSINESS",
+            details: {
+              diagnostic_code: "SCHEDULED_SHIFT_RLS_LOOKUP_FAILED",
+              scheduled_shift_id: payload.scheduled_shift_id,
+              source: "user_scope_lookup",
+              error: scheduledShiftVisibleError,
+            },
+          };
+        }
+
+        if (!scheduledShiftVisible) {
+          throw {
+            code: 403,
+            message: "Sin permisos para acceder al turno programado",
+            category: "PERMISSION",
+            details: {
+              diagnostic_code: "SCHEDULED_SHIFT_FORBIDDEN",
+              scheduled_shift_id: payload.scheduled_shift_id,
+            },
+          };
         }
 
         if (scheduledShift.status !== "scheduled") {
-          throw { code: 409, message: "Solo se pueden asignar tareas a turnos programados", category: "BUSINESS" };
+          throw {
+            code: 409,
+            message: "Solo se pueden asignar tareas a turnos programados",
+            category: "BUSINESS",
+            details: {
+              diagnostic_code: "SCHEDULED_SHIFT_INVALID_STATUS",
+              scheduled_shift_id: payload.scheduled_shift_id,
+              current_status: scheduledShift.status,
+              expected_status: "scheduled",
+            },
+          };
         }
 
         if (String(scheduledShift.employee_id) !== payload.assigned_employee_id) {
-          throw { code: 422, message: "Empleado no coincide con el turno programado", category: "VALIDATION" };
+          throw {
+            code: 422,
+            message: "Empleado no coincide con el turno programado",
+            category: "VALIDATION",
+            details: {
+              diagnostic_code: "SCHEDULED_SHIFT_EMPLOYEE_MISMATCH",
+              scheduled_shift_id: payload.scheduled_shift_id,
+              expected_employee_id: String(scheduledShift.employee_id),
+              received_employee_id: payload.assigned_employee_id,
+            },
+          };
         }
 
         if (user.role === "supervisora") {
@@ -238,7 +312,12 @@ serve(async (req: Request) => {
             code: 409,
             message: "Empleado asignado no pertenece al restaurante",
             category: "BUSINESS",
-            details: membershipError ?? { message: "Empleado sin relacion restaurante" },
+            details: membershipError ?? {
+              diagnostic_code: "EMPLOYEE_NOT_IN_RESTAURANT",
+              scheduled_shift_id: payload.scheduled_shift_id,
+              restaurant_id: scheduledShift.restaurant_id,
+              assigned_employee_id: payload.assigned_employee_id,
+            },
           };
         }
 
