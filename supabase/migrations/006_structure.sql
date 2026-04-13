@@ -2,11 +2,9 @@
 -- FASE 3: ESTRUCTURA (CONSTRAINTS, INDICES, ENUMS, COLUMNAS ANTIFRAUDE)
 
 begin;
-
 create extension if not exists btree_gist;
 create extension if not exists cube;
 create extension if not exists earthdistance;
-
 -- 1) ENUMS
 
 do $$
@@ -19,28 +17,21 @@ begin
     create type public.delivery_status as enum ('registered','delivered','cancelled');
   end if;
 end $$;
-
 -- 2) COLUMNAS DE ESTADO TIPADAS (sin romper columnas existentes)
 alter table public.incidents
   add column if not exists status_v2 public.incident_status;
-
 update public.incidents
 set status_v2 = coalesce(status_v2, 'open'::public.incident_status)
 where status_v2 is null;
-
 alter table public.incidents
   alter column status_v2 set default 'open'::public.incident_status;
-
 alter table public.supply_deliveries
   add column if not exists status_v2 public.delivery_status;
-
 update public.supply_deliveries
 set status_v2 = coalesce(status_v2, 'registered'::public.delivery_status)
 where status_v2 is null;
-
 alter table public.supply_deliveries
   alter column status_v2 set default 'registered'::public.delivery_status;
-
 -- 3) EVIDENCIA ANTIFRAUDE
 alter table public.shifts
   add column if not exists start_evidence_hash text,
@@ -53,7 +44,6 @@ alter table public.shifts
   add column if not exists end_evidence_size_bytes bigint,
   add column if not exists end_evidence_created_at timestamptz,
   add column if not exists end_evidence_uploaded_by uuid references public.users(id) on delete set null;
-
 -- 4) REPORTES VERIFICABLES
 alter table public.reports
   add column if not exists hash_documento text,
@@ -61,11 +51,9 @@ alter table public.reports
   add column if not exists generated_at timestamptz,
   add column if not exists filtros_json jsonb,
   add column if not exists file_path text;
-
 update public.reports
 set generated_at = coalesce(generated_at, now())
 where generated_at is null;
-
 -- 5) CHECKS
 
 do $$
@@ -124,20 +112,15 @@ begin
       check (quantity > 0);
   end if;
 end $$;
-
 -- 6) INDICES
 create index if not exists idx_shifts_employee_state_endtime
   on public.shifts (employee_id, state, end_time);
-
 create index if not exists idx_shifts_restaurant_start_time
   on public.shifts (restaurant_id, start_time desc);
-
 create index if not exists idx_incidents_shift_created_at
   on public.incidents (shift_id, created_at desc);
-
 create index if not exists idx_supply_deliveries_restaurant_delivered_at
   on public.supply_deliveries (restaurant_id, delivered_at desc);
-
 -- 7) UNIQUE PARCIAL ANTIFRAUDE (solo si no hay duplicados)
 do $$
 begin
@@ -160,5 +143,4 @@ begin
     end if;
   end if;
 end $$;
-
 commit;

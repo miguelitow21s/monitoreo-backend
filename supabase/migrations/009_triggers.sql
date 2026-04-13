@@ -2,11 +2,9 @@
 -- FASE 6: TRIGGERS (AUDITORIA, INMUTABILIDAD, SINCRONIZACION)
 
 begin;
-
 -- 1) Columna adicional para auditoria fuerte
 alter table public.audit_logs
   add column if not exists actor_user_id uuid;
-
 -- 2) Trigger: actor tomado de auth.uid()
 create or replace function public.trg_audit_logs_set_actor()
 returns trigger
@@ -23,7 +21,6 @@ begin
   return new;
 end;
 $$;
-
 -- 3) Trigger: bloquear mutaciones de audit_logs
 create or replace function public.trg_audit_logs_block_mutation()
 returns trigger
@@ -33,7 +30,6 @@ begin
   raise exception 'audit_logs es append-only';
 end;
 $$;
-
 -- 4) Trigger: sincronizar shifts.state <-> shifts.status
 create or replace function public.trg_sync_shift_state_status()
 returns trigger
@@ -61,7 +57,6 @@ begin
   return new;
 end;
 $$;
-
 -- 5) Trigger: evidencia inmutable + metadatos minimos cuando hay path
 create or replace function public.trg_shifts_evidence_immutability()
 returns trigger
@@ -101,7 +96,6 @@ begin
   return new;
 end;
 $$;
-
 -- 6) Trigger: bloquear alteracion historica de turnos cerrados
 create or replace function public.trg_shifts_block_closed_history_mutation()
 returns trigger
@@ -124,7 +118,6 @@ begin
   return new;
 end;
 $$;
-
 -- 7) Trigger: defaults en supply_deliveries
 create or replace function public.trg_supply_deliveries_defaults()
 returns trigger
@@ -142,7 +135,6 @@ begin
   return new;
 end;
 $$;
-
 -- Re-crear triggers de forma idempotente
 
 do $$
@@ -189,5 +181,4 @@ begin
   before insert on public.supply_deliveries
   for each row execute function public.trg_supply_deliveries_defaults();
 end $$;
-
 commit;

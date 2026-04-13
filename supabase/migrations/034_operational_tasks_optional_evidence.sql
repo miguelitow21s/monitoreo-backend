@@ -2,22 +2,18 @@
 -- Allow operational tasks to be closed without evidence when configured.
 
 begin;
-
 alter table public.operational_tasks
   add column if not exists requires_evidence boolean default true,
   add column if not exists resolution_notes text;
-
 update public.operational_tasks
 set requires_evidence = coalesce(requires_evidence, true)
 where requires_evidence is null;
-
 do $$
 begin
   if not exists (select 1 from public.operational_tasks where requires_evidence is null) then
     alter table public.operational_tasks alter column requires_evidence set not null;
   end if;
 end $$;
-
 do $$
 begin
   if exists (
@@ -48,7 +44,6 @@ begin
       )
     );
 end $$;
-
 create or replace function public.operational_tasks_guard_update()
 returns trigger
 language plpgsql
@@ -134,7 +129,6 @@ begin
   return new;
 end;
 $$;
-
 create or replace function public.create_operational_task(
   p_shift_id integer,
   p_assigned_employee_id uuid,
@@ -220,8 +214,5 @@ begin
   return v_task_id;
 end;
 $$;
-
 grant execute on function public.create_operational_task(integer, uuid, text, text, text, timestamptz, boolean) to authenticated;
-
 commit;
-

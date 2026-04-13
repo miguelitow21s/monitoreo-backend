@@ -2,7 +2,6 @@
 -- FASE 1: SOLO DIAGNOSTICO (NO MODIFICA DATOS)
 
 begin;
-
 do $$
 declare
   v_count bigint;
@@ -103,5 +102,4 @@ begin
   raise notice '[PRECHECK] audit_logs sin actor/user: %', v_count;
 
 end $$;
-
 commit;

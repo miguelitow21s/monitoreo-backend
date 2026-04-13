@@ -1,5 +1,4 @@
 begin;
-
 do $$
 declare
   v_active_id bigint;
@@ -45,6 +44,4 @@ begin
     end if;
   end if;
 end $$;
-
 commit;
-

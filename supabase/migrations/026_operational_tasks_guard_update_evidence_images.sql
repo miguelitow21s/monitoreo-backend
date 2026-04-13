@@ -1,5 +1,4 @@
 begin;
-
 create or replace function public.operational_tasks_guard_update()
 returns trigger
 language plpgsql
@@ -79,5 +78,4 @@ begin
   return new;
 end;
 $$;
-
 commit;

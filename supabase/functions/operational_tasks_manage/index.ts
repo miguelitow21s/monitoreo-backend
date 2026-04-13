@@ -150,6 +150,32 @@ async function ensureEmployeeUser(employeeId: string) {
   return data;
 }
 
+async function ensureSupervisorRestaurantAccess(supervisorId: string, restaurantId: number) {
+  const { data: supervisor, error: supervisorError } = await clientAdmin
+    .from("profiles")
+    .select("id, role, is_active")
+    .eq("id", supervisorId)
+    .maybeSingle();
+
+  if (supervisorError || !supervisor) {
+    throw { code: 403, message: "Supervisora no valida", category: "PERMISSION", details: supervisorError };
+  }
+
+  if (String(supervisor.role) !== "supervisora" || supervisor.is_active === false) {
+    throw { code: 403, message: "Supervisora sin permiso", category: "PERMISSION" };
+  }
+
+  const { data: restaurant, error: restaurantError } = await clientAdmin
+    .from("restaurants")
+    .select("id")
+    .eq("id", restaurantId)
+    .maybeSingle();
+
+  if (restaurantError || !restaurant) {
+    throw { code: 404, message: "Restaurante no encontrado", category: "BUSINESS", details: restaurantError };
+  }
+}
+
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
   if (preflight) return preflight;
@@ -263,23 +289,34 @@ serve(async (req: Request) => {
           };
         }
 
-        const { data: taskId, error: createScheduledError } = await clientUser.rpc("create_operational_task_for_schedule", {
-          p_scheduled_shift_id: payload.scheduled_shift_id,
-          p_assigned_employee_id: payload.assigned_employee_id,
-          p_title: payload.title,
-          p_description: payload.description,
-          p_priority: payload.priority,
-          p_due_at: payload.due_at ?? null,
-          p_requires_evidence: payload.requires_evidence ?? true,
-        });
+        const nowIso = new Date().toISOString();
+        const { data: createdTask, error: createScheduledError } = await clientAdmin
+          .from("operational_tasks")
+          .insert({
+            shift_id: null,
+            scheduled_shift_id: payload.scheduled_shift_id,
+            restaurant_id: scheduledShift.restaurant_id,
+            assigned_employee_id: payload.assigned_employee_id,
+            created_by: user.id,
+            title: payload.title,
+            description: payload.description,
+            priority: payload.priority,
+            status: "pending",
+            due_at: payload.due_at ?? null,
+            requires_evidence: payload.requires_evidence ?? true,
+            created_at: nowIso,
+            updated_at: nowIso,
+          })
+          .select("id")
+          .single();
 
-        if (createScheduledError || !taskId) {
+        if (createScheduledError || !createdTask) {
           throw {
             code: 409,
             message: "No se pudo crear tarea operativa",
             category: "BUSINESS",
             details: {
-              diagnostic_code: "OP_TASK_CREATE_FROM_SCHEDULE_RPC_FAILED",
+              diagnostic_code: "OP_TASK_INSERT_FROM_SCHEDULE_FAILED",
               scheduled_shift_id: payload.scheduled_shift_id,
               assigned_employee_id: payload.assigned_employee_id,
               error: createScheduledError,
@@ -291,16 +328,16 @@ serve(async (req: Request) => {
           user_id: user.id,
           action: "OPERATIONAL_TASK_CREATE",
           context: {
-            task_id: taskId,
+            task_id: createdTask.id,
             scheduled_shift_id: payload.scheduled_shift_id,
             assigned_employee_id: payload.assigned_employee_id,
             priority: payload.priority,
-            path: "rpc_create_operational_task_for_schedule",
+            path: "insert_operational_tasks_from_schedule",
           },
           request_id,
         });
 
-        const successPayload = { success: true, data: { task_id: taskId }, error: null, request_id };
+        const successPayload = { success: true, data: { task_id: createdTask.id }, error: null, request_id };
         await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
         return response(true, successPayload.data, null, request_id);
       }
@@ -324,7 +361,8 @@ serve(async (req: Request) => {
         };
       }
 
-      const { data, error } = await clientUser
+      const nowIso = new Date().toISOString();
+      const { data, error } = await clientAdmin
         .from("operational_tasks")
         .insert({
           shift_id: payload.shift_id,
@@ -338,8 +376,8 @@ serve(async (req: Request) => {
           status: "pending",
           due_at: payload.due_at ?? null,
           requires_evidence: payload.requires_evidence ?? true,
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
+          created_at: nowIso,
+          updated_at: nowIso,
         })
         .select("id")
         .single();
@@ -362,7 +400,7 @@ serve(async (req: Request) => {
         user_id: user.id,
         action: "OPERATIONAL_TASK_CREATE",
         context: {
-          task_id: data,
+          task_id: data.id,
           shift_id: payload.shift_id,
           assigned_employee_id: payload.assigned_employee_id,
           priority: payload.priority,
@@ -370,7 +408,7 @@ serve(async (req: Request) => {
         request_id,
       });
 
-      const successPayload = { success: true, data: { task_id: data }, error: null, request_id };
+      const successPayload = { success: true, data: { task_id: data.id }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }

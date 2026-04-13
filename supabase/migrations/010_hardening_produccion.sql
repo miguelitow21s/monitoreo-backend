@@ -4,14 +4,12 @@
 -- Idempotente y orientado a no romper datos existentes
 
 begin;
-
 -- =========================================================
 -- 0) EXTENSIONES NECESARIAS
 -- =========================================================
 create extension if not exists btree_gist;
 create extension if not exists cube;
 create extension if not exists earthdistance;
-
 -- =========================================================
 -- 1) FUNCIONES DE ROL Y ALCANCE (SIN auth.role())
 -- =========================================================
@@ -28,9 +26,7 @@ as $$
   where u.id = auth.uid()
   limit 1;
 $$;
-
 grant execute on function public.actor_role() to authenticated;
-
 create or replace function public.can_supervise_restaurant(p_restaurant_id integer)
 returns boolean
 language sql
@@ -45,19 +41,15 @@ as $$
       and re.user_id = auth.uid()
   );
 $$;
-
 grant execute on function public.can_supervise_restaurant(integer) to authenticated;
-
 -- =========================================================
 -- 2) AUDITORIA INMUTABLE (append-only)
 -- =========================================================
 alter table public.audit_logs
   add column if not exists actor_user_id uuid;
-
 update public.audit_logs
 set actor_user_id = coalesce(actor_user_id, actor_id, user_id)
 where actor_user_id is null;
-
 create or replace function public.audit_logs_enforce_insert_only()
 returns trigger
 language plpgsql
@@ -69,7 +61,6 @@ begin
   return new;
 end;
 $$;
-
 create or replace function public.audit_logs_set_actor_from_auth()
 returns trigger
 language plpgsql
@@ -86,7 +77,6 @@ begin
   return new;
 end;
 $$;
-
 do $$
 begin
   if exists (select 1 from pg_trigger where tgname = 'tr_audit_logs_set_actor') then
@@ -105,9 +95,7 @@ begin
   before update or delete on public.audit_logs
   for each row execute function public.audit_logs_enforce_insert_only();
 end $$;
-
 revoke update, delete on public.audit_logs from anon, authenticated;
-
 -- =========================================================
 -- 3) ENUMS REALES PARA ESTADOS CRITICOS
 -- =========================================================
@@ -121,40 +109,30 @@ begin
     create type public.delivery_status as enum ('registered', 'delivered', 'cancelled');
   end if;
 end $$;
-
 alter table public.incidents
   add column if not exists status public.incident_status;
-
 update public.incidents
 set status = coalesce(status, 'open'::public.incident_status)
 where status is null;
-
 alter table public.incidents
   alter column status set default 'open'::public.incident_status;
-
 alter table public.incidents
   alter column status set not null;
-
 alter table public.supply_deliveries
   add column if not exists status public.delivery_status;
-
 update public.supply_deliveries
 set status = coalesce(status, 'registered'::public.delivery_status)
 where status is null;
-
 alter table public.supply_deliveries
   alter column status set default 'registered'::public.delivery_status;
-
 alter table public.supply_deliveries
   alter column status set not null;
-
 -- =========================================================
 -- 4) ANTIFRAUDE TURNOS + VALIDACIONES GEO/TIEMPO
 -- =========================================================
 create unique index if not exists uq_shifts_employee_active
 on public.shifts (employee_id)
 where state = 'activo' and end_time is null;
-
 do $$
 begin
   if not exists (
@@ -217,7 +195,6 @@ begin
       check (quantity > 0);
   end if;
 end $$;
-
 -- =========================================================
 -- 5) EVIDENCIA INMUTABLE (METADATOS OBLIGATORIOS)
 -- =========================================================
@@ -232,7 +209,6 @@ alter table public.shifts
   add column if not exists end_evidence_size_bytes bigint,
   add column if not exists end_evidence_created_at timestamptz,
   add column if not exists end_evidence_uploaded_by uuid references public.users(id) on delete set null;
-
 create or replace function public.shifts_guard_evidence_immutability()
 returns trigger
 language plpgsql
@@ -281,7 +257,6 @@ begin
   return new;
 end;
 $$;
-
 do $$
 begin
   if exists (select 1 from pg_trigger where tgname = 'tr_shifts_guard_evidence_immutability') then
@@ -292,7 +267,6 @@ begin
   before update on public.shifts
   for each row execute function public.shifts_guard_evidence_immutability();
 end $$;
-
 -- =========================================================
 -- 6) RATE LIMIT PERSISTENTE EN BD
 -- =========================================================
@@ -302,10 +276,8 @@ create table if not exists public.security_rate_limit_events (
   actor_id uuid not null,
   created_at timestamptz not null default now()
 );
-
 create index if not exists idx_rate_limit_action_actor_created_at
   on public.security_rate_limit_events (action, actor_id, created_at desc);
-
 create or replace function public.enforce_rate_limit(
   p_action text,
   p_max_attempts integer,
@@ -342,9 +314,7 @@ begin
   where created_at < now() - interval '7 days';
 end;
 $$;
-
 grant execute on function public.enforce_rate_limit(text, integer, interval, uuid) to authenticated;
-
 -- =========================================================
 -- 7) REPORTES VERIFICABLES
 -- =========================================================
@@ -354,11 +324,9 @@ alter table public.reports
   add column if not exists generated_at timestamptz,
   add column if not exists filtros_json jsonb,
   add column if not exists file_path text;
-
 update public.reports
 set generated_at = coalesce(generated_at, now())
 where generated_at is null;
-
 -- =========================================================
 -- 8) CUMPLIMIENTO LEGAL (CONSENTIMIENTO + SALUD)
 -- =========================================================
@@ -372,7 +340,6 @@ create table if not exists public.legal_terms_versions (
   created_at timestamptz not null default now(),
   created_by uuid null references public.users(id) on delete set null
 );
-
 create table if not exists public.user_legal_acceptances (
   id bigserial primary key,
   user_id uuid not null references public.users(id) on delete cascade,
@@ -382,7 +349,6 @@ create table if not exists public.user_legal_acceptances (
   user_agent text null,
   unique (user_id, legal_terms_id)
 );
-
 create table if not exists public.shift_health_forms (
   id bigserial primary key,
   shift_id integer not null references public.shifts(id) on delete cascade,
@@ -393,7 +359,6 @@ create table if not exists public.shift_health_forms (
   recorded_by uuid not null references public.users(id) on delete restrict,
   unique (shift_id, phase)
 );
-
 -- =========================================================
 -- 9) ENDURECIMIENTO RPC (OWNERSHIP + ANTIFRAUDE)
 -- =========================================================
@@ -413,7 +378,6 @@ begin
     execute format('revoke execute on function %s from anon, authenticated', v_fn);
   end loop;
 end $$;
-
 create or replace function public.start_shift(
   lat double precision,
   lng double precision,
@@ -503,7 +467,6 @@ begin
   return v_shift_id;
 end;
 $$;
-
 create or replace function public.end_shift(
   shift_id integer,
   lat double precision,
@@ -620,10 +583,8 @@ begin
   where id = shift_id;
 end;
 $$;
-
 grant execute on function public.start_shift(double precision, double precision, text, text, text, bigint) to authenticated;
 grant execute on function public.end_shift(integer, double precision, double precision, text, text, text, bigint) to authenticated;
-
 -- =========================================================
 -- 10) POLICIES RLS REFORZADAS (TABLAS CRITICAS)
 -- =========================================================
@@ -633,7 +594,6 @@ alter table public.scheduled_shifts enable row level security;
 alter table public.supplies enable row level security;
 alter table public.reports enable row level security;
 alter table public.audit_logs enable row level security;
-
 -- SHIFTS
 
 do $$
@@ -669,7 +629,6 @@ begin
     or (public.actor_role() = 'supervisora' and public.can_supervise_restaurant(restaurant_id))
   );
 end $$;
-
 -- INCIDENTS
 
 do $$
@@ -719,7 +678,6 @@ begin
     )
   );
 end $$;
-
 -- SCHEDULED SHIFTS
 
 do $$
@@ -755,7 +713,6 @@ begin
     or (public.actor_role() = 'supervisora' and public.can_supervise_restaurant(restaurant_id))
   );
 end $$;
-
 -- SUPPLIES
 
 do $$
@@ -802,7 +759,6 @@ begin
     )
   );
 end $$;
-
 -- REPORTS
 
 do $$
@@ -828,7 +784,6 @@ begin
   using (public.actor_role() = 'super_admin')
   with check (public.actor_role() = 'super_admin');
 end $$;
-
 -- AUDIT LOGS (sin SELECT publico)
 
 do $$
@@ -853,7 +808,6 @@ begin
   to authenticated
   with check (actor_user_id = auth.uid());
 end $$;
-
 -- =========================================================
 -- 11) NORMALIZACION CONTROLADA (sin romper compatibilidad)
 -- =========================================================
@@ -893,7 +847,6 @@ begin
   return new;
 end;
 $$;
-
 do $$
 begin
   if exists (select 1 from pg_trigger where tgname = 'tr_sync_shift_state_status') then
@@ -904,6 +857,4 @@ begin
   before insert or update on public.shifts
   for each row execute function public.sync_shift_state_status_hardened();
 end $$;
-
 commit;
-

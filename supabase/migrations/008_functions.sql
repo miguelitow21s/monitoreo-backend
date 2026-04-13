@@ -2,7 +2,6 @@
 -- FASE 5: FUNCIONES (SECURITY DEFINER ENDURECIDO, VALIDACIONES, SIN OVERLOADS PELIGROSOS)
 
 begin;
-
 -- 1) Tabla de rate-limit persistente
 create table if not exists public.security_rate_limit_events (
   id bigserial primary key,
@@ -10,10 +9,8 @@ create table if not exists public.security_rate_limit_events (
   actor_id uuid not null,
   created_at timestamptz not null default now()
 );
-
 create index if not exists idx_rate_limit_action_actor_created_at
   on public.security_rate_limit_events (action, actor_id, created_at desc);
-
 -- 2) Funcion de rate-limit
 create or replace function public.enforce_rate_limit(
   p_action text,
@@ -56,16 +53,13 @@ begin
   end if;
 end;
 $$;
-
 revoke execute on function public.enforce_rate_limit(text, integer, interval, uuid) from public;
 grant execute on function public.enforce_rate_limit(text, integer, interval, uuid) to authenticated;
-
 -- 3) Eliminar overloads peligrosos (si existen)
 drop function if exists public.start_shift(uuid, integer, double precision, double precision);
 drop function if exists public.end_shift(integer, double precision, double precision);
 drop function if exists public.start_shift(double precision, double precision, text, text, text, bigint);
 drop function if exists public.end_shift(integer, double precision, double precision, text, text, text, bigint);
-
 -- 4) get_my_active_shift seguro
 create or replace function public.get_my_active_shift()
 returns table (
@@ -85,10 +79,8 @@ as $$
   order by s.start_time desc
   limit 1;
 $$;
-
 revoke execute on function public.get_my_active_shift() from public;
 grant execute on function public.get_my_active_shift() to authenticated;
-
 -- 5) start_shift seguro (firma compatible frontend)
 create or replace function public.start_shift(
   lat double precision,
@@ -175,10 +167,8 @@ begin
   return v_shift_id;
 end;
 $$;
-
 revoke execute on function public.start_shift(double precision, double precision, text) from public;
 grant execute on function public.start_shift(double precision, double precision, text) to authenticated;
-
 -- 6) end_shift seguro (firma compatible frontend)
 create or replace function public.end_shift(
   shift_id integer,
@@ -289,8 +279,6 @@ begin
   values ('end_shift', v_actor_id);
 end;
 $$;
-
 revoke execute on function public.end_shift(integer, double precision, double precision, text) from public;
 grant execute on function public.end_shift(integer, double precision, double precision, text) to authenticated;
-
 commit;

@@ -2,7 +2,6 @@
 -- Fix storage RLS insert failures by validating auth via object path instead of owner_id.
 
 begin;
-
 create or replace function public.is_allowed_shift_evidence_path(p_name text, p_uid uuid)
 returns boolean
 language sql
@@ -20,7 +19,6 @@ as $$
     or p_name like format('%s/%%/inicio/%%', p_uid::text)
     or p_name like format('%s/%%/fin/%%', p_uid::text);
 $$;
-
 do $$
 begin
   begin execute 'drop policy if exists shift_evidence_select on storage.objects'; exception when undefined_object then null; end;
@@ -82,5 +80,4 @@ begin
       raise notice 'No permission to manage storage.objects policies. Apply storage policies manually in Storage.';
   end;
 end $$;
-
 commit;

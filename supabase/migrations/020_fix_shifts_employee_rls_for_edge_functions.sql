@@ -2,10 +2,8 @@
 -- Ensure empleado can start/end own shift through Edge Functions (RLS-safe).
 
 begin;
-
 -- Needed because shifts_start inserts into public.shifts using clientUser.
 grant insert on table public.shifts to authenticated;
-
 -- Employee insert policy for own active shift rows.
 do $$
 begin
@@ -30,7 +28,6 @@ begin
     and end_time is null
   );
 end $$;
-
 -- Employee update policy for ending own active shift.
 do $$
 begin
@@ -59,5 +56,4 @@ begin
     and employee_id = auth.uid()
   );
 end $$;
-
 commit;

@@ -3,7 +3,6 @@
 -- and report/assignment policy alignment for supervisora role.
 
 begin;
-
 -- ---------------------------------------------------------
 -- 1) Policy alignment: restaurant assignments + reports write scope
 -- ---------------------------------------------------------
@@ -67,7 +66,6 @@ begin
     )
   );
 end $$;
-
 -- ---------------------------------------------------------
 -- 1.1) Supplies access alignment for supervisora
 -- ---------------------------------------------------------
@@ -127,7 +125,6 @@ begin
     )
   );
 end $$;
-
 -- ---------------------------------------------------------
 -- 2) Scheduling RPCs: cancel / reschedule / bulk assign
 -- ---------------------------------------------------------
@@ -183,9 +180,7 @@ begin
   where id = p_scheduled_shift_id;
 end;
 $$;
-
 grant execute on function public.cancel_scheduled_shift(bigint, text) to authenticated;
-
 create or replace function public.reschedule_scheduled_shift(
   p_scheduled_shift_id bigint,
   p_scheduled_start timestamptz,
@@ -252,9 +247,7 @@ begin
   where id = p_scheduled_shift_id;
 end;
 $$;
-
 grant execute on function public.reschedule_scheduled_shift(bigint, timestamptz, timestamptz, text) to authenticated;
-
 create or replace function public.bulk_assign_scheduled_shifts(
   p_entries jsonb
 )
@@ -337,9 +330,7 @@ begin
   select v_total, v_created, v_failed, v_ids, v_errors;
 end;
 $$;
-
 grant execute on function public.bulk_assign_scheduled_shifts(jsonb) to authenticated;
-
 -- ---------------------------------------------------------
 -- 3) Operational tasks RPCs
 -- ---------------------------------------------------------
@@ -425,9 +416,7 @@ begin
   return v_task_id;
 end;
 $$;
-
 grant execute on function public.create_operational_task(integer, uuid, text, text, text, timestamptz) to authenticated;
-
 create or replace function public.complete_operational_task(
   p_task_id bigint,
   p_evidence_path text,
@@ -490,9 +479,7 @@ begin
   end if;
 end;
 $$;
-
 grant execute on function public.complete_operational_task(bigint, text, text, text, bigint) to authenticated;
-
 -- ---------------------------------------------------------
 -- 4) Storage bucket for report artifacts
 -- ---------------------------------------------------------
@@ -506,5 +493,4 @@ begin
     raise notice 'Sin permisos para crear bucket reports desde SQL Editor. Crealo manualmente en Storage > Buckets.';
   end;
 end $$;
-
 commit;

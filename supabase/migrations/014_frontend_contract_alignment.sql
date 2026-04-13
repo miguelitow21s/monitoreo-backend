@@ -2,7 +2,6 @@
 -- Align backend contract with frontend operational tasks, supervisor presence and reports requirements.
 
 begin;
-
 -- ---------------------------------------------------------
 -- 1) Storage helper for allowed shift-evidence prefixes
 -- ---------------------------------------------------------
@@ -22,7 +21,6 @@ as $$
     or p_name like format('%s/%%/inicio/%%', p_uid::text)
     or p_name like format('%s/%%/fin/%%', p_uid::text);
 $$;
-
 -- ---------------------------------------------------------
 -- 2) operational_tasks table + integrity rules
 -- ---------------------------------------------------------
@@ -46,7 +44,6 @@ create table if not exists public.operational_tasks (
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
-
 alter table public.operational_tasks
   add column if not exists shift_id integer references public.shifts(id) on delete restrict,
   add column if not exists restaurant_id integer references public.restaurants(id) on delete restrict,
@@ -65,7 +62,6 @@ alter table public.operational_tasks
   add column if not exists evidence_size_bytes bigint,
   add column if not exists created_at timestamptz default now(),
   add column if not exists updated_at timestamptz default now();
-
 update public.operational_tasks
 set
   priority = coalesce(priority, 'normal'),
@@ -76,7 +72,6 @@ where priority is null
    or status is null
    or created_at is null
    or updated_at is null;
-
 do $$
 begin
   if not exists (select 1 from public.operational_tasks where shift_id is null) then
@@ -110,7 +105,6 @@ begin
     alter table public.operational_tasks alter column updated_at set not null;
   end if;
 end $$;
-
 do $$
 begin
   if not exists (
@@ -186,13 +180,10 @@ begin
       );
   end if;
 end $$;
-
 create index if not exists idx_operational_tasks_restaurant_status_due
   on public.operational_tasks (restaurant_id, status, due_at);
-
 create index if not exists idx_operational_tasks_assigned_status
   on public.operational_tasks (assigned_employee_id, status, updated_at desc);
-
 create or replace function public.operational_tasks_guard_update()
 returns trigger
 language plpgsql
@@ -268,7 +259,6 @@ begin
   return new;
 end;
 $$;
-
 do $$
 begin
   if exists (
@@ -281,11 +271,9 @@ begin
   before update on public.operational_tasks
   for each row execute function public.operational_tasks_guard_update();
 end $$;
-
 alter table public.operational_tasks enable row level security;
 revoke all on table public.operational_tasks from public, anon;
 grant select, insert, update on table public.operational_tasks to authenticated;
-
 do $$
 declare
   p record;
@@ -344,7 +332,6 @@ begin
     and resolved_by = auth.uid()
   );
 end $$;
-
 -- ---------------------------------------------------------
 -- 3) supervisor_presence_logs table + RLS
 -- ---------------------------------------------------------
@@ -362,7 +349,6 @@ create table if not exists public.supervisor_presence_logs (
   recorded_at timestamptz not null default now(),
   notes text null
 );
-
 alter table public.supervisor_presence_logs
   add column if not exists supervisor_id uuid references public.users(id) on delete restrict,
   add column if not exists restaurant_id integer references public.restaurants(id) on delete restrict,
@@ -375,7 +361,6 @@ alter table public.supervisor_presence_logs
   add column if not exists evidence_size_bytes bigint,
   add column if not exists recorded_at timestamptz default now(),
   add column if not exists notes text;
-
 do $$
 begin
   if not exists (
@@ -428,17 +413,13 @@ begin
       check (evidence_mime_type in ('image/jpeg', 'image/png', 'image/webp'));
   end if;
 end $$;
-
 create index if not exists idx_supervisor_presence_logs_supervisor_recorded
   on public.supervisor_presence_logs (supervisor_id, recorded_at desc);
-
 create index if not exists idx_supervisor_presence_logs_restaurant_recorded
   on public.supervisor_presence_logs (restaurant_id, recorded_at desc);
-
 alter table public.supervisor_presence_logs enable row level security;
 revoke all on table public.supervisor_presence_logs from public, anon;
 grant select, insert on table public.supervisor_presence_logs to authenticated;
-
 do $$
 declare
   p record;
@@ -472,7 +453,6 @@ begin
     )
   );
 end $$;
-
 -- ---------------------------------------------------------
 -- 4) shift_incidents view hardening (respect invoker RLS)
 -- ---------------------------------------------------------
@@ -486,7 +466,6 @@ select
   i.created_at,
   i.created_by
 from public.incidents i;
-
 create or replace function public.shift_incidents_insert()
 returns trigger
 language plpgsql
@@ -514,7 +493,6 @@ begin
   return new;
 end;
 $$;
-
 do $$
 begin
   if exists (
@@ -527,13 +505,11 @@ begin
   instead of insert on public.shift_incidents
   for each row execute function public.shift_incidents_insert();
 end $$;
-
 -- ---------------------------------------------------------
 -- 5) reports RLS by restaurant scope for supervisora
 -- ---------------------------------------------------------
 grant select, insert on table public.reports to authenticated;
 revoke update, delete on table public.reports from authenticated;
-
 do $$
 declare
   p record;
@@ -574,7 +550,6 @@ begin
   for delete to authenticated
   using (public.actor_role_secure() = 'super_admin');
 end $$;
-
 -- ---------------------------------------------------------
 -- 6) storage.objects policies aligned to official prefixes
 -- ---------------------------------------------------------
@@ -639,5 +614,4 @@ begin
       raise notice 'No permission to manage storage.objects policies. Apply shift-evidence policies manually in Storage.';
   end;
 end $$;
-
 commit;

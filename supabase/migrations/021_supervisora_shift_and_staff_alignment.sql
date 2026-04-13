@@ -2,10 +2,8 @@
 -- Enable supervisora own start/end shift flow and employee assignment operations.
 
 begin;
-
 -- Needed because shifts_start inserts into public.shifts using clientUser.
 grant insert on table public.shifts to authenticated;
-
 -- Empleado insert policy for own active shift rows.
 do $$
 begin
@@ -30,7 +28,6 @@ begin
     and end_time is null
   );
 end $$;
-
 -- Supervisora insert policy for own active shift rows.
 do $$
 begin
@@ -55,7 +52,6 @@ begin
     and end_time is null
   );
 end $$;
-
 -- Empleado update policy for ending own active shift.
 do $$
 begin
@@ -84,7 +80,6 @@ begin
     and employee_id = auth.uid()
   );
 end $$;
-
 -- Supervisora update policy for ending own active shift.
 do $$
 begin
@@ -113,5 +108,4 @@ begin
     and employee_id = auth.uid()
   );
 end $$;
-
 commit;

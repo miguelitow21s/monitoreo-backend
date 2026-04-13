@@ -2,7 +2,6 @@
 -- Ensure frontend RPC bootstrap_my_user exists and is executable by authenticated users.
 
 begin;
-
 create or replace function public.bootstrap_my_user()
 returns table (
   id uuid,
@@ -101,7 +100,5 @@ begin
   where p.id = v_uid;
 end;
 $$;
-
 grant execute on function public.bootstrap_my_user() to authenticated;
-
 commit;

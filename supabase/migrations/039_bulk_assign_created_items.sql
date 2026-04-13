@@ -2,9 +2,7 @@
 -- Return created_items mapping for bulk schedule assignments.
 
 begin;
-
 drop function if exists public.bulk_assign_scheduled_shifts(jsonb);
-
 create or replace function public.bulk_assign_scheduled_shifts(
   p_entries jsonb
 )
@@ -100,7 +98,5 @@ begin
   select v_total, v_created, v_failed, v_ids, v_errors, v_created_items;
 end;
 $$;
-
 grant execute on function public.bulk_assign_scheduled_shifts(jsonb) to authenticated;
-
 commit;

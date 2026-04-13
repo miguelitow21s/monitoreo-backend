@@ -2,7 +2,6 @@
 -- Broaden storage path validation to accept common uid-based prefixes used by frontend clients.
 
 begin;
-
 create or replace function public.is_allowed_shift_evidence_path(p_name text, p_uid uuid)
 returns boolean
 language sql
@@ -30,7 +29,6 @@ as $$
     or split_part(p_name, '/', 1) = p_uid::text
     or (split_part(p_name, '/', 1) = 'users' and split_part(p_name, '/', 2) = p_uid::text);
 $$;
-
 do $$
 begin
   begin execute 'drop policy if exists shift_evidence_select on storage.objects'; exception when undefined_object then null; end;
@@ -87,5 +85,4 @@ begin
       raise notice 'No permission to manage storage.objects policies. Apply storage policies manually in Storage.';
   end;
 end $$;
-
 commit;

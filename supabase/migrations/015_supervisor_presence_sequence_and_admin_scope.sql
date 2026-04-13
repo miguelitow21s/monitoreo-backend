@@ -2,7 +2,6 @@
 -- Final alignment for supervisor presence lifecycle and admin insert scope.
 
 begin;
-
 -- ---------------------------------------------------------
 -- 1) Guard sequence: avoid duplicate start without end
 -- ---------------------------------------------------------
@@ -70,7 +69,6 @@ begin
   return new;
 end;
 $$;
-
 do $$
 begin
   if exists (
@@ -83,7 +81,6 @@ begin
   before insert on public.supervisor_presence_logs
   for each row execute function public.supervisor_presence_logs_guard_sequence();
 end $$;
-
 -- ---------------------------------------------------------
 -- 2) RLS: super_admin full insert scope on supervisor presence
 -- ---------------------------------------------------------
@@ -122,5 +119,4 @@ begin
     )
   );
 end $$;
-
 commit;

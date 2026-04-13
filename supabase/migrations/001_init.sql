@@ -2,13 +2,11 @@
 CREATE TYPE user_role AS ENUM ('super_admin', 'supervisora', 'empleado');
 CREATE TYPE shift_state AS ENUM ('activo', 'finalizado', 'aprobado', 'rechazado');
 CREATE TYPE photo_type AS ENUM ('inicio', 'fin');
-
 -- ROLES
 CREATE TABLE roles (
   id SERIAL PRIMARY KEY,
   name user_role UNIQUE NOT NULL
 );
-
 -- USERS (extiende auth.users)
 CREATE TABLE users (
   id UUID PRIMARY KEY REFERENCES auth.users(id),
@@ -17,7 +15,6 @@ CREATE TABLE users (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
-
 -- RESTAURANTS
 CREATE TABLE restaurants (
   id SERIAL PRIMARY KEY,
@@ -28,7 +25,6 @@ CREATE TABLE restaurants (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
-
 -- SHIFTS
 CREATE TABLE shifts (
   id SERIAL PRIMARY KEY,
@@ -46,9 +42,7 @@ CREATE TABLE shifts (
   created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   );
-
-
-  -- Un solo turno activo por empleado (índice único parcial)
+-- Un solo turno activo por empleado (índice único parcial)
   CREATE UNIQUE INDEX one_active_shift_per_employee
   ON shifts (employee_id)
   WHERE state = 'activo';
@@ -65,7 +59,6 @@ CREATE TABLE shift_photos (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE (shift_id, type)
 );
-
 -- INCIDENTS
 CREATE TABLE incidents (
   id SERIAL PRIMARY KEY,
@@ -74,7 +67,6 @@ CREATE TABLE incidents (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   created_by UUID REFERENCES users(id) NOT NULL
 );
-
 -- SUPPLIES
 CREATE TABLE supplies (
   id SERIAL PRIMARY KEY,
@@ -82,7 +74,6 @@ CREATE TABLE supplies (
   unit TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
-
 -- SUPPLY_DELIVERIES
 CREATE TABLE supply_deliveries (
   id SERIAL PRIMARY KEY,
@@ -92,7 +83,6 @@ CREATE TABLE supply_deliveries (
   delivered_at TIMESTAMPTZ NOT NULL,
   delivered_by UUID REFERENCES users(id) NOT NULL
 );
-
 -- AUDIT_LOGS
 CREATE TABLE audit_logs (
   id SERIAL PRIMARY KEY,
@@ -102,7 +92,6 @@ CREATE TABLE audit_logs (
   request_id UUID NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
-
 -- REPORTS
 CREATE TABLE reports (
   id SERIAL PRIMARY KEY,
@@ -114,7 +103,6 @@ CREATE TABLE reports (
   url_excel TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
-
 -- ÍNDICES
 CREATE INDEX idx_shifts_employee_id ON shifts(employee_id);
 CREATE INDEX idx_shifts_restaurant_id ON shifts(restaurant_id);
@@ -124,7 +112,6 @@ CREATE INDEX idx_incidents_shift_id ON incidents(shift_id);
 CREATE INDEX idx_supply_deliveries_restaurant_id ON supply_deliveries(restaurant_id);
 CREATE INDEX idx_audit_logs_user_id ON audit_logs(user_id);
 CREATE INDEX idx_reports_restaurant_id ON reports(restaurant_id);
-
 -- TRIGGERS DE AUDITORÍA
 CREATE OR REPLACE FUNCTION log_audit_trigger() RETURNS trigger AS $$
 BEGIN
@@ -133,7 +120,6 @@ BEGIN
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql;
-
 CREATE TRIGGER audit_users AFTER INSERT OR UPDATE OR DELETE ON users
   FOR EACH ROW EXECUTE FUNCTION log_audit_trigger();
 CREATE TRIGGER audit_shifts AFTER INSERT OR UPDATE OR DELETE ON shifts
@@ -148,7 +134,6 @@ CREATE TRIGGER audit_supply_deliveries AFTER INSERT OR UPDATE OR DELETE ON suppl
   FOR EACH ROW EXECUTE FUNCTION log_audit_trigger();
 CREATE TRIGGER audit_reports AFTER INSERT OR UPDATE OR DELETE ON reports
   FOR EACH ROW EXECUTE FUNCTION log_audit_trigger();
-
 -- FUNCIONES RPC
 CREATE OR REPLACE FUNCTION start_shift(employee_id UUID, restaurant_id INTEGER, lat DOUBLE PRECISION, lng DOUBLE PRECISION)
 RETURNS INTEGER LANGUAGE plpgsql AS $$
@@ -172,7 +157,6 @@ BEGIN
   RETURN shift_id;
 END;
 $$;
-
 CREATE OR REPLACE FUNCTION end_shift(shift_id INTEGER, lat DOUBLE PRECISION, lng DOUBLE PRECISION)
 RETURNS VOID LANGUAGE plpgsql AS $$
 DECLARE
@@ -189,7 +173,6 @@ BEGIN
   UPDATE shifts SET end_time = NOW(), end_lat = lat, end_lng = lng, state = 'finalizado', updated_at = NOW() WHERE id = shift_id;
 END;
 $$;
-
 CREATE OR REPLACE FUNCTION upload_evidence(shift_id INTEGER, user_id UUID, url TEXT, type photo_type, lat DOUBLE PRECISION, lng DOUBLE PRECISION)
 RETURNS VOID LANGUAGE plpgsql AS $$
 BEGIN
@@ -199,21 +182,18 @@ BEGIN
   INSERT INTO shift_photos(shift_id, user_id, url, type, taken_at, lat, lng, created_at) VALUES (shift_id, user_id, url, type, NOW(), lat, lng, NOW());
 END;
 $$;
-
 CREATE OR REPLACE FUNCTION approve_shift(shift_id INTEGER, supervisor_id UUID)
 RETURNS VOID LANGUAGE plpgsql AS $$
 BEGIN
   UPDATE shifts SET state = 'aprobado', approved_by = supervisor_id, updated_at = NOW() WHERE id = shift_id;
 END;
 $$;
-
 CREATE OR REPLACE FUNCTION reject_shift(shift_id INTEGER, supervisor_id UUID)
 RETURNS VOID LANGUAGE plpgsql AS $$
 BEGIN
   UPDATE shifts SET state = 'rechazado', rejected_by = supervisor_id, updated_at = NOW() WHERE id = shift_id;
 END;
 $$;
-
 CREATE OR REPLACE FUNCTION generate_report(restaurant_id INTEGER, period_start DATE, period_end DATE, generated_by UUID)
 RETURNS INTEGER LANGUAGE plpgsql AS $$
 DECLARE
@@ -225,7 +205,6 @@ BEGIN
   RETURN report_id;
 END;
 $$;
-
 -- RLS
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
 ALTER TABLE restaurants ENABLE ROW LEVEL SECURITY;
@@ -236,24 +215,20 @@ ALTER TABLE supplies ENABLE ROW LEVEL SECURITY;
 ALTER TABLE supply_deliveries ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reports ENABLE ROW LEVEL SECURITY;
-
 -- SELECT: empleado solo ve sus turnos
 CREATE POLICY "Empleado ve solo sus turnos" ON shifts
   FOR SELECT
   USING (employee_id = auth.uid());
-
 -- INSERT: empleado solo puede crear turnos propios
 CREATE POLICY "Empleado inserta solo sus turnos" ON shifts
   FOR INSERT
   WITH CHECK (employee_id = auth.uid());
-
 -- SUPERVISORA
 CREATE POLICY "Supervisora ve turnos" ON shifts
   FOR SELECT
   USING (auth.role() = 'supervisora');
-
 -- SUPER ADMIN
 CREATE POLICY "Super admin acceso total" ON shifts
   FOR ALL
   USING (auth.role() = 'super_admin');
--- (Repetir lógica para shift_photos, incidents, etc.)
+-- (Repetir lógica para shift_photos, incidents, etc.);

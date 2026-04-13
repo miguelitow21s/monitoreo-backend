@@ -2,16 +2,12 @@
 -- Allow operational tasks to be created for scheduled shifts and link them when the shift starts.
 
 begin;
-
 alter table public.operational_tasks
   add column if not exists scheduled_shift_id bigint references public.scheduled_shifts(id) on delete set null;
-
 alter table public.operational_tasks
   alter column shift_id drop not null;
-
 create index if not exists idx_operational_tasks_scheduled_shift
   on public.operational_tasks (scheduled_shift_id);
-
 create or replace function public.operational_tasks_guard_update()
 returns trigger
 language plpgsql
@@ -98,7 +94,6 @@ begin
   return new;
 end;
 $$;
-
 create or replace function public.create_operational_task_for_schedule(
   p_scheduled_shift_id bigint,
   p_assigned_employee_id uuid,
@@ -200,7 +195,5 @@ begin
   return v_task_id;
 end;
 $$;
-
 grant execute on function public.create_operational_task_for_schedule(bigint, uuid, text, text, text, timestamptz, boolean) to authenticated;
-
 commit;

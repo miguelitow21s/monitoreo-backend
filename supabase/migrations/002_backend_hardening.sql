@@ -2,7 +2,6 @@
 -- Safe additive migration for production hardening
 
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
 CREATE TABLE IF NOT EXISTS idempotency_records (
   user_id UUID NOT NULL,
   endpoint TEXT NOT NULL,
@@ -13,18 +12,14 @@ CREATE TABLE IF NOT EXISTS idempotency_records (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   PRIMARY KEY (user_id, endpoint, idempotency_key)
 );
-
 CREATE INDEX IF NOT EXISTS idx_idempotency_records_created_at ON idempotency_records(created_at);
-
 CREATE TABLE IF NOT EXISTS rate_limit_windows (
   bucket TEXT NOT NULL,
   window_start TIMESTAMPTZ NOT NULL,
   hit_count INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (bucket, window_start)
 );
-
 CREATE INDEX IF NOT EXISTS idx_rate_limit_windows_window_start ON rate_limit_windows(window_start);
-
 ALTER TABLE shift_photos
   ADD COLUMN IF NOT EXISTS accuracy DOUBLE PRECISION,
   ADD COLUMN IF NOT EXISTS captured_at TIMESTAMPTZ,
@@ -32,7 +27,6 @@ ALTER TABLE shift_photos
   ADD COLUMN IF NOT EXISTS mime_type TEXT,
   ADD COLUMN IF NOT EXISTS file_size BIGINT,
   ADD COLUMN IF NOT EXISTS storage_path TEXT;
-
 CREATE OR REPLACE FUNCTION check_rate_limit(
   p_bucket TEXT,
   p_limit INTEGER,
@@ -60,7 +54,6 @@ BEGIN
   RETURN v_count <= p_limit;
 END;
 $$;
-
 CREATE OR REPLACE FUNCTION idempotency_begin(
   p_user_id UUID,
   p_endpoint TEXT,
@@ -89,7 +82,6 @@ BEGIN
     AND idempotency_key = p_key;
 END;
 $$;
-
 CREATE OR REPLACE FUNCTION idempotency_finish(
   p_user_id UUID,
   p_endpoint TEXT,

@@ -2,7 +2,6 @@
 -- Align storage bucket + policies to canonical bucket used by Edge Functions: shift-evidence
 
 begin;
-
 do $$
 begin
   -- Ensure canonical private bucket exists
@@ -84,5 +83,4 @@ begin
       raise notice 'No permission to manage storage.objects policies. Apply shift-evidence policies manually in Storage.';
   end;
 end $$;
-
 commit;

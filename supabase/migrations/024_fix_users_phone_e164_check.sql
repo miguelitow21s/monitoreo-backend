@@ -2,7 +2,6 @@
 -- Fix phone_e164 check constraint to accept valid E.164 numbers (+<country><number>).
 
 begin;
-
 do $$
 begin
   if exists (
@@ -18,5 +17,4 @@ begin
     add constraint users_phone_e164_check
     check (phone_e164 is null or phone_e164 ~ E'^\\+[1-9][0-9]{7,14}$');
 end $$;
-
 commit;

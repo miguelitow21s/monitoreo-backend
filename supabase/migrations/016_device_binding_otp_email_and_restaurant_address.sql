@@ -3,7 +3,6 @@
 -- email notification outbox, and normalized restaurant address fields.
 
 begin;
-
 -- ---------------------------------------------------------
 -- 1) Restaurants normalized address + enforce geofence required
 -- ---------------------------------------------------------
@@ -14,20 +13,16 @@ alter table public.restaurants
   add column if not exists postal_code text,
   add column if not exists country text,
   add column if not exists place_id text;
-
 create index if not exists idx_restaurants_place_id
   on public.restaurants (place_id)
   where place_id is not null;
-
 create index if not exists idx_restaurants_city_state
   on public.restaurants (city, state)
   where city is not null;
-
 update public.restaurants
 set
   radius = coalesce(radius, geofence_radius_m),
   geofence_radius_m = coalesce(geofence_radius_m, radius);
-
 do $$
 begin
   if exists (
@@ -62,13 +57,11 @@ begin
       alter column geofence_radius_m set not null;
   end if;
 end $$;
-
 -- ---------------------------------------------------------
 -- 2) Users: phone for OTP
 -- ---------------------------------------------------------
 alter table public.users
   add column if not exists phone_e164 text;
-
 do $$
 begin
   if not exists (
@@ -82,11 +75,9 @@ begin
       check (phone_e164 is null or phone_e164 ~ '^\\+[1-9][0-9]{7,14}$');
   end if;
 end $$;
-
 create index if not exists idx_users_phone_e164
   on public.users (phone_e164)
   where phone_e164 is not null;
-
 -- ---------------------------------------------------------
 -- 3) Trusted devices + OTP + email outbox
 -- ---------------------------------------------------------
@@ -108,10 +99,8 @@ create table if not exists public.user_trusted_devices (
   constraint user_trusted_devices_hash_len_check check (char_length(device_fingerprint_hash) between 32 and 128),
   unique (user_id, device_fingerprint_hash)
 );
-
 create index if not exists idx_user_trusted_devices_user_active
   on public.user_trusted_devices (user_id, revoked_at, last_seen_at desc);
-
 create table if not exists public.user_phone_otps (
   id bigserial primary key,
   user_id uuid not null references public.users(id) on delete cascade,
@@ -131,14 +120,11 @@ create table if not exists public.user_phone_otps (
   constraint user_phone_otps_hash_len_check check (char_length(code_hash) between 32 and 128),
   constraint user_phone_otps_phone_check check (phone_e164 ~ '^\\+[1-9][0-9]{7,14}$')
 );
-
 create index if not exists idx_user_phone_otps_lookup
   on public.user_phone_otps (user_id, purpose, created_at desc);
-
 create index if not exists idx_user_phone_otps_active
   on public.user_phone_otps (user_id, purpose, expires_at)
   where consumed_at is null;
-
 create table if not exists public.user_phone_verification_sessions (
   id bigserial primary key,
   user_id uuid not null references public.users(id) on delete cascade,
@@ -154,11 +140,9 @@ create table if not exists public.user_phone_verification_sessions (
   constraint user_phone_verification_sessions_hash_len_check check (char_length(token_hash) between 32 and 128),
   unique (user_id, purpose, token_hash)
 );
-
 create index if not exists idx_user_phone_verification_sessions_lookup
   on public.user_phone_verification_sessions (user_id, purpose, expires_at desc)
   where revoked_at is null;
-
 create table if not exists public.email_notifications (
   id bigserial primary key,
   event_type text not null,
@@ -195,14 +179,11 @@ create table if not exists public.email_notifications (
   constraint email_notifications_status_check check (status in ('pending', 'sending', 'sent', 'failed')),
   constraint email_notifications_email_check check (position('@' in recipient_email) > 1)
 );
-
 create unique index if not exists uq_email_notifications_dedupe_key
   on public.email_notifications (dedupe_key);
-
 create index if not exists idx_email_notifications_dispatch
   on public.email_notifications (status, scheduled_for, created_at)
   where status in ('pending', 'failed');
-
 -- ---------------------------------------------------------
 -- 4) Generic updated_at touch trigger
 -- ---------------------------------------------------------
@@ -215,7 +196,6 @@ begin
   return new;
 end;
 $$;
-
 do $$
 begin
   if exists (select 1 from pg_trigger where tgname = 'tr_user_trusted_devices_touch_updated_at') then
@@ -246,7 +226,6 @@ begin
   before update on public.email_notifications
   for each row execute function public.touch_updated_at();
 end $$;
-
 -- ---------------------------------------------------------
 -- 5) Enqueue email when a shift is scheduled
 -- ---------------------------------------------------------
@@ -316,7 +295,6 @@ begin
   return new;
 end;
 $$;
-
 do $$
 begin
   if exists (select 1 from pg_trigger where tgname = 'tr_enqueue_shift_scheduled_notifications') then
@@ -327,7 +305,6 @@ begin
   after insert on public.scheduled_shifts
   for each row execute function public.enqueue_shift_scheduled_notifications();
 end $$;
-
 -- ---------------------------------------------------------
 -- 6) Grants + RLS policies
 -- ---------------------------------------------------------
@@ -335,17 +312,14 @@ alter table public.user_trusted_devices enable row level security;
 alter table public.user_phone_otps enable row level security;
 alter table public.user_phone_verification_sessions enable row level security;
 alter table public.email_notifications enable row level security;
-
 revoke all on table public.user_trusted_devices from public, anon;
 revoke all on table public.user_phone_otps from public, anon;
 revoke all on table public.user_phone_verification_sessions from public, anon;
 revoke all on table public.email_notifications from public, anon;
-
 grant select, insert, update on table public.user_trusted_devices to authenticated;
 grant select, insert, update on table public.user_phone_otps to authenticated;
 grant select, insert, update on table public.user_phone_verification_sessions to authenticated;
 grant select on table public.email_notifications to authenticated;
-
 do $$
 declare
   p record;
@@ -364,7 +338,6 @@ begin
     execute format('drop policy %I on public.%I', p.policyname, p.tablename);
   end loop;
 end $$;
-
 create policy user_trusted_devices_select_scoped
 on public.user_trusted_devices
 for select to authenticated
@@ -372,12 +345,10 @@ using (
   user_id = auth.uid()
   or public.actor_role_secure() = 'super_admin'
 );
-
 create policy user_trusted_devices_insert_self
 on public.user_trusted_devices
 for insert to authenticated
 with check (user_id = auth.uid());
-
 create policy user_trusted_devices_update_scoped
 on public.user_trusted_devices
 for update to authenticated
@@ -389,7 +360,6 @@ with check (
   user_id = auth.uid()
   or public.actor_role_secure() = 'super_admin'
 );
-
 create policy user_phone_otps_select_scoped
 on public.user_phone_otps
 for select to authenticated
@@ -397,12 +367,10 @@ using (
   user_id = auth.uid()
   or public.actor_role_secure() = 'super_admin'
 );
-
 create policy user_phone_otps_insert_self
 on public.user_phone_otps
 for insert to authenticated
 with check (user_id = auth.uid());
-
 create policy user_phone_otps_update_scoped
 on public.user_phone_otps
 for update to authenticated
@@ -414,7 +382,6 @@ with check (
   user_id = auth.uid()
   or public.actor_role_secure() = 'super_admin'
 );
-
 create policy user_phone_verification_sessions_select_scoped
 on public.user_phone_verification_sessions
 for select to authenticated
@@ -422,12 +389,10 @@ using (
   user_id = auth.uid()
   or public.actor_role_secure() = 'super_admin'
 );
-
 create policy user_phone_verification_sessions_insert_self
 on public.user_phone_verification_sessions
 for insert to authenticated
 with check (user_id = auth.uid());
-
 create policy user_phone_verification_sessions_update_scoped
 on public.user_phone_verification_sessions
 for update to authenticated
@@ -439,7 +404,6 @@ with check (
   user_id = auth.uid()
   or public.actor_role_secure() = 'super_admin'
 );
-
 create policy email_notifications_select_scoped
 on public.email_notifications
 for select to authenticated
@@ -447,5 +411,4 @@ using (
   recipient_user_id = auth.uid()
   or public.actor_role_secure() in ('super_admin', 'supervisora')
 );
-
 commit;

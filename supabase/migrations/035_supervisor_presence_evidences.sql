@@ -2,13 +2,11 @@
 -- Support multiple evidences per supervisor presence
 
 begin;
-
 alter table public.supervisor_presence_logs
   alter column evidence_path drop not null,
   alter column evidence_hash drop not null,
   alter column evidence_mime_type drop not null,
   alter column evidence_size_bytes drop not null;
-
 do $$
 begin
   if exists (
@@ -38,7 +36,6 @@ begin
       or evidence_mime_type in ('image/jpeg', 'image/png', 'image/webp')
     );
 end $$;
-
 create table if not exists public.supervisor_presence_evidences (
   id bigserial primary key,
   presence_id bigint not null references public.supervisor_presence_logs(id) on delete cascade,
@@ -49,14 +46,11 @@ create table if not exists public.supervisor_presence_evidences (
   label text null,
   created_at timestamptz not null default now()
 );
-
 create index if not exists idx_supervisor_presence_evidences_presence
   on public.supervisor_presence_evidences (presence_id);
-
 alter table public.supervisor_presence_evidences enable row level security;
 revoke all on table public.supervisor_presence_evidences from public, anon;
 grant select, insert on table public.supervisor_presence_evidences to authenticated;
-
 do $$
 declare
   p record;
@@ -98,6 +92,4 @@ begin
     )
   );
 end $$;
-
 commit;
-

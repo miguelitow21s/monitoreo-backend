@@ -2,15 +2,12 @@
 -- Date: 2026-02-12
 
 begin;
-
 -- 1) AUDIT LOGS: expected actor_id (frontend) vs existing user_id
 alter table public.audit_logs
   add column if not exists actor_id uuid;
-
 update public.audit_logs
 set actor_id = user_id
 where actor_id is null;
-
 create or replace function public.sync_audit_actor_user()
 returns trigger
 language plpgsql
@@ -27,7 +24,6 @@ begin
   return new;
 end;
 $$;
-
 do $$
 begin
   if not exists (
@@ -40,12 +36,10 @@ begin
     for each row execute function public.sync_audit_actor_user();
   end if;
 end $$;
-
 -- 2) SHIFTS: status + evidence paths expected by frontend
 alter table public.shifts add column if not exists status text;
 alter table public.shifts add column if not exists start_evidence_path text;
 alter table public.shifts add column if not exists end_evidence_path text;
-
 update public.shifts
 set status = case state::text
   when 'activo' then 'active'
@@ -55,7 +49,6 @@ set status = case state::text
   else state::text
 end
 where status is null;
-
 create or replace function public.shift_state_to_status(p_state text)
 returns text
 language sql
@@ -69,7 +62,6 @@ as $$
     else p_state
   end;
 $$;
-
 create or replace function public.shift_status_to_state(p_status text)
 returns public.shift_state
 language plpgsql
@@ -90,7 +82,6 @@ begin
   end case;
 end;
 $$;
-
 create or replace function public.sync_shift_state_status()
 returns trigger
 language plpgsql
@@ -117,7 +108,6 @@ begin
   return new;
 end;
 $$;
-
 do $$
 begin
   if not exists (
@@ -130,7 +120,6 @@ begin
     for each row execute function public.sync_shift_state_status();
   end if;
 end $$;
-
 -- 3) SHIFT INCIDENTS: expected table name/shape in frontend
 create or replace view public.shift_incidents as
 select
@@ -140,7 +129,6 @@ select
   i.created_at,
   i.created_by
 from public.incidents i;
-
 create or replace function public.shift_incidents_insert()
 returns trigger
 language plpgsql
@@ -164,7 +152,6 @@ begin
   return new;
 end;
 $$;
-
 do $$
 begin
   if exists (
@@ -177,15 +164,12 @@ begin
   instead of insert on public.shift_incidents
   for each row execute function public.shift_incidents_insert();
 end $$;
-
 -- 4) RESTAURANTS: expected geofence_radius_m
 alter table public.restaurants
   add column if not exists geofence_radius_m integer;
-
 update public.restaurants
 set geofence_radius_m = radius
 where geofence_radius_m is null;
-
 create or replace function public.sync_restaurant_radius_columns()
 returns trigger
 language plpgsql
@@ -202,7 +186,6 @@ begin
   return new;
 end;
 $$;
-
 do $$
 begin
   if not exists (
@@ -215,7 +198,6 @@ begin
     for each row execute function public.sync_restaurant_radius_columns();
   end if;
 end $$;
-
 -- 5) RESTAURANT EMPLOYEES (missing in current DB)
 create table if not exists public.restaurant_employees (
   id bigserial primary key,
@@ -224,7 +206,6 @@ create table if not exists public.restaurant_employees (
   created_at timestamptz not null default now(),
   unique (restaurant_id, user_id)
 );
-
 -- 5.1) SCHEDULED SHIFTS (planning by date/time)
 create table if not exists public.scheduled_shifts (
   id bigserial primary key,
@@ -241,12 +222,9 @@ create table if not exists public.scheduled_shifts (
   constraint scheduled_shifts_time_check check (scheduled_end > scheduled_start),
   constraint scheduled_shifts_status_check check (status in ('scheduled', 'started', 'completed', 'cancelled'))
 );
-
 create index if not exists idx_scheduled_shifts_employee_start
   on public.scheduled_shifts (employee_id, scheduled_start);
-
 create extension if not exists btree_gist;
-
 do $$
 begin
   if not exists (
@@ -264,7 +242,6 @@ begin
       where (status in ('scheduled', 'started'));
   end if;
 end $$;
-
 do $$
 begin
   if not exists (
@@ -300,14 +277,11 @@ begin
       check (radius > 0);
   end if;
 end $$;
-
 -- 6) USERS/PROFILES compatibility for frontend
 alter table public.users
   add column if not exists full_name text;
-
 alter table public.users
   add column if not exists is_active boolean not null default true;
-
 create or replace view public.profiles as
 select
   u.id,
@@ -317,7 +291,6 @@ select
   u.is_active
 from public.users u
 left join public.roles r on r.id = u.role_id;
-
 create or replace function public.profiles_update()
 returns trigger
 language plpgsql
@@ -351,7 +324,6 @@ begin
   );
 end;
 $$;
-
 do $$
 begin
   if exists (
@@ -364,7 +336,6 @@ begin
   instead of update on public.profiles
   for each row execute function public.profiles_update();
 end $$;
-
 -- 7) SELF REGISTRATION RPC (empleado)
 create or replace function public.register_employee(
   p_user_id uuid,
@@ -418,9 +389,7 @@ begin
     updated_at = now();
 end;
 $$;
-
 grant execute on function public.register_employee(uuid, text, text) to authenticated;
-
 create or replace function public.app_user_role(p_user_id uuid)
 returns text
 language sql
@@ -434,9 +403,7 @@ as $$
   where u.id = p_user_id
   limit 1;
 $$;
-
 grant execute on function public.app_user_role(uuid) to authenticated;
-
 create or replace function public.assign_scheduled_shift(
   p_employee_id uuid,
   p_restaurant_id integer,
@@ -506,9 +473,7 @@ begin
   return v_new_id;
 end;
 $$;
-
 grant execute on function public.assign_scheduled_shift(uuid, integer, timestamptz, timestamptz, text) to authenticated;
-
 create or replace function public.list_my_scheduled_shifts(p_limit integer default 10)
 returns table (
   id bigint,
@@ -536,9 +501,7 @@ as $$
   order by s.scheduled_start desc
   limit greatest(1, coalesce(p_limit, 10));
 $$;
-
 grant execute on function public.list_my_scheduled_shifts(integer) to authenticated;
-
 create or replace function public.list_scheduled_shifts(p_limit integer default 50)
 returns table (
   id bigint,
@@ -581,16 +544,12 @@ begin
   limit greatest(1, coalesce(p_limit, 50));
 end;
 $$;
-
 grant execute on function public.list_scheduled_shifts(integer) to authenticated;
-
 -- 8) SUPPLIES compatibility columns
 alter table public.supplies
   add column if not exists stock integer not null default 0;
-
 alter table public.supplies
   add column if not exists restaurant_id integer references public.restaurants(id) on delete set null;
-
 -- 9) HARDEN CORE SHIFT FUNCTIONS (avoid inherited logic bugs)
 create or replace function public.start_shift(
   employee_id uuid,
@@ -638,7 +597,6 @@ begin
   return v_shift_id;
 end;
 $$;
-
 create or replace function public.end_shift(
   shift_id integer,
   lat double precision,
@@ -691,7 +649,6 @@ begin
   end if;
 end;
 $$;
-
 -- 10) RPC compatibility wrappers expected by frontend
 create or replace function public.get_my_active_shift()
 returns table (
@@ -711,7 +668,6 @@ as $$
   order by s.start_time desc
   limit 1;
 $$;
-
 create or replace function public.start_shift(
   lat double precision,
   lng double precision,
@@ -766,7 +722,6 @@ begin
   return v_shift_id;
 end;
 $$;
-
 create or replace function public.end_shift(
   shift_id integer,
   lat double precision,
@@ -796,7 +751,6 @@ begin
   end if;
 end;
 $$;
-
 -- 11) STORAGE bucket and policies (guarded: can fail if caller is not owner)
 do $$
 begin
@@ -853,7 +807,6 @@ begin
     raise notice 'Sin ownership sobre storage.objects. Configura policies de evidence manualmente en Storage > Policies.';
   end if;
 end $$;
-
 -- 12) RLS + POLICIES by role (BPMN aligned)
 create or replace function public.current_actor_role()
 returns text
@@ -864,9 +817,7 @@ set search_path = public
 as $$
   select public.app_user_role(auth.uid());
 $$;
-
 grant execute on function public.current_actor_role() to authenticated;
-
 alter table public.users enable row level security;
 alter table public.restaurants enable row level security;
 alter table public.restaurant_employees enable row level security;
@@ -877,7 +828,6 @@ alter table public.audit_logs enable row level security;
 alter table public.supplies enable row level security;
 alter table public.supply_deliveries enable row level security;
 alter table public.reports enable row level security;
-
 create or replace function public.set_supply_delivery_defaults()
 returns trigger
 language plpgsql
@@ -894,7 +844,6 @@ begin
   return new;
 end;
 $$;
-
 do $$
 begin
   if exists (select 1 from pg_trigger where tgname = 'tr_supply_deliveries_defaults') then
@@ -905,7 +854,6 @@ begin
   before insert on public.supply_deliveries
   for each row execute function public.set_supply_delivery_defaults();
 end $$;
-
 do $$
 begin
   -- users
@@ -1137,5 +1085,4 @@ begin
   using (public.current_actor_role() = 'super_admin')
   with check (public.current_actor_role() = 'super_admin');
 end $$;
-
 commit;

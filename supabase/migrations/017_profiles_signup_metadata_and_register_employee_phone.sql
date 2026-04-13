@@ -3,14 +3,12 @@
 -- and extend register_employee RPC with p_phone for OTP/device-security prerequisites.
 
 begin;
-
 -- ---------------------------------------------------------
 -- 1) Users schema for signup metadata
 -- ---------------------------------------------------------
 alter table public.users
   add column if not exists first_name text,
   add column if not exists last_name text;
-
 do $$
 begin
   if not exists (
@@ -35,15 +33,12 @@ begin
       check (last_name is null or char_length(trim(last_name)) between 1 and 120);
   end if;
 end $$;
-
 create index if not exists idx_users_first_name
   on public.users (first_name)
   where first_name is not null;
-
 create index if not exists idx_users_last_name
   on public.users (last_name)
   where last_name is not null;
-
 -- ---------------------------------------------------------
 -- 2) Phone normalization helper (E.164)
 -- ---------------------------------------------------------
@@ -80,12 +75,10 @@ begin
   return v_clean;
 end;
 $$;
-
 -- ---------------------------------------------------------
 -- 3) profiles view + update trigger include first/last/phone
 -- ---------------------------------------------------------
 drop view if exists public.profiles;
-
 create view public.profiles as
 select
   u.id,
@@ -98,7 +91,6 @@ select
   u.is_active
 from public.users u
 left join public.roles r on r.id = u.role_id;
-
 create or replace function public.profiles_update()
 returns trigger
 language plpgsql
@@ -149,7 +141,6 @@ begin
   );
 end;
 $$;
-
 do $$
 begin
   if exists (
@@ -162,12 +153,10 @@ begin
   instead of update on public.profiles
   for each row execute function public.profiles_update();
 end $$;
-
 -- ---------------------------------------------------------
 -- 4) register_employee RPC extended with first/last/phone
 -- ---------------------------------------------------------
 drop function if exists public.register_employee(uuid, text, text);
-
 create or replace function public.register_employee(
   p_user_id uuid,
   p_email text,
@@ -262,7 +251,5 @@ begin
     updated_at = now();
 end;
 $$;
-
 grant execute on function public.register_employee(uuid, text, text, text, text, text) to authenticated;
-
 commit;

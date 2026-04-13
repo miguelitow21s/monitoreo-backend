@@ -2,15 +2,12 @@
 -- Hardening for idempotency race conditions and payload replay safety
 
 begin;
-
 alter table if exists public.idempotency_records
   add column if not exists payload_hash text,
   add column if not exists status text not null default 'processing',
   add column if not exists in_progress_started_at timestamptz,
   add column if not exists completed_at timestamptz;
-
 create index if not exists idx_idempotency_records_status on public.idempotency_records(status);
-
 create or replace function public.idempotency_claim(
   p_user_id uuid,
   p_endpoint text,
@@ -101,7 +98,6 @@ begin
   return query select 'claimed'::text, null::integer, null::jsonb;
 end;
 $$;
-
 create or replace function public.idempotency_finalize(
   p_user_id uuid,
   p_endpoint text,
@@ -125,7 +121,6 @@ begin
     and idempotency_key = p_key;
 end;
 $$;
-
 -- Backward compatibility for previous helper calls
 create or replace function public.idempotency_begin(
   p_user_id uuid,
@@ -151,7 +146,6 @@ begin
   from c;
 end;
 $$;
-
 create or replace function public.idempotency_finish(
   p_user_id uuid,
   p_endpoint text,
@@ -166,5 +160,4 @@ begin
   perform public.idempotency_finalize(p_user_id, p_endpoint, p_key, p_status_code, p_response_body);
 end;
 $$;
-
 commit;
