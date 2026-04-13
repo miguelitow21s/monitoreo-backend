@@ -263,44 +263,44 @@ serve(async (req: Request) => {
           };
         }
 
-        const { data: inserted, error: insertError } = await clientUser
-          .from("operational_tasks")
-          .insert({
-            shift_id: null,
-            scheduled_shift_id: payload.scheduled_shift_id,
-            restaurant_id: scheduledShift.restaurant_id,
-            assigned_employee_id: payload.assigned_employee_id,
-            created_by: user.id,
-            title: payload.title,
-            description: payload.description,
-            priority: payload.priority,
-            status: "pending",
-            due_at: payload.due_at ?? null,
-            requires_evidence: payload.requires_evidence ?? true,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          })
-          .select("id")
-          .single();
+        const { data: taskId, error: createScheduledError } = await clientUser.rpc("create_operational_task_for_schedule", {
+          p_scheduled_shift_id: payload.scheduled_shift_id,
+          p_assigned_employee_id: payload.assigned_employee_id,
+          p_title: payload.title,
+          p_description: payload.description,
+          p_priority: payload.priority,
+          p_due_at: payload.due_at ?? null,
+          p_requires_evidence: payload.requires_evidence ?? true,
+        });
 
-        if (insertError || !inserted) {
-          throw { code: 409, message: "No se pudo crear tarea operativa", category: "BUSINESS", details: insertError };
+        if (createScheduledError || !taskId) {
+          throw {
+            code: 409,
+            message: "No se pudo crear tarea operativa",
+            category: "BUSINESS",
+            details: {
+              diagnostic_code: "OP_TASK_CREATE_FROM_SCHEDULE_RPC_FAILED",
+              scheduled_shift_id: payload.scheduled_shift_id,
+              assigned_employee_id: payload.assigned_employee_id,
+              error: createScheduledError,
+            },
+          };
         }
 
         await safeWriteAudit({
           user_id: user.id,
           action: "OPERATIONAL_TASK_CREATE",
           context: {
-            task_id: inserted.id,
+            task_id: taskId,
             scheduled_shift_id: payload.scheduled_shift_id,
             assigned_employee_id: payload.assigned_employee_id,
             priority: payload.priority,
-            fallback: "direct_insert",
+            path: "rpc_create_operational_task_for_schedule",
           },
           request_id,
         });
 
-        const successPayload = { success: true, data: { task_id: inserted.id }, error: null, request_id };
+        const successPayload = { success: true, data: { task_id: taskId }, error: null, request_id };
         await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
         return response(true, successPayload.data, null, request_id);
       }
