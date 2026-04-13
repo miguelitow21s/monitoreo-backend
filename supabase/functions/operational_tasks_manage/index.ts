@@ -305,30 +305,57 @@ serve(async (req: Request) => {
         return response(true, successPayload.data, null, request_id);
       }
 
-      if (user.role === "supervisora") {
-        const { data: shift, error: shiftError } = await clientAdmin
-          .from("shifts")
-          .select("id")
-          .eq("id", payload.shift_id)
-          .maybeSingle();
+      const { data: shift, error: shiftError } = await clientAdmin
+        .from("shifts")
+        .select("id, restaurant_id")
+        .eq("id", payload.shift_id)
+        .maybeSingle();
 
-        if (shiftError || !shift) {
-          throw { code: 404, message: "Turno no encontrado", category: "BUSINESS", details: shiftError };
-        }
+      if (shiftError || !shift) {
+        throw {
+          code: 404,
+          message: "Turno no encontrado",
+          category: "BUSINESS",
+          details: {
+            diagnostic_code: "SHIFT_NOT_FOUND",
+            shift_id: payload.shift_id,
+            error: shiftError,
+          },
+        };
       }
 
-      const { data, error } = await clientUser.rpc("create_operational_task", {
-        p_shift_id: payload.shift_id,
-        p_assigned_employee_id: payload.assigned_employee_id,
-        p_title: payload.title,
-        p_description: payload.description,
-        p_priority: payload.priority,
-        p_due_at: payload.due_at ?? null,
-        p_requires_evidence: payload.requires_evidence ?? true,
-      });
+      const { data, error } = await clientUser
+        .from("operational_tasks")
+        .insert({
+          shift_id: payload.shift_id,
+          scheduled_shift_id: null,
+          restaurant_id: shift.restaurant_id,
+          assigned_employee_id: payload.assigned_employee_id,
+          created_by: user.id,
+          title: payload.title,
+          description: payload.description,
+          priority: payload.priority,
+          status: "pending",
+          due_at: payload.due_at ?? null,
+          requires_evidence: payload.requires_evidence ?? true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+        .select("id")
+        .single();
 
       if (error || !data) {
-        throw { code: 409, message: "No se pudo crear tarea operativa", category: "BUSINESS", details: error };
+        throw {
+          code: 409,
+          message: "No se pudo crear tarea operativa",
+          category: "BUSINESS",
+          details: {
+            diagnostic_code: "OP_TASK_INSERT_FROM_SHIFT_FAILED",
+            shift_id: payload.shift_id,
+            assigned_employee_id: payload.assigned_employee_id,
+            error,
+          },
+        };
       }
 
       await safeWriteAudit({
