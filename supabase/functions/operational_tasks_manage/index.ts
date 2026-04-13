@@ -263,7 +263,7 @@ serve(async (req: Request) => {
           };
         }
 
-        const { data: inserted, error: insertError } = await clientAdmin
+        const { data: inserted, error: insertError } = await clientUser
           .from("operational_tasks")
           .insert({
             shift_id: null,
