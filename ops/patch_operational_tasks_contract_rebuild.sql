@@ -167,4 +167,171 @@ begin
   with check (public.actor_role_secure() in ('super_admin', 'supervisora'));
 end $$;
 
+-- 5) Recreate creation RPCs in global-scope mode
+create or replace function public.create_operational_task(
+  p_shift_id integer,
+  p_assigned_employee_id uuid,
+  p_title text,
+  p_description text,
+  p_priority text default 'normal',
+  p_due_at timestamptz default null,
+  p_requires_evidence boolean default true
+)
+returns bigint
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_actor_id uuid;
+  v_actor_role text;
+  v_restaurant_id integer;
+  v_task_id bigint;
+begin
+  v_actor_id := auth.uid();
+  if v_actor_id is null then
+    raise exception 'No autenticado';
+  end if;
+
+  v_actor_role := public.actor_role_secure();
+  if v_actor_role not in ('super_admin', 'supervisora') then
+    raise exception 'No autorizado para crear tareas operativas';
+  end if;
+
+  select s.restaurant_id
+    into v_restaurant_id
+  from public.shifts s
+  where s.id = p_shift_id;
+
+  if v_restaurant_id is null then
+    raise exception 'Turno invalido para crear tarea';
+  end if;
+
+  insert into public.operational_tasks (
+    shift_id,
+    restaurant_id,
+    assigned_employee_id,
+    created_by,
+    title,
+    description,
+    priority,
+    status,
+    due_at,
+    requires_evidence,
+    created_at,
+    updated_at
+  )
+  values (
+    p_shift_id,
+    v_restaurant_id,
+    p_assigned_employee_id,
+    v_actor_id,
+    trim(p_title),
+    trim(p_description),
+    coalesce(nullif(trim(p_priority), ''), 'normal'),
+    'pending',
+    p_due_at,
+    coalesce(p_requires_evidence, true),
+    now(),
+    now()
+  )
+  returning id into v_task_id;
+
+  return v_task_id;
+end;
+$$;
+
+grant execute on function public.create_operational_task(integer, uuid, text, text, text, timestamptz, boolean) to authenticated;
+
+create or replace function public.create_operational_task_for_schedule(
+  p_scheduled_shift_id bigint,
+  p_assigned_employee_id uuid,
+  p_title text,
+  p_description text,
+  p_priority text default 'normal',
+  p_due_at timestamptz default null,
+  p_requires_evidence boolean default true
+)
+returns bigint
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  v_actor_id uuid;
+  v_actor_role text;
+  v_restaurant_id integer;
+  v_employee_id uuid;
+  v_status text;
+  v_task_id bigint;
+begin
+  v_actor_id := auth.uid();
+  if v_actor_id is null then
+    raise exception 'No autenticado';
+  end if;
+
+  v_actor_role := public.actor_role_secure();
+  if v_actor_role not in ('super_admin', 'supervisora') then
+    raise exception 'No autorizado para crear tareas operativas';
+  end if;
+
+  select s.restaurant_id, s.employee_id, s.status
+    into v_restaurant_id, v_employee_id, v_status
+  from public.scheduled_shifts s
+  where s.id = p_scheduled_shift_id;
+
+  if v_restaurant_id is null then
+    raise exception 'Turno programado invalido para crear tarea';
+  end if;
+
+  if v_status <> 'scheduled' then
+    raise exception 'Solo se pueden asignar tareas a turnos programados';
+  end if;
+
+  if v_employee_id is null or p_assigned_employee_id is null then
+    raise exception 'Empleado invalido para la tarea';
+  end if;
+
+  if v_employee_id <> p_assigned_employee_id then
+    raise exception 'Empleado no coincide con el turno programado';
+  end if;
+
+  insert into public.operational_tasks (
+    shift_id,
+    scheduled_shift_id,
+    restaurant_id,
+    assigned_employee_id,
+    created_by,
+    title,
+    description,
+    priority,
+    status,
+    due_at,
+    requires_evidence,
+    created_at,
+    updated_at
+  )
+  values (
+    null,
+    p_scheduled_shift_id,
+    v_restaurant_id,
+    p_assigned_employee_id,
+    v_actor_id,
+    trim(p_title),
+    trim(p_description),
+    coalesce(nullif(trim(p_priority), ''), 'normal'),
+    'pending',
+    p_due_at,
+    coalesce(p_requires_evidence, true),
+    now(),
+    now()
+  )
+  returning id into v_task_id;
+
+  return v_task_id;
+end;
+$$;
+
+grant execute on function public.create_operational_task_for_schedule(bigint, uuid, text, text, text, timestamptz, boolean) to authenticated;
+
 commit;
