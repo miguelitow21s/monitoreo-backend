@@ -290,7 +290,7 @@ serve(async (req: Request) => {
         }
 
         const nowIso = new Date().toISOString();
-        const { data: createdTask, error: createScheduledError } = await clientAdmin
+        const { data: createdTask, error: createScheduledError } = await clientUser
           .from("operational_tasks")
           .insert({
             shift_id: null,
@@ -362,7 +362,7 @@ serve(async (req: Request) => {
       }
 
       const nowIso = new Date().toISOString();
-      const { data, error } = await clientAdmin
+      const { data, error } = await clientUser
         .from("operational_tasks")
         .insert({
           shift_id: payload.shift_id,
