@@ -4,7 +4,7 @@ import { sha256Hex } from "./crypto.ts";
 const FINGERPRINT_HEADERS = ["x-device-fingerprint", "x-device-id", "x-device-key"] as const;
 const MIN_FINGERPRINT_LENGTH = 16;
 const MAX_FINGERPRINT_LENGTH = 256;
-const MAX_TRUSTED_DEVICES_PER_USER = 50;
+const MAX_TRUSTED_DEVICES_PER_USER = 1;
 
 export type TrustedDevice = {
   id: number;
@@ -178,10 +178,21 @@ export async function registerTrustedDevice(params: {
 
   const activeCount = await countActiveTrustedDevices(params.userId);
 
+  const isExistingActive = Boolean(existing?.id && !existing.revoked_at);
+  const hasAnotherActiveDevice = activeCount > 0 && !isExistingActive;
+
+  if (hasAnotherActiveDevice) {
+    throw {
+      code: 409,
+      message: "Esta cuenta ya esta vinculada a otro dispositivo. Revoca el dispositivo actual para registrar uno nuevo",
+      category: "BUSINESS",
+    };
+  }
+
   if (!existing && activeCount >= MAX_TRUSTED_DEVICES_PER_USER) {
     throw {
       code: 409,
-      message: "Limite de dispositivos confiables alcanzado",
+      message: "Esta cuenta ya esta vinculada a otro dispositivo. Revoca el dispositivo actual para registrar uno nuevo",
       category: "BUSINESS",
     };
   }
