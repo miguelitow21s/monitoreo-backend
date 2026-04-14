@@ -26,6 +26,19 @@ begin
   end loop;
 end $$;
 
+-- Safety check: if any rewrite rule remains, stop patch execution.
+do $$
+begin
+  if exists (
+    select 1
+    from pg_rules
+    where schemaname = 'public'
+      and tablename = 'operational_tasks'
+  ) then
+    raise exception 'Quedan RULE legacy en public.operational_tasks; abortando patch';
+  end if;
+end $$;
+
 -- 3) Recreate update guard with latest scheduled_shift-aware logic
 create or replace function public.operational_tasks_guard_update()
 returns trigger
@@ -114,6 +127,21 @@ begin
 end;
 $$;
 
+-- Remove any unexpected user-defined triggers that may intercept INSERT/UPDATE.
+do $$
+declare
+  t record;
+begin
+  for t in
+    select tgname
+    from pg_trigger
+    where tgrelid = 'public.operational_tasks'::regclass
+      and not tgisinternal
+  loop
+    execute format('drop trigger if exists %I on public.operational_tasks', t.tgname);
+  end loop;
+end $$;
+
 drop trigger if exists tr_operational_tasks_guard_update on public.operational_tasks;
 create trigger tr_operational_tasks_guard_update
 before update on public.operational_tasks
@@ -168,6 +196,8 @@ begin
 end $$;
 
 -- 5) Recreate creation RPCs in global-scope mode
+drop function if exists public.create_operational_task(integer, uuid, text, text, text, timestamptz);
+
 create or replace function public.create_operational_task(
   p_shift_id integer,
   p_assigned_employee_id uuid,
@@ -242,6 +272,33 @@ end;
 $$;
 
 grant execute on function public.create_operational_task(integer, uuid, text, text, text, timestamptz, boolean) to authenticated;
+
+-- Backward-compatible 6-arg wrapper (forces modern behavior via 7-arg function)
+create or replace function public.create_operational_task(
+  p_shift_id integer,
+  p_assigned_employee_id uuid,
+  p_title text,
+  p_description text,
+  p_priority text default 'normal',
+  p_due_at timestamptz default null
+)
+returns bigint
+language sql
+security definer
+set search_path = public
+as $$
+  select public.create_operational_task(
+    p_shift_id,
+    p_assigned_employee_id,
+    p_title,
+    p_description,
+    p_priority,
+    p_due_at,
+    true
+  );
+$$;
+
+grant execute on function public.create_operational_task(integer, uuid, text, text, text, timestamptz) to authenticated;
 
 create or replace function public.create_operational_task_for_schedule(
   p_scheduled_shift_id bigint,
