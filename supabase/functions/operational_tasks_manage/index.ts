@@ -311,6 +311,53 @@ serve(async (req: Request) => {
           .single();
 
         if (createScheduledError || !createdTask) {
+          const errorMessage = String(createScheduledError?.message ?? "").toLowerCase();
+          const shouldFallbackToRpc = errorMessage.includes("turno invalido para crear tarea");
+
+          if (shouldFallbackToRpc) {
+            const { data: taskIdByRpc, error: rpcCreateError } = await clientUser.rpc("create_operational_task_for_schedule", {
+              p_scheduled_shift_id: payload.scheduled_shift_id,
+              p_assigned_employee_id: payload.assigned_employee_id,
+              p_title: payload.title,
+              p_description: payload.description,
+              p_priority: payload.priority,
+              p_due_at: payload.due_at ?? null,
+              p_requires_evidence: payload.requires_evidence ?? true,
+            });
+
+            if (!rpcCreateError && taskIdByRpc) {
+              await safeWriteAudit({
+                user_id: user.id,
+                action: "OPERATIONAL_TASK_CREATE",
+                context: {
+                  task_id: taskIdByRpc,
+                  scheduled_shift_id: payload.scheduled_shift_id,
+                  assigned_employee_id: payload.assigned_employee_id,
+                  priority: payload.priority,
+                  path: "fallback_rpc_create_operational_task_for_schedule",
+                },
+                request_id,
+              });
+
+              const successPayload = { success: true, data: { task_id: taskIdByRpc }, error: null, request_id };
+              await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+              return response(true, successPayload.data, null, request_id);
+            }
+
+            throw {
+              code: 409,
+              message: "No se pudo crear tarea operativa",
+              category: "BUSINESS",
+              details: {
+                diagnostic_code: "OP_TASK_INSERT_FALLBACK_RPC_FAILED",
+                scheduled_shift_id: payload.scheduled_shift_id,
+                assigned_employee_id: payload.assigned_employee_id,
+                insert_error: createScheduledError,
+                rpc_error: rpcCreateError,
+              },
+            };
+          }
+
           throw {
             code: 409,
             message: "No se pudo crear tarea operativa",
