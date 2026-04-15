@@ -13,6 +13,7 @@ export type AppError = {
   code: number;
   message: string;
   category: ErrorCategory;
+  error_code?: string;
   details?: unknown;
 };
 

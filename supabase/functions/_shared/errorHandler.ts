@@ -6,12 +6,14 @@ function normalizeError(error: unknown): AppError {
     const code = typeof e.code === "number" ? e.code : null;
     const message = typeof e.message === "string" ? e.message : null;
     const category = typeof e.category === "string" ? e.category : null;
+    const errorCode = typeof e.error_code === "string" ? e.error_code : undefined;
 
     if (code && message && category) {
       return {
         code,
         message,
         category: category as AppError["category"],
+        error_code: errorCode,
         details: e.details,
       };
     }
@@ -21,6 +23,7 @@ function normalizeError(error: unknown): AppError {
         code: 422,
         message: message ?? "Datos invalidos",
         category: "VALIDATION",
+        error_code: errorCode,
         details: e.details ?? e.hint,
       };
     }
@@ -30,6 +33,7 @@ function normalizeError(error: unknown): AppError {
         code: code ?? 500,
         message,
         category: (category as AppError["category"]) ?? "SYSTEM",
+        error_code: errorCode,
         details: e.details ?? e.hint,
       };
     }

@@ -122,6 +122,7 @@ serve(async (req) => {
       if (now < earliest || now > latest) {
         throw {
           code: 422,
+          error_code: "SHIFT_START_OUTSIDE_WINDOW",
           message: "Fuera de la ventana permitida para iniciar el turno",
           category: "VALIDATION",
           details: { earliest: earliest.toISOString(), latest: latest.toISOString() },

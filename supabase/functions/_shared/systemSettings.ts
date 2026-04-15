@@ -22,8 +22,8 @@ export const defaultSettings = {
     default_hours: 6,
     min_hours: 1,
     max_hours: 12,
-    early_start_tolerance_minutes: 1440,
-    late_start_tolerance_minutes: 0,
+    early_start_tolerance_minutes: 60,
+    late_start_tolerance_minutes: 60,
   },
   evidence: {
     require_start_photos: true,

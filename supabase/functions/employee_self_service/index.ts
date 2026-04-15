@@ -60,6 +60,88 @@ function addUtcDays(base: Date, days: number) {
   return new Date(base.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
+function buildStartWindow(
+  scheduledStart: string | null | undefined,
+  scheduledEnd: string | null | undefined,
+  settings: Awaited<ReturnType<typeof getSystemSettings>>,
+  now: Date,
+  canStartShift: boolean
+) {
+  const server_now = now.toISOString();
+  if (!scheduledStart || !scheduledEnd) {
+    return {
+      earliest: null,
+      latest: null,
+      server_now,
+      can_start_now: false,
+    };
+  }
+
+  const start = new Date(String(scheduledStart));
+  const end = new Date(String(scheduledEnd));
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return {
+      earliest: null,
+      latest: null,
+      server_now,
+      can_start_now: false,
+    };
+  }
+
+  const earlyToleranceMs = Math.max(0, Number(settings.shifts.early_start_tolerance_minutes ?? 0)) * 60 * 1000;
+  const lateToleranceMs = Math.max(0, Number(settings.shifts.late_start_tolerance_minutes ?? 0)) * 60 * 1000;
+  const earliest = new Date(start.getTime() - earlyToleranceMs);
+  const latest = new Date(end.getTime() + lateToleranceMs);
+  const canStartNow = canStartShift && now >= earliest && now <= latest;
+
+  return {
+    earliest: earliest.toISOString(),
+    latest: latest.toISOString(),
+    server_now,
+    can_start_now: canStartNow,
+  };
+}
+
+async function getShiftEvidenceSummary(
+  shiftId: number,
+  settings: Awaited<ReturnType<typeof getSystemSettings>>
+) {
+  const required_start_evidence_count = settings.evidence.require_start_photos ? 1 : 0;
+  const required_end_evidence_count = settings.evidence.require_end_photos ? 1 : 0;
+
+  const [startCountRes, endCountRes] = await Promise.all([
+    clientAdmin
+      .from("shift_photos")
+      .select("id", { count: "exact", head: true })
+      .eq("shift_id", shiftId)
+      .eq("type", "inicio"),
+    clientAdmin
+      .from("shift_photos")
+      .select("id", { count: "exact", head: true })
+      .eq("shift_id", shiftId)
+      .eq("type", "fin"),
+  ]);
+
+  if (startCountRes.error) {
+    throw { code: 409, message: "No se pudo consultar evidencias de inicio", category: "BUSINESS", details: startCountRes.error };
+  }
+  if (endCountRes.error) {
+    throw { code: 409, message: "No se pudo consultar evidencias de fin", category: "BUSINESS", details: endCountRes.error };
+  }
+
+  const start_evidence_count = Number(startCountRes.count ?? 0);
+  const end_evidence_count = Number(endCountRes.count ?? 0);
+
+  return {
+    has_start_evidence: start_evidence_count > 0,
+    start_evidence_count,
+    has_end_evidence: end_evidence_count > 0,
+    end_evidence_count,
+    required_start_evidence_count,
+    required_end_evidence_count,
+  };
+}
+
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
   if (preflight) return preflight;
@@ -109,13 +191,24 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se pudo consultar turno activo", category: "BUSINESS", details: activeShiftError };
       }
 
-      const successPayload = { success: true, data: activeShift ?? null, error: null, request_id };
+      let activeShiftWithEvidence = activeShift ?? null;
+      if (activeShiftWithEvidence) {
+        const settings = await getSystemSettings(clientAdmin);
+        const evidenceSummary = await getShiftEvidenceSummary(Number(activeShiftWithEvidence.id), settings);
+        activeShiftWithEvidence = {
+          ...activeShiftWithEvidence,
+          ...evidenceSummary,
+        };
+      }
+
+      const successPayload = { success: true, data: activeShiftWithEvidence, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
 
     if (payload.action === "my_dashboard") {
-      const nowIso = new Date().toISOString();
+      const now = new Date();
+      const nowIso = now.toISOString();
       const monthAgoIso = addUtcDays(new Date(), -30).toISOString();
       const settings = await getSystemSettings(clientAdmin);
 
@@ -138,7 +231,7 @@ serve(async (req: Request) => {
           .select("id, restaurant_id, scheduled_start, scheduled_end, status, notes")
           .eq("employee_id", user.id)
           .eq("status", "scheduled")
-          .gte("scheduled_start", nowIso)
+          .gte("scheduled_end", nowIso)
           .order("scheduled_start", { ascending: true })
           .limit(payload.schedule_limit),
         clientAdmin
@@ -213,6 +306,7 @@ serve(async (req: Request) => {
 
         const restaurant = restaurantsById.get(Number(active_shift.restaurant_id)) ?? null;
         const scheduled_hours = diffHours(String(scheduledActive?.scheduled_start ?? null), String(scheduledActive?.scheduled_end ?? null));
+        const evidenceSummary = await getShiftEvidenceSummary(Number(active_shift.id), settings);
         active_shift = {
           ...active_shift,
           restaurant,
@@ -220,8 +314,11 @@ serve(async (req: Request) => {
           scheduled_start: scheduledActive?.scheduled_start ?? null,
           scheduled_end: scheduledActive?.scheduled_end ?? null,
           scheduled_hours,
+          ...evidenceSummary,
         };
       }
+
+      const canStartShift = !active_shift;
 
       const assigned_restaurants = (linksRes.data ?? []).map((row) => ({
         restaurant_id: row.restaurant_id,
@@ -237,13 +334,14 @@ serve(async (req: Request) => {
         status: row.status,
         notes: row.notes,
         restaurant: restaurantsById.get(Number(row.restaurant_id)) ?? null,
+        start_window: buildStartWindow(row.scheduled_start, row.scheduled_end, settings, now, canStartShift),
       }));
 
       const workedHoursLast30d = (shiftsRes.data ?? []).reduce((acc, row) => acc + (diffHours(String(row.start_time ?? null), String(row.end_time ?? null)) ?? 0), 0);
 
       const successData = {
         active_shift,
-        can_start_shift: !active_shift,
+        can_start_shift: canStartShift,
         assigned_restaurants,
         scheduled_shifts,
         pending_tasks_count: (tasksRes.data ?? []).length,

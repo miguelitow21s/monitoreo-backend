@@ -270,7 +270,7 @@ function Ensure-StartableScheduledShift(
   [string]$label
 ) {
   $now = [DateTimeOffset]::UtcNow
-  $startWindow = $now.AddMinutes(30)
+  $startWindow = $now.AddMinutes(60)
 
   $rows = Invoke-Postgrest -method 'GET' -supabaseUrl $supabaseUrl -anonKey $anonKey -jwt $adminJwt -table 'scheduled_shifts' -query "select=id,scheduled_start,scheduled_end,status&employee_id=eq.$employeeId&status=in.(scheduled,started)&order=scheduled_start.asc"
 

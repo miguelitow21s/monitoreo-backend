@@ -1,13 +1,13 @@
 # Frontend API Spec (Backend Contract)
 
-Date: 2026-03-12
+Date: 2026-04-15
 
 Base URL:
 - `https://<SUPABASE_PROJECT>.supabase.co/functions/v1`
 
 Response envelope (all endpoints):
 - Success: `{ success: true, data, error: null, request_id }`
-- Error: `{ success: false, data: null, error: { code, message, category, request_id }, request_id }`
+- Error: `{ success: false, data: null, error: { code, error_code?, message, category, request_id }, request_id }`
 
 Common headers (all POST endpoints):
 - `Authorization: Bearer <access_token>`
@@ -79,6 +79,10 @@ Protected endpoints requiring `x-shift-otp-token`:
     ```json
     {"action":"my_dashboard","schedule_limit":10,"pending_tasks_limit":10}
     ```
+  - Active shift:
+    ```json
+    {"action":"my_active_shift"}
+    ```
   - Hours history:
     ```json
     {"action":"my_hours_history","period_start":"YYYY-MM-DD","period_end":"YYYY-MM-DD","limit":120}
@@ -87,6 +91,13 @@ Protected endpoints requiring `x-shift-otp-token`:
     ```json
     {"action":"create_observation","shift_id":123,"kind":"observation","message":"..."}
     ```
+Notes:
+- `my_dashboard.data.active_shift` includes evidence continuity fields:
+  - `has_start_evidence`, `start_evidence_count`
+  - `has_end_evidence`, `end_evidence_count`
+  - `required_start_evidence_count`, `required_end_evidence_count`
+- `my_dashboard.data.scheduled_shifts[].start_window` includes:
+  - `earliest`, `latest`, `server_now`, `can_start_now`
 
 ---
 
@@ -138,7 +149,10 @@ Response includes `verification_token` -> use in `x-shift-otp-token`.
 ```
 Notes:
 - Must have a scheduled shift for the user in the start window.
-- Start window: from 30 minutes before `scheduled_start` until `scheduled_end`.
+- Start window is calculated as:
+  - `earliest = scheduled_start - shifts.early_start_tolerance_minutes`
+  - `latest = scheduled_end + shifts.late_start_tolerance_minutes`
+- Outside window returns `422` with `error_code: "SHIFT_START_OUTSIDE_WINDOW"` and `details.earliest/latest`.
 
 ### POST `/shifts_end`
 - Role: **empleado**, **supervisora**
@@ -181,6 +195,36 @@ Finalize upload:
 ```json
 {"action":"finalize_upload","shift_id":123,"type":"inicio","path":"...","lat":-34.6,"lng":-58.38,"accuracy":12,"captured_at":"2026-03-12T00:00:00Z"}
 ```
+
+### POST `/shift_evidence_manage`
+- Roles: **empleado**, **supervisora**, **super_admin**
+
+List photos by shift:
+```json
+{"action":"list_by_shift","shift_id":123,"type":"inicio","limit":50}
+```
+
+Summary by shift:
+```json
+{"action":"summary_by_shift","shift_id":123}
+```
+Response data:
+```json
+{
+  "shift_id": 123,
+  "counts": { "inicio": 2, "fin": 1, "supervision": 0 },
+  "has_start": true,
+  "has_end": true,
+  "has_supervision": false,
+  "has_start_evidence": true,
+  "has_end_evidence": true,
+  "start_evidence_count": 2,
+  "end_evidence_count": 1,
+  "supervision_evidence_count": 0
+}
+```
+Notes:
+- `supervision` is reserved for compatibility and currently returns `0` for shift-level summaries.
 
 ---
 

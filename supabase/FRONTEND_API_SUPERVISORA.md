@@ -1,6 +1,6 @@
   # Frontend API Spec - Supervisora
 
-  Date: 2026-03-12
+  Date: 2026-04-15
 
   Base URL:
   - `https://<SUPABASE_PROJECT>.supabase.co/functions/v1`
@@ -31,7 +31,7 @@
 
   Response envelope (all endpoints)
   - Success: `{ success: true, data, error: null, request_id }`
-  - Error: `{ success: false, data: null, error: { code, message, category, request_id }, request_id }`
+  - Error: `{ success: false, data: null, error: { code, error_code?, message, category, request_id }, request_id }`
 
   Common error categories
   - `401 AUTH`: missing or expired token.
@@ -164,7 +164,10 @@
     - Geo validation is enforced.
     - Health form is required at start (`fit_for_work` + optional `declaration`).
     - Must have a scheduled shift for the supervisor in the start window.
-    - Start window: from 30 minutes before `scheduled_start` until `scheduled_end`.
+    - Start window is calculated as:
+      - `earliest = scheduled_start - shifts.early_start_tolerance_minutes`
+      - `latest = scheduled_end + shifts.late_start_tolerance_minutes`
+    - Outside window returns `422` with `error_code: "SHIFT_START_OUTSIDE_WINDOW"` and `details.earliest/latest`.
 
   ---
 
@@ -196,6 +199,37 @@
   - Required photos: `inicio` and `fin`.
   - File must be jpeg/png/webp and <= 8 MB.
   - Upload file using the signed URL, then call `finalize_upload`.
+
+  ---
+
+  ### POST /shift_evidence_manage
+
+  Action: list_by_shift
+  ```
+  { "action": "list_by_shift", "shift_id": 123, "type": "inicio", "limit": 50 }
+  ```
+
+  Action: summary_by_shift
+  ```
+  { "action": "summary_by_shift", "shift_id": 123 }
+  ```
+  Response data:
+  ```
+  {
+    "shift_id": 123,
+    "counts": { "inicio": 2, "fin": 1, "supervision": 0 },
+    "has_start": true,
+    "has_end": true,
+    "has_supervision": false,
+    "has_start_evidence": true,
+    "has_end_evidence": true,
+    "start_evidence_count": 2,
+    "end_evidence_count": 1,
+    "supervision_evidence_count": 0
+  }
+  ```
+  Note:
+  - `supervision` is reserved for compatibility and currently returns `0` for shift-level summaries.
 
   ---
 
@@ -474,6 +508,9 @@
 
   403 PERMISSION on `employee_self_service`
   Cause: Role mismatch. Supervisora must not call this endpoint.
+
+  422 VALIDATION on `shifts_start`
+  Cause: Outside configured start window (`error_code: "SHIFT_START_OUTSIDE_WINDOW"`).
 
   422 VALIDATION on `shifts_end`
   Cause: Missing required shift photos (`inicio` and `fin`).

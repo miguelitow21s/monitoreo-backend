@@ -23,7 +23,12 @@ const listByShiftAction = z.object({
   limit: z.number().int().min(1).max(500).default(50),
 });
 
-const payloadSchema = z.discriminatedUnion("action", [listByShiftAction]);
+const summaryByShiftAction = z.object({
+  action: z.literal("summary_by_shift"),
+  shift_id: commonSchemas.shiftId,
+});
+
+const payloadSchema = z.discriminatedUnion("action", [listByShiftAction, summaryByShiftAction]);
 
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
@@ -77,6 +82,57 @@ serve(async (req: Request) => {
       await ensureSupervisorShiftAccess(user.id, payload.shift_id);
     } else {
       roleGuard(user, ["super_admin"]);
+    }
+
+    if (payload.action === "summary_by_shift") {
+      const [startCountRes, endCountRes] = await Promise.all([
+        clientUser
+          .from("shift_photos")
+          .select("id", { count: "exact", head: true })
+          .eq("shift_id", payload.shift_id)
+          .eq("type", "inicio"),
+        clientUser
+          .from("shift_photos")
+          .select("id", { count: "exact", head: true })
+          .eq("shift_id", payload.shift_id)
+          .eq("type", "fin"),
+      ]);
+
+      if (startCountRes.error) {
+        throw { code: 409, message: "No se pudo resumir evidencias de inicio", category: "BUSINESS", details: startCountRes.error };
+      }
+      if (endCountRes.error) {
+        throw { code: 409, message: "No se pudo resumir evidencias de fin", category: "BUSINESS", details: endCountRes.error };
+      }
+
+      const start_count = Number(startCountRes.count ?? 0);
+      const end_count = Number(endCountRes.count ?? 0);
+      // Reserved for API compatibility. Supervision evidence is tracked in supervisor_presence_* tables, not per shift.
+      const supervision_count = 0;
+
+      const successPayload = {
+        success: true,
+        data: {
+          shift_id: payload.shift_id,
+          counts: {
+            inicio: start_count,
+            fin: end_count,
+            supervision: supervision_count,
+          },
+          has_start: start_count > 0,
+          has_end: end_count > 0,
+          has_supervision: supervision_count > 0,
+          has_start_evidence: start_count > 0,
+          has_end_evidence: end_count > 0,
+          start_evidence_count: start_count,
+          end_evidence_count: end_count,
+          supervision_evidence_count: supervision_count,
+        },
+        error: null,
+        request_id,
+      };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
     }
 
     let query = clientUser

@@ -1,6 +1,6 @@
 # Frontend API Spec - Super Admin
 
-Date: 2026-03-12
+Date: 2026-04-15
 
 Base URL:
 - `https://<SUPABASE_PROJECT>.supabase.co/functions/v1`
@@ -32,7 +32,7 @@ Required headers (all POST)
 
 Response envelope (all endpoints)
 - Success: `{ success: true, data, error: null, request_id }`
-- Error: `{ success: false, data: null, error: { code, message, category, request_id }, request_id }`
+- Error: `{ success: false, data: null, error: { code, error_code?, message, category, request_id }, request_id }`
 
 Common error categories
 - `401 AUTH`: missing or expired token.

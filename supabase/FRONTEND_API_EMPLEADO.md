@@ -1,6 +1,6 @@
 # Frontend API Spec - Empleado
 
-Date: 2026-03-12
+Date: 2026-04-15
 
 Base URL:
 - `https://<SUPABASE_PROJECT>.supabase.co/functions/v1`
@@ -27,7 +27,7 @@ Required headers (all POST)
 
 Response envelope (all endpoints)
 - Success: `{ success: true, data, error: null, request_id }`
-- Error: `{ success: false, data: null, error: { code, message, category, request_id }, request_id }`
+- Error: `{ success: false, data: null, error: { code, error_code?, message, category, request_id }, request_id }`
 
 Common error categories
 - `401 AUTH`: missing/expired token.
@@ -207,19 +207,65 @@ Action: my_dashboard
 Response data:
 ```
 {
-  "active_shift": { "id": 123, "restaurant_id": 5, "start_time": "...", "state": "activo" },
+  "active_shift": {
+    "id": 123,
+    "restaurant_id": 5,
+    "start_time": "...",
+    "state": "activo",
+    "has_start_evidence": true,
+    "start_evidence_count": 2,
+    "has_end_evidence": false,
+    "end_evidence_count": 0,
+    "required_start_evidence_count": 1,
+    "required_end_evidence_count": 1
+  },
   "can_start_shift": true,
   "assigned_restaurants": [
     { "restaurant_id": 5, "assigned_at": "...", "restaurant": { "id": 5, "name": "...", "city": "...", "state": "...", "address_line": "..." } }
   ],
   "scheduled_shifts": [
-    { "id": 22, "restaurant_id": 5, "scheduled_start": "...", "scheduled_end": "...", "status": "scheduled", "notes": "...", "restaurant": { "id": 5, "name": "...", "city": "...", "state": "..." } }
+    {
+      "id": 22,
+      "restaurant_id": 5,
+      "scheduled_start": "...",
+      "scheduled_end": "...",
+      "status": "scheduled",
+      "notes": "...",
+      "start_window": {
+        "earliest": "...",
+        "latest": "...",
+        "server_now": "...",
+        "can_start_now": false
+      },
+      "restaurant": { "id": 5, "name": "...", "city": "...", "state": "..." }
+    }
   ],
   "pending_tasks_count": 2,
   "pending_tasks_preview": [
     { "id": 77, "title": "...", "priority": "normal", "status": "pending", "due_at": "...", "restaurant_id": 5 }
   ],
   "worked_hours_last_30d": 42.5
+}
+```
+
+Action: my_active_shift
+```
+{ "action": "my_active_shift" }
+```
+Response data:
+```
+{
+  "id": 123,
+  "restaurant_id": 5,
+  "start_time": "...",
+  "end_time": null,
+  "state": "activo",
+  "has_start_evidence": true,
+  "start_evidence_count": 2,
+  "has_end_evidence": false,
+  "end_evidence_count": 0,
+  "required_start_evidence_count": 1,
+  "required_end_evidence_count": 1
 }
 ```
 
@@ -296,7 +342,10 @@ Rules
 - Geo validation is enforced.
 - Health form is required at start (`fit_for_work` + optional `declaration`).
 - Must have a scheduled shift for the employee in the start window.
-- Start window: from 30 minutes before `scheduled_start` until `scheduled_end`.
+- Start window is calculated as:
+  - `earliest = scheduled_start - shifts.early_start_tolerance_minutes`
+  - `latest = scheduled_end + shifts.late_start_tolerance_minutes`
+- Outside window returns `422` with `error_code: "SHIFT_START_OUTSIDE_WINDOW"` and `details.earliest/latest`.
 
 ---
 
@@ -373,6 +422,37 @@ Rules
 - Health form is required at end (`fit_for_work` + optional `declaration`).
 - Geo validation is enforced.
 - If ending before `scheduled_end`, `early_end_reason` is required.
+
+---
+
+### POST /shift_evidence_manage
+
+Action: list_by_shift
+```
+{ "action": "list_by_shift", "shift_id": 123, "type": "inicio", "limit": 50 }
+```
+
+Action: summary_by_shift
+```
+{ "action": "summary_by_shift", "shift_id": 123 }
+```
+Response data:
+```
+{
+  "shift_id": 123,
+  "counts": { "inicio": 2, "fin": 1, "supervision": 0 },
+  "has_start": true,
+  "has_end": true,
+  "has_supervision": false,
+  "has_start_evidence": true,
+  "has_end_evidence": true,
+  "start_evidence_count": 2,
+  "end_evidence_count": 1,
+  "supervision_evidence_count": 0
+}
+```
+Note:
+- `supervision` is reserved for compatibility and currently returns `0` for shift-level summaries.
 
 ---
 
@@ -459,6 +539,9 @@ Cause: Missing or expired `x-shift-otp-token`, or device not trusted.
 
 428 PERMISSION
 Cause: Device must be registered first (`trusted_device_register`).
+
+422 VALIDATION on `shifts_start`
+Cause: Outside configured start window (`error_code: "SHIFT_START_OUTSIDE_WINDOW"`).
 
 422 VALIDATION on `shifts_end`
 Cause: Missing required shift photos (`inicio` and `fin`).

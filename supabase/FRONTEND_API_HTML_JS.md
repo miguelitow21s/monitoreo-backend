@@ -1,6 +1,6 @@
 # Frontend Integration Guide (HTML/JS) - Supabase Edge API
 
-Date: 2026-03-25
+Date: 2026-04-15
 Project: monitoreo-backend
 Base URL:
 - https://orwingqtwoqfhcogggac.supabase.co/functions/v1
@@ -68,7 +68,7 @@ Success:
 ```
 Error:
 ```
-{ success: false, data: null, error: { code, message, category, request_id }, request_id }
+{ success: false, data: null, error: { code, error_code?, message, category, request_id }, request_id }
 ```
 
 ---
@@ -197,9 +197,10 @@ Notes:
 ## 7) Roles & Endpoints (resumen)
 
 ### Empleado
-- `employee_self_service` (my_dashboard, my_hours_history, create_observation)
+- `employee_self_service` (my_dashboard, my_active_shift, my_hours_history, create_observation)
 - `shifts_start`, `shifts_end`
 - `evidence_upload`
+- `shift_evidence_manage` (list_by_shift, summary_by_shift)
 - `operational_tasks_manage` (list_my_open, request_evidence_upload, request_manifest_upload, complete, close)
 
 ### Supervisora
@@ -209,6 +210,7 @@ Notes:
 - `supervisor_presence_manage` (request_evidence_upload, finalize_evidence_upload, register, list_my, list_by_restaurant, list_today)
 - `shifts_approve`, `shifts_reject`
 - `incidents_create`
+- `shift_evidence_manage` (list_by_shift, summary_by_shift)
 - `admin_restaurants_manage` (create, deactivate)
 - `admin_users_manage` (create empleados, deactivate empleados)
 
@@ -219,6 +221,7 @@ Notes:
 - `admin_dashboard_metrics`
 - `reports_manage` + `reports_generate`
 - `system_settings_manage`
+- `shift_evidence_manage` (list_by_shift, summary_by_shift)
 
 ---
 
@@ -261,6 +264,7 @@ Use for connectivity only (no auth).
 ### POST /employee_self_service
 Actions:
 - `my_dashboard`
+- `my_active_shift`
 - `my_hours_history`
 - `create_observation`
 
@@ -271,6 +275,12 @@ Example:
 
 Notes:
 - `assigned_restaurants[].restaurant.cleaning_areas` ya viene resuelto con fallback según `evidence.areas_mode` y `evidence.default_cleaning_areas`.
+- `active_shift` now includes:
+  - `has_start_evidence`, `start_evidence_count`
+  - `has_end_evidence`, `end_evidence_count`
+  - `required_start_evidence_count`, `required_end_evidence_count`
+- `scheduled_shifts[].start_window` now includes:
+  - `earliest`, `latest`, `server_now`, `can_start_now`
 
 ### POST /shifts_start
 Requires `x-shift-otp-token`.
@@ -288,6 +298,7 @@ Notes:
 - Start window is enforced using settings:
   - `early_start_tolerance_minutes`
   - `late_start_tolerance_minutes`
+- Outside window returns `422` with `error_code: "SHIFT_START_OUTSIDE_WINDOW"` and `details.earliest/latest`.
 
 ### POST /shifts_end
 Requires `x-shift-otp-token`.
@@ -584,6 +595,7 @@ const payload = await res.json();
 - 403 PERMISSION: role mismatch, missing OTP, or must_change_pin.
 - 409 BUSINESS: device limit, missing phone, conflicts.
 - 422 VALIDATION: invalid payload or headers.
+- 422 VALIDATION in `shifts_start` outside range: `error_code: "SHIFT_START_OUTSIDE_WINDOW"`.
 
 ---
 
@@ -628,6 +640,9 @@ Use these names exactly as written.
 - `ended_early`: derived boolean in reports
 - `hours_worked`: computed from real start/end
 - `scheduled_hours`: computed from scheduled start/end
+- `start_window.earliest`, `start_window.latest`: effective start window bounds (ISO)
+- `start_window.server_now`: backend server time used for evaluation (ISO)
+- `start_window.can_start_now`: computed boolean (`window` + no active shift)
 
 ### 12.4) Evidence keys
 - `type`: evidence phase (`inicio` or `fin`) in employee flow
@@ -643,6 +658,9 @@ Use these names exactly as written.
 - `sha256` / `evidence_hash`: evidence checksum
 - `start_evidence_urls`, `end_evidence_urls`: signed URL arrays for 1-day report
 - `start_evidences`, `end_evidences`: enriched evidence arrays with metadata
+- `has_start_evidence`, `has_end_evidence`: evidence flags for active shift continuity
+- `start_evidence_count`, `end_evidence_count`: evidence counters by phase
+- `required_start_evidence_count`, `required_end_evidence_count`: required counts (currently 1/0 by settings boolean)
 
 ### 12.5) Geo and precision keys
 - `lat`, `lng`: point received from device
@@ -712,6 +730,16 @@ Optional:
 - `declaration`, `scheduled_shift_id`
 Headers required:
 - `x-device-fingerprint`, `x-shift-otp-token`
+Window/validation notes:
+- `earliest = scheduled_start - shifts.early_start_tolerance_minutes`
+- `latest = scheduled_end + shifts.late_start_tolerance_minutes`
+- Outside window: `422` + `error_code: "SHIFT_START_OUTSIDE_WINDOW"` + `details.earliest/latest`
+
+#### `POST /shift_evidence_manage`
+- `action: "list_by_shift"` -> required: `shift_id`; optional: `type`, `limit`
+- `action: "summary_by_shift"` -> required: `shift_id`
+Notes:
+- `counts.supervision` is reserved for compatibility and currently returns `0` in shift-level summary.
 
 #### `POST /evidence_upload`
 - `action: "request_upload"` -> required: `shift_id`, `type`
