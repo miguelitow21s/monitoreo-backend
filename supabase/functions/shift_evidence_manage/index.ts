@@ -6,13 +6,11 @@ import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
 import { ensureSupervisorShiftAccess } from "../_shared/scopeGuard.ts";
 import { clientAdmin } from "../_shared/supabaseClient.ts";
-import { requireMethod, parseBody, requireIdempotencyKey, getClientIp, commonSchemas } from "../_shared/validation.ts";
+import { requireMethod, parseBody, getClientIp, commonSchemas } from "../_shared/validation.ts";
 import { rateLimiter } from "../_shared/rateLimiter.ts";
-import { claimIdempotency, replayIdempotentResponse, safeFinalizeIdempotency } from "../_shared/idempotency.ts";
 import { errorHandler } from "../_shared/errorHandler.ts";
 import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
-import { hashCanonicalJson } from "../_shared/crypto.ts";
 
 const endpoint = "shift_evidence_manage";
 
@@ -42,7 +40,6 @@ serve(async (req: Request) => {
   let error_code: string | undefined;
   let userId: string | undefined;
   let userRole: "super_admin" | "supervisora" | "empleado" | undefined;
-  let idempotencyKey: string | null = null;
 
   try {
     requireMethod(req, ["POST"]);
@@ -53,14 +50,6 @@ serve(async (req: Request) => {
 
     const parsedPayload = await parseBody(req, payloadSchema);
     const payload = parsedPayload as z.infer<typeof payloadSchema>;
-    idempotencyKey = requireIdempotencyKey(req);
-
-    const payloadHash = await hashCanonicalJson(payload);
-    const claim = await claimIdempotency({ userId: user.id, endpoint, key: idempotencyKey, payloadHash });
-    if (claim.type === "replay") {
-      status = claim.stored.status_code;
-      return replayIdempotentResponse(claim.stored, request_id);
-    }
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 60, window_seconds: 60 });
 
@@ -131,7 +120,6 @@ serve(async (req: Request) => {
         error: null,
         request_id,
       };
-      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
 
@@ -152,17 +140,11 @@ serve(async (req: Request) => {
     }
 
     const successPayload = { success: true, data: { items: data ?? [] }, error: null, request_id };
-    await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
     return response(true, successPayload.data, null, request_id);
   } catch (err) {
     const apiError = errorHandler(err, request_id);
     status = apiError.code;
     error_code = apiError.category;
-
-    if (userId && idempotencyKey) {
-      const failPayload = { success: false, data: null, error: apiError, request_id };
-      await safeFinalizeIdempotency({ userId, endpoint, key: idempotencyKey, statusCode: apiError.code, responseBody: failPayload });
-    }
 
     return response(false, null, apiError, request_id);
   } finally {
