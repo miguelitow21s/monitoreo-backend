@@ -443,6 +443,15 @@ async function buildSingleDayPdfWithEvidence(params: {
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const fitTextByWidth = (txt: string, maxWidth: number, fontSize: number) => {
+    if (maxWidth <= 0) return txt;
+    if (bold.widthOfTextAtSize(txt, fontSize) <= maxWidth) return txt;
+    let base = txt.trim();
+    while (base.length > 3 && bold.widthOfTextAtSize(`${base}...`, fontSize) > maxWidth) {
+      base = base.slice(0, -1);
+    }
+    return `${base}...`;
+  };
 
   const summaryPage = pdfDoc.addPage([595, 842]);
   summaryPage.drawText("Reporte de turnos - Evidencias dia unico", { x: 40, y: 800, size: 16, font: bold, color: rgb(0, 0, 0) });
@@ -461,57 +470,89 @@ async function buildSingleDayPdfWithEvidence(params: {
   });
 
   for (const ev of params.evidenceRows) {
-    const page = pdfDoc.addPage([595, 842]);
-    page.drawText(`Turno ${ev.shift_id} - ${ev.phase} #${ev.index}`, { x: 40, y: 810, size: 14, font: bold });
-    page.drawText(`Restaurante: ${ev.restaurant_name}`, { x: 40, y: 790, size: 10, font });
-    page.drawText(`Empleado: ${ev.employee_name}`, { x: 40, y: 775, size: 10, font });
+    const pageMargin = 24;
+    const bottomPadding = 24;
+    const titleTopPadding = 18;
+    const titleSize = 16;
+    const titleGapToImage = 14;
+    const maxImageWidth = 760;
+    const maxImageHeight = 1100;
 
-    const imageX = 40;
-    const imageY = 250;
-    const imageW = 515;
-    const imageH = 510;
-    let frameX = imageX;
-    let frameY = imageY;
-    let frameW = imageW;
-    let frameH = imageH;
+    const zoneLabel = typeof ev.zone === "string" && ev.zone.trim().length > 0 ? ev.zone.trim() : "Zona no especificada";
+    const phaseLabel = ev.phase === "Despues" ? "Después" : ev.phase;
+    const titleRaw = `${zoneLabel} - ${phaseLabel}`;
 
-    let imageDrawn = false;
+    let embedded: unknown = null;
     try {
       const resp = await fetch(ev.signed_url);
       if (resp.ok) {
         const contentType = (resp.headers.get("content-type") ?? "").toLowerCase();
         const bytes = new Uint8Array(await resp.arrayBuffer());
-        let img;
         if (contentType.includes("png")) {
-          img = await pdfDoc.embedPng(bytes);
+          embedded = await pdfDoc.embedPng(bytes);
         } else {
-          img = await pdfDoc.embedJpg(bytes);
+          embedded = await pdfDoc.embedJpg(bytes);
         }
-
-        const scale = Math.min(imageW / img.width, imageH / img.height);
-        const drawW = img.width * scale;
-        const drawH = img.height * scale;
-        const drawX = imageX + (imageW - drawW) / 2;
-        const drawY = imageY + (imageH - drawH) / 2;
-        page.drawImage(img, { x: drawX, y: drawY, width: drawW, height: drawH });
-        frameX = drawX;
-        frameY = drawY;
-        frameW = drawW;
-        frameH = drawH;
-        imageDrawn = true;
       }
     } catch {
-      imageDrawn = false;
+      embedded = null;
+    }
+
+    let page;
+    let frameX = pageMargin;
+    let frameY = 140;
+    let frameW = 595 - pageMargin * 2;
+    let frameH = 510;
+    let imageDrawn = false;
+
+    if (embedded) {
+      const img = embedded as any;
+      const imageScale = Math.min(maxImageWidth / img.width, maxImageHeight / img.height, 1);
+      const drawW = img.width * imageScale;
+      const drawH = img.height * imageScale;
+      const pageW = Math.max(340, drawW + pageMargin * 2);
+      const pageH = Math.max(420, bottomPadding + drawH + titleGapToImage + titleSize + titleTopPadding);
+
+      page = pdfDoc.addPage([pageW, pageH]);
+      const title = fitTextByWidth(titleRaw, pageW - pageMargin * 2, titleSize);
+      const titleWidth = bold.widthOfTextAtSize(title, titleSize);
+      const titleX = Math.max(pageMargin, (pageW - titleWidth) / 2);
+      const titleY = pageH - titleTopPadding - titleSize;
+      page.drawText(title, { x: titleX, y: titleY, size: titleSize, font: bold, color: rgb(0, 0, 0) });
+
+      frameW = drawW;
+      frameH = drawH;
+      frameX = (pageW - drawW) / 2;
+      frameY = bottomPadding;
+      page.drawImage(img, { x: frameX, y: frameY, width: frameW, height: frameH });
+      imageDrawn = true;
+    } else {
+      const fallbackPageW = 595;
+      const fallbackPageH = 842;
+      page = pdfDoc.addPage([fallbackPageW, fallbackPageH]);
+
+      const title = fitTextByWidth(titleRaw, fallbackPageW - pageMargin * 2, titleSize);
+      const titleWidth = bold.widthOfTextAtSize(title, titleSize);
+      const titleX = Math.max(pageMargin, (fallbackPageW - titleWidth) / 2);
+      const titleY = fallbackPageH - titleTopPadding - titleSize;
+      page.drawText(title, { x: titleX, y: titleY, size: titleSize, font: bold, color: rgb(0, 0, 0) });
+
+      frameX = pageMargin;
+      frameY = 140;
+      frameW = fallbackPageW - pageMargin * 2;
+      frameH = fallbackPageH - frameY - (titleTopPadding + titleSize + titleGapToImage) - pageMargin;
+      page.drawRectangle({ x: frameX, y: frameY, width: frameW, height: frameH, borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 1 });
+      page.drawText("No se pudo incrustar la imagen. URL firmada:", { x: frameX + 10, y: frameY + frameH - 30, size: 10, font });
+      page.drawText(ev.signed_url.slice(0, 95), { x: frameX + 10, y: frameY + frameH - 48, size: 8, font, color: rgb(0.2, 0.2, 0.2) });
     }
 
     if (!imageDrawn) {
-      page.drawRectangle({ x: imageX, y: imageY, width: imageW, height: imageH, borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 1 });
-      page.drawText("No se pudo incrustar la imagen. URL firmada:", { x: 50, y: imageY + imageH - 30, size: 10, font });
-      page.drawText(ev.signed_url.slice(0, 95), { x: 50, y: imageY + imageH - 48, size: 8, font, color: rgb(0.2, 0.2, 0.2) });
+      continue;
     }
 
     const overlayPadding = 8;
-    const overlayH = Math.min(74, Math.max(52, frameH * 0.22));
+    const overlayMinH = 58;
+    const overlayH = Math.min(84, Math.max(overlayMinH, frameH * 0.22));
     const overlayX = frameX + overlayPadding;
     const overlayW = Math.max(120, frameW - overlayPadding * 2);
     const overlayY = frameY + overlayPadding;
@@ -1364,4 +1405,3 @@ serve(async (req: Request) => {
     });
   }
 });
-
