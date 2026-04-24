@@ -22,12 +22,16 @@ const createAction = z.object({
   action: z.literal("create"),
   shift_id: z.number().int().positive().optional(),
   scheduled_shift_id: z.number().int().positive().optional(),
-  assigned_employee_id: z.string().uuid(),
+  restaurant_id: z.number().int().positive().optional(),
+  task_scope: z.enum(["employee", "restaurant"]).optional(),
+  scope: z.enum(["employee", "restaurant"]).optional(),
+  assigned_employee_id: z.string().uuid().optional(),
   title: z.string().trim().min(3).max(200),
   description: z.string().trim().min(5).max(5000),
   priority: z.enum(["low", "normal", "high", "critical"]).default("normal"),
   due_at: z.string().datetime().optional().nullable(),
   requires_evidence: z.boolean().optional(),
+  origin_page: z.string().trim().max(100).optional(),
 });
 
 const updateAction = z.object({
@@ -176,6 +180,24 @@ async function ensureSupervisorRestaurantAccess(supervisorId: string, restaurant
   }
 }
 
+async function ensureEmployeeRestaurantAccess(employeeId: string, restaurantId: number) {
+  const { data: link } = await clientAdmin
+    .from("restaurant_employees")
+    .select("restaurant_id")
+    .eq("user_id", employeeId)
+    .eq("restaurant_id", restaurantId)
+    .maybeSingle();
+
+  if (!link) {
+    throw {
+      code: 403,
+      message: "No tienes acceso a tareas de este restaurante",
+      category: "PERMISSION",
+      details: { diagnostic_code: "RESTAURANT_FORBIDDEN" },
+    };
+  }
+}
+
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
   if (preflight) return preflight;
@@ -215,6 +237,91 @@ serve(async (req: Request) => {
     if (payload.action === "create") {
       roleGuard(user, ["supervisora", "super_admin"]);
 
+      const isRestaurantScope = payload.task_scope === "restaurant" || payload.scope === "restaurant";
+
+      if (isRestaurantScope) {
+        if (!payload.restaurant_id) {
+          throw {
+            code: 422,
+            message: "Se requiere restaurant_id para tareas de alcance restaurante",
+            category: "VALIDATION",
+            details: { diagnostic_code: "RESTAURANT_NOT_FOUND" },
+          };
+        }
+
+        const { data: restaurant, error: restaurantError } = await clientAdmin
+          .from("restaurants")
+          .select("id")
+          .eq("id", payload.restaurant_id)
+          .maybeSingle();
+
+        if (restaurantError || !restaurant) {
+          throw {
+            code: 404,
+            message: "Restaurante no encontrado",
+            category: "BUSINESS",
+            details: { diagnostic_code: "RESTAURANT_NOT_FOUND", restaurant_id: payload.restaurant_id },
+          };
+        }
+
+        if (user.role === "supervisora") {
+          await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
+        }
+
+        const nowIso = new Date().toISOString();
+        const { data: createdTask, error: createError } = await clientUser
+          .from("operational_tasks")
+          .insert({
+            shift_id: null,
+            scheduled_shift_id: null,
+            restaurant_id: payload.restaurant_id,
+            task_scope: "restaurant",
+            assigned_employee_id: null,
+            created_by: user.id,
+            title: payload.title,
+            description: payload.description,
+            priority: payload.priority,
+            status: "pending",
+            due_at: payload.due_at ?? null,
+            requires_evidence: payload.requires_evidence ?? true,
+            created_at: nowIso,
+            updated_at: nowIso,
+          })
+          .select("id")
+          .single();
+
+        if (createError || !createdTask) {
+          throw {
+            code: 409,
+            message: "No se pudo crear tarea de restaurante",
+            category: "BUSINESS",
+            details: {
+              diagnostic_code: "OP_TASK_INSERT_RESTAURANT_FAILED",
+              restaurant_id: payload.restaurant_id,
+              error: createError,
+            },
+          };
+        }
+
+        await safeWriteAudit({
+          user_id: user.id,
+          action: "OPERATIONAL_TASK_CREATE",
+          context: {
+            task_id: createdTask.id,
+            restaurant_id: payload.restaurant_id,
+            task_scope: "restaurant",
+            priority: payload.priority,
+            origin_page: payload.origin_page ?? null,
+          },
+          request_id,
+        });
+
+        const successPayload = { success: true, data: { task_id: createdTask.id }, error: null, request_id };
+        await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+        return response(true, successPayload.data, null, request_id);
+      }
+
+      // Employee-scoped task (legacy behavior: requires shift and assigned employee)
       const hasShiftId = typeof payload.shift_id === "number";
       const hasScheduledShiftId = typeof payload.scheduled_shift_id === "number";
 
@@ -222,6 +329,15 @@ serve(async (req: Request) => {
         throw {
           code: 422,
           message: "Debe enviar shift_id o scheduled_shift_id (solo uno)",
+          category: "VALIDATION",
+          details: { diagnostic_code: "TASK_SCOPE_NOT_SUPPORTED" },
+        };
+      }
+
+      if (!payload.assigned_employee_id) {
+        throw {
+          code: 422,
+          message: "Se requiere assigned_employee_id para tareas de empleado",
           category: "VALIDATION",
         };
       }
@@ -572,7 +688,7 @@ serve(async (req: Request) => {
 
       const { data: task, error: taskError } = await clientUser
         .from("operational_tasks")
-        .select("id, restaurant_id, assigned_employee_id, status")
+        .select("id, restaurant_id, assigned_employee_id, task_scope, status")
         .eq("id", payload.task_id)
         .single();
 
@@ -584,8 +700,12 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se puede iniciar una tarea cerrada", category: "BUSINESS" };
       }
 
-      if (user.role === "empleado" && String(task.assigned_employee_id) !== user.id) {
-        throw { code: 403, message: "Solo el empleado asignado puede iniciar la tarea", category: "PERMISSION" };
+      if (user.role === "empleado") {
+        if (task.task_scope === "restaurant") {
+          await ensureEmployeeRestaurantAccess(user.id, task.restaurant_id as number);
+        } else if (String(task.assigned_employee_id) !== user.id) {
+          throw { code: 403, message: "Solo el empleado asignado puede iniciar la tarea", category: "PERMISSION" };
+        }
       }
 
       if (user.role === "supervisora") {
@@ -620,7 +740,7 @@ serve(async (req: Request) => {
 
       const { data: task, error: taskError } = await clientUser
         .from("operational_tasks")
-        .select("id, restaurant_id, status, assigned_employee_id, requires_evidence")
+        .select("id, restaurant_id, status, assigned_employee_id, task_scope, requires_evidence")
         .eq("id", payload.task_id)
         .single();
 
@@ -635,8 +755,12 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se puede cerrar una tarea cancelada", category: "BUSINESS" };
       }
 
-      if (user.role === "empleado" && String(task.assigned_employee_id) !== user.id) {
-        throw { code: 403, message: "Solo el empleado asignado puede cerrar la tarea", category: "PERMISSION" };
+      if (user.role === "empleado") {
+        if (task.task_scope === "restaurant") {
+          await ensureEmployeeRestaurantAccess(user.id, task.restaurant_id as number);
+        } else if (String(task.assigned_employee_id) !== user.id) {
+          throw { code: 403, message: "Solo el empleado asignado puede cerrar la tarea", category: "PERMISSION" };
+        }
       }
 
       if (user.role === "supervisora") {
@@ -684,7 +808,7 @@ serve(async (req: Request) => {
 
       const { data: task, error: taskError } = await clientUser
         .from("operational_tasks")
-        .select("id, assigned_employee_id")
+        .select("id, assigned_employee_id, task_scope")
         .eq("id", payload.task_id)
         .single();
 
@@ -692,7 +816,9 @@ serve(async (req: Request) => {
         throw { code: 404, message: "Tarea operativa no encontrada", category: "BUSINESS", details: taskError };
       }
 
-      const actorForPath = user.role === "empleado" ? user.id : (task.assigned_employee_id as string);
+      const actorForPath = task.task_scope === "restaurant"
+        ? user.id
+        : (user.role === "empleado" ? user.id : (task.assigned_employee_id as string));
       const path = `users/${actorForPath}/task-manifest/${payload.task_id}/${request_id}.json`;
       const { data, error } = await clientAdmin.storage.from(evidenceBucket).createSignedUploadUrl(path);
       if (error || !data) {
@@ -720,7 +846,7 @@ serve(async (req: Request) => {
 
       const { data: task, error: taskError } = await clientUser
         .from("operational_tasks")
-        .select("id, assigned_employee_id")
+        .select("id, assigned_employee_id, task_scope")
         .eq("id", payload.task_id)
         .single();
 
@@ -728,7 +854,9 @@ serve(async (req: Request) => {
         throw { code: 404, message: "Tarea operativa no encontrada", category: "BUSINESS", details: taskError };
       }
 
-      const actorForPath = user.role === "empleado" ? user.id : (task.assigned_employee_id as string);
+      const actorForPath = task.task_scope === "restaurant"
+        ? user.id
+        : (user.role === "empleado" ? user.id : (task.assigned_employee_id as string));
       const extension = mimeToExtension(payload.mime_type);
       const path = `users/${actorForPath}/task-evidence/${payload.task_id}/${request_id}.${extension}`;
       const { data, error } = await clientAdmin.storage.from(evidenceBucket).createSignedUploadUrl(path);
@@ -758,7 +886,7 @@ serve(async (req: Request) => {
 
       const { data: task, error: taskError } = await clientUser
         .from("operational_tasks")
-        .select("id, restaurant_id, assigned_employee_id, requires_evidence")
+        .select("id, restaurant_id, assigned_employee_id, task_scope, requires_evidence")
         .eq("id", payload.task_id)
         .single();
 
@@ -766,8 +894,12 @@ serve(async (req: Request) => {
         throw { code: 404, message: "Tarea operativa no encontrada", category: "BUSINESS", details: taskError };
       }
 
-      if (user.role === "empleado" && String(task.assigned_employee_id) !== user.id) {
-        throw { code: 403, message: "Tarea no asignada a este empleado", category: "PERMISSION" };
+      if (user.role === "empleado") {
+        if (task.task_scope === "restaurant") {
+          await ensureEmployeeRestaurantAccess(user.id, task.restaurant_id as number);
+        } else if (String(task.assigned_employee_id) !== user.id) {
+          throw { code: 403, message: "Tarea no asignada a este empleado", category: "PERMISSION" };
+        }
       }
 
       if (user.role === "supervisora") {
@@ -780,8 +912,9 @@ serve(async (req: Request) => {
         throw { code: 422, message: "Debe incluir observaciones para cerrar la tarea", category: "VALIDATION" };
       }
 
-      const expectedManifestPrefix = `users/${task.assigned_employee_id}/task-manifest/${payload.task_id}/`;
-      const expectedEvidencePrefix = `users/${task.assigned_employee_id}/task-evidence/${payload.task_id}/`;
+      const actorId = task.task_scope === "restaurant" ? user.id : (task.assigned_employee_id as string);
+      const expectedManifestPrefix = `users/${actorId}/task-manifest/${payload.task_id}/`;
+      const expectedEvidencePrefix = `users/${actorId}/task-evidence/${payload.task_id}/`;
       if (!payload.evidence_path.startsWith(expectedManifestPrefix) && !payload.evidence_path.startsWith(expectedEvidencePrefix)) {
         throw { code: 403, message: "Ruta de evidencia invalida para la tarea", category: "PERMISSION" };
       }
@@ -852,13 +985,30 @@ serve(async (req: Request) => {
     if (payload.action === "list_my_open") {
       roleGuard(user, ["empleado"]);
 
+      // Get restaurants where the employee works to include restaurant-scoped tasks
+      const { data: restaurantLinks } = await clientAdmin
+        .from("restaurant_employees")
+        .select("restaurant_id")
+        .eq("user_id", user.id);
+
+      const employeeRestaurantIds = (restaurantLinks ?? [])
+        .map((r) => Number(r.restaurant_id))
+        .filter((n) => Number.isFinite(n) && n > 0);
+
       let query = clientUser
         .from("operational_tasks")
-        .select("id, shift_id, scheduled_shift_id, restaurant_id, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
-        .eq("assigned_employee_id", user.id)
+        .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
         .in("status", ["pending", "in_progress"])
         .order("updated_at", { ascending: false })
         .limit(payload.limit);
+
+      if (employeeRestaurantIds.length > 0) {
+        query = query.or(
+          `assigned_employee_id.eq.${user.id},and(task_scope.eq.restaurant,restaurant_id.in.(${employeeRestaurantIds.join(",")}))`
+        );
+      } else {
+        query = query.eq("assigned_employee_id", user.id);
+      }
 
       if (payload.shift_id) query = query.eq("shift_id", payload.shift_id);
 
@@ -882,7 +1032,7 @@ serve(async (req: Request) => {
 
     let query = clientUser
       .from("operational_tasks")
-      .select("id, shift_id, scheduled_shift_id, restaurant_id, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
+      .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
       .order("updated_at", { ascending: false })
       .limit(payload.limit);
 

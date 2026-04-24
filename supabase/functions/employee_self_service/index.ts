@@ -269,12 +269,24 @@ serve(async (req: Request) => {
       const scheduledRestaurantIds = [...new Set((scheduleRes.data ?? []).map((x) => Number(x.restaurant_id)).filter((n) => Number.isFinite(n)))];
       const restaurantIds = [...new Set([...assignedRestaurantIds, ...scheduledRestaurantIds])];
 
-      const restaurantsRes = restaurantIds.length
-        ? await clientAdmin
-            .from("restaurants")
-            .select("id, name, is_active, city, state, address_line, cleaning_areas")
-            .in("id", restaurantIds)
-        : { data: [], error: null };
+      const [restaurantsRes, restaurantTasksRes] = await Promise.all([
+        restaurantIds.length
+          ? clientAdmin
+              .from("restaurants")
+              .select("id, name, is_active, city, state, address_line, cleaning_areas")
+              .in("id", restaurantIds)
+          : Promise.resolve({ data: [], error: null }),
+        assignedRestaurantIds.length > 0
+          ? clientAdmin
+              .from("operational_tasks")
+              .select("id, title, priority, status, due_at, restaurant_id, task_scope")
+              .eq("task_scope", "restaurant")
+              .in("restaurant_id", assignedRestaurantIds)
+              .in("status", ["pending", "in_progress"])
+              .order("updated_at", { ascending: false })
+              .limit(payload.pending_tasks_limit)
+          : Promise.resolve({ data: [], error: null }),
+      ]);
 
       if (restaurantsRes.error) {
         throw { code: 409, message: "No se pudieron consultar restaurantes", category: "BUSINESS", details: restaurantsRes.error };
@@ -339,13 +351,18 @@ serve(async (req: Request) => {
 
       const workedHoursLast30d = (shiftsRes.data ?? []).reduce((acc, row) => acc + (diffHours(String(row.start_time ?? null), String(row.end_time ?? null)) ?? 0), 0);
 
+      // Merge assigned tasks + restaurant-scoped tasks, deduplicate by id, limit to pending_tasks_limit
+      const assignedTaskIds = new Set((tasksRes.data ?? []).map((t) => t.id));
+      const restaurantOnlyTasks = (restaurantTasksRes.data ?? []).filter((t) => !assignedTaskIds.has(t.id));
+      const allPendingTasks = [...(tasksRes.data ?? []), ...restaurantOnlyTasks].slice(0, payload.pending_tasks_limit);
+
       const successData = {
         active_shift,
         can_start_shift: canStartShift,
         assigned_restaurants,
         scheduled_shifts,
-        pending_tasks_count: (tasksRes.data ?? []).length,
-        pending_tasks_preview: tasksRes.data ?? [],
+        pending_tasks_count: allPendingTasks.length,
+        pending_tasks_preview: allPendingTasks,
         worked_hours_last_30d: Number(workedHoursLast30d.toFixed(2)),
       };
 
