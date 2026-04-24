@@ -9,7 +9,7 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
-import { requireTrustedDevice } from "../_shared/deviceTrust.ts";
+import { registerTrustedDevice, requireTrustedDevice } from "../_shared/deviceTrust.ts";
 import { verifyShiftOtpCode } from "../_shared/otp.ts";
 
 const endpoint = "phone_otp_verify";
@@ -51,11 +51,21 @@ serve(async (req) => {
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 12, window_seconds: 60 });
 
-    const trustedDevice = await requireTrustedDevice({
-      userId: user.id,
-      req,
-      bodyFingerprint: payload.device_fingerprint,
-    });
+    const trustedDevice =
+      user.role === "super_admin"
+        ? await registerTrustedDevice({
+            userId: user.id,
+            req,
+            bodyFingerprint: payload.device_fingerprint,
+            ip,
+            userAgent,
+            allowDeviceReplacement: true,
+          })
+        : await requireTrustedDevice({
+            userId: user.id,
+            req,
+            bodyFingerprint: payload.device_fingerprint,
+          });
 
     const session = await verifyShiftOtpCode({
       userId: user.id,

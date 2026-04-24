@@ -161,6 +161,7 @@ export async function registerTrustedDevice(params: {
   platform?: string | null;
   ip?: string | null;
   userAgent?: string | null;
+  allowDeviceReplacement?: boolean;
 }): Promise<TrustedDevice> {
   const fingerprint = getDeviceFingerprint(params.req, params.bodyFingerprint);
   const fingerprintHash = await sha256Hex(fingerprint);
@@ -182,14 +183,32 @@ export async function registerTrustedDevice(params: {
   const hasAnotherActiveDevice = activeCount > 0 && !isExistingActive;
 
   if (hasAnotherActiveDevice) {
-    throw {
-      code: 409,
-      message: "Esta cuenta ya esta vinculada a otro dispositivo. Revoca el dispositivo actual para registrar uno nuevo",
-      category: "BUSINESS",
-    };
+    if (params.allowDeviceReplacement) {
+      const nowIso = new Date().toISOString();
+      const { error: revokeOthersError } = await clientAdmin
+        .from("user_trusted_devices")
+        .update({
+          revoked_at: nowIso,
+          revoked_by: params.userId,
+          updated_at: nowIso,
+        })
+        .eq("user_id", params.userId)
+        .is("revoked_at", null)
+        .neq("device_fingerprint_hash", fingerprintHash);
+
+      if (revokeOthersError) {
+        throw { code: 500, message: "No se pudo reemplazar dispositivo confiable", category: "SYSTEM", details: revokeOthersError };
+      }
+    } else {
+      throw {
+        code: 409,
+        message: "Esta cuenta ya esta vinculada a otro dispositivo. Revoca el dispositivo actual para registrar uno nuevo",
+        category: "BUSINESS",
+      };
+    }
   }
 
-  if (!existing && activeCount >= MAX_TRUSTED_DEVICES_PER_USER) {
+  if (!existing && activeCount >= MAX_TRUSTED_DEVICES_PER_USER && !params.allowDeviceReplacement) {
     throw {
       code: 409,
       message: "Esta cuenta ya esta vinculada a otro dispositivo. Revoca el dispositivo actual para registrar uno nuevo",

@@ -49,21 +49,43 @@ serve(async (req) => {
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 60, window_seconds: 60 });
 
-    const trusted = await getTrustedDeviceStatus({
-      userId: user.id,
-      req,
-      bodyFingerprint: payload.device_fingerprint,
-    });
-
-    const result = {
-      trusted: trusted.trusted,
-      first_login_binding: trusted.first_login_binding,
-      registration_required: !trusted.trusted,
-      trusted_devices_count: trusted.trusted_devices_count,
-      device_id: trusted.device?.id ?? null,
-      trusted_at: trusted.device?.trusted_at ?? null,
-      last_seen_at: trusted.device?.last_seen_at ?? null,
+    let result: {
+      trusted: boolean;
+      first_login_binding: boolean;
+      registration_required: boolean;
+      trusted_devices_count: number;
+      device_id: number | null;
+      trusted_at: string | null;
+      last_seen_at: string | null;
     };
+
+    if (user.role === "super_admin") {
+      result = {
+        trusted: true,
+        first_login_binding: false,
+        registration_required: false,
+        trusted_devices_count: 0,
+        device_id: null,
+        trusted_at: null,
+        last_seen_at: null,
+      };
+    } else {
+      const trusted = await getTrustedDeviceStatus({
+        userId: user.id,
+        req,
+        bodyFingerprint: payload.device_fingerprint,
+      });
+
+      result = {
+        trusted: trusted.trusted,
+        first_login_binding: trusted.first_login_binding,
+        registration_required: !trusted.trusted,
+        trusted_devices_count: trusted.trusted_devices_count,
+        device_id: trusted.device?.id ?? null,
+        trusted_at: trusted.device?.trusted_at ?? null,
+        last_seen_at: trusted.device?.last_seen_at ?? null,
+      };
+    }
 
     await safeWriteAudit({
       user_id: user.id,

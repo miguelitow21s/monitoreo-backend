@@ -15,6 +15,7 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
+import { WORKTRACE_LOGO_PNG_BASE64 } from "./worktraceLogo.ts";
 
 const endpoint = "reports_generate";
 const payloadSchema = z.object({
@@ -476,6 +477,16 @@ async function buildSingleDayPdfWithEvidence(params: {
           }
         }
       }
+    } catch {
+      brandLogo = null;
+    }
+  }
+
+  if (!brandLogo && WORKTRACE_LOGO_PNG_BASE64) {
+    try {
+      const logoBinary = atob(WORKTRACE_LOGO_PNG_BASE64);
+      const logoBytes = Uint8Array.from(logoBinary, (ch) => ch.charCodeAt(0));
+      brandLogo = await pdfDoc.embedPng(logoBytes);
     } catch {
       brandLogo = null;
     }
