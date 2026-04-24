@@ -198,6 +198,25 @@ async function ensureEmployeeRestaurantAccess(employeeId: string, restaurantId: 
   }
 }
 
+async function ensureActiveShiftAtRestaurant(employeeId: string, restaurantId: number) {
+  const { data: activeShift } = await clientAdmin
+    .from("shifts")
+    .select("id")
+    .eq("employee_id", employeeId)
+    .eq("restaurant_id", restaurantId)
+    .eq("state", "activo")
+    .maybeSingle();
+
+  if (!activeShift) {
+    throw {
+      code: 422,
+      message: "Debes tener un turno activo en este restaurante para operar la tarea",
+      category: "BUSINESS",
+      details: { diagnostic_code: "NO_ACTIVE_SHIFT" },
+    };
+  }
+}
+
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
   if (preflight) return preflight;
@@ -703,6 +722,7 @@ serve(async (req: Request) => {
       if (user.role === "empleado") {
         if (task.task_scope === "restaurant") {
           await ensureEmployeeRestaurantAccess(user.id, task.restaurant_id as number);
+          await ensureActiveShiftAtRestaurant(user.id, task.restaurant_id as number);
         } else if (String(task.assigned_employee_id) !== user.id) {
           throw { code: 403, message: "Solo el empleado asignado puede iniciar la tarea", category: "PERMISSION" };
         }
@@ -758,6 +778,7 @@ serve(async (req: Request) => {
       if (user.role === "empleado") {
         if (task.task_scope === "restaurant") {
           await ensureEmployeeRestaurantAccess(user.id, task.restaurant_id as number);
+          await ensureActiveShiftAtRestaurant(user.id, task.restaurant_id as number);
         } else if (String(task.assigned_employee_id) !== user.id) {
           throw { code: 403, message: "Solo el empleado asignado puede cerrar la tarea", category: "PERMISSION" };
         }
@@ -897,6 +918,7 @@ serve(async (req: Request) => {
       if (user.role === "empleado") {
         if (task.task_scope === "restaurant") {
           await ensureEmployeeRestaurantAccess(user.id, task.restaurant_id as number);
+          await ensureActiveShiftAtRestaurant(user.id, task.restaurant_id as number);
         } else if (String(task.assigned_employee_id) !== user.id) {
           throw { code: 403, message: "Tarea no asignada a este empleado", category: "PERMISSION" };
         }

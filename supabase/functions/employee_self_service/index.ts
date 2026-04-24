@@ -236,7 +236,7 @@ serve(async (req: Request) => {
           .limit(payload.schedule_limit),
         clientAdmin
           .from("operational_tasks")
-          .select("id, title, priority, status, due_at, restaurant_id")
+          .select("id, title, priority, status, due_at, restaurant_id, task_scope")
           .eq("assigned_employee_id", user.id)
           .in("status", ["pending", "in_progress"])
           .order("updated_at", { ascending: false })
