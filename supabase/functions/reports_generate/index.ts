@@ -420,6 +420,17 @@ function normalizeZone(meta: Record<string, unknown>) {
   return "Zona no especificada";
 }
 
+function buildZoneWithSubzone(meta: Record<string, unknown>) {
+  const area = typeof meta.area_label === "string" ? meta.area_label.trim() : "";
+  const subarea = typeof meta.subarea_label === "string" ? meta.subarea_label.trim() : "";
+
+  if (area && subarea) return `${area} - ${subarea}`;
+  if (area) return area;
+  if (subarea) return subarea;
+
+  return normalizeZone(meta);
+}
+
 function buildEvidenceWatermarkText(evidence: {
   captured_at: string | null;
   zone: string;
@@ -443,6 +454,33 @@ async function buildSingleDayPdfWithEvidence(params: {
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const brandAppName = "WorkTrace";
+  const brandLogoUrl = (Deno.env.get("REPORTS_BRAND_LOGO_URL") ?? "").trim();
+  let brandLogo: any = null;
+
+  if (brandLogoUrl) {
+    try {
+      const logoResp = await fetch(brandLogoUrl);
+      if (logoResp.ok) {
+        const contentType = (logoResp.headers.get("content-type") ?? "").toLowerCase();
+        const logoBytes = new Uint8Array(await logoResp.arrayBuffer());
+        if (contentType.includes("png")) {
+          brandLogo = await pdfDoc.embedPng(logoBytes);
+        } else if (contentType.includes("jpg") || contentType.includes("jpeg")) {
+          brandLogo = await pdfDoc.embedJpg(logoBytes);
+        } else {
+          try {
+            brandLogo = await pdfDoc.embedPng(logoBytes);
+          } catch {
+            brandLogo = await pdfDoc.embedJpg(logoBytes);
+          }
+        }
+      }
+    } catch {
+      brandLogo = null;
+    }
+  }
+
   const fitTextByWidth = (txt: string, maxWidth: number, fontSize: number) => {
     if (maxWidth <= 0) return txt;
     if (bold.widthOfTextAtSize(txt, fontSize) <= maxWidth) return txt;
@@ -472,11 +510,34 @@ async function buildSingleDayPdfWithEvidence(params: {
   for (const ev of params.evidenceRows) {
     const pageMargin = 24;
     const bottomPadding = 24;
-    const titleTopPadding = 18;
+    const headerBlockHeight = 96;
+    const titleOffsetFromImage = 22;
     const titleSize = 16;
-    const titleGapToImage = 14;
     const maxImageWidth = 760;
     const maxImageHeight = 1100;
+    const drawBrandBlock = (page: any, pageH: number) => {
+      const logoTopY = pageH - 16;
+      let appLabelY = logoTopY - 12;
+
+      if (brandLogo) {
+        const logoMaxW = 120;
+        const logoMaxH = 32;
+        const logoScale = Math.min(logoMaxW / brandLogo.width, logoMaxH / brandLogo.height, 1);
+        const logoW = brandLogo.width * logoScale;
+        const logoH = brandLogo.height * logoScale;
+        const logoY = logoTopY - logoH;
+        page.drawImage(brandLogo, { x: pageMargin, y: logoY, width: logoW, height: logoH });
+        appLabelY = logoY - 12;
+      }
+
+      page.drawText(brandAppName, {
+        x: pageMargin,
+        y: Math.max(8, appLabelY),
+        size: 10,
+        font: bold,
+        color: rgb(0.2, 0.2, 0.2),
+      });
+    };
 
     const zoneLabel = typeof ev.zone === "string" && ev.zone.trim().length > 0 ? ev.zone.trim() : "Zona no especificada";
     const phaseLabel = ev.phase === "Despues" ? "Después" : ev.phase;
@@ -511,14 +572,15 @@ async function buildSingleDayPdfWithEvidence(params: {
       const drawW = img.width * imageScale;
       const drawH = img.height * imageScale;
       const pageW = Math.max(340, drawW + pageMargin * 2);
-      const pageH = Math.max(420, bottomPadding + drawH + titleGapToImage + titleSize + titleTopPadding);
+      const pageH = Math.max(420, bottomPadding + drawH + headerBlockHeight);
 
       page = pdfDoc.addPage([pageW, pageH]);
       const title = fitTextByWidth(titleRaw, pageW - pageMargin * 2, titleSize);
       const titleWidth = bold.widthOfTextAtSize(title, titleSize);
       const titleX = Math.max(pageMargin, (pageW - titleWidth) / 2);
-      const titleY = pageH - titleTopPadding - titleSize;
+      const titleY = bottomPadding + drawH + titleOffsetFromImage;
       page.drawText(title, { x: titleX, y: titleY, size: titleSize, font: bold, color: rgb(0, 0, 0) });
+      drawBrandBlock(page, pageH);
 
       frameW = drawW;
       frameH = drawH;
@@ -534,13 +596,14 @@ async function buildSingleDayPdfWithEvidence(params: {
       const title = fitTextByWidth(titleRaw, fallbackPageW - pageMargin * 2, titleSize);
       const titleWidth = bold.widthOfTextAtSize(title, titleSize);
       const titleX = Math.max(pageMargin, (fallbackPageW - titleWidth) / 2);
-      const titleY = fallbackPageH - titleTopPadding - titleSize;
+      const titleY = frameY + (fallbackPageH - frameY - headerBlockHeight - pageMargin) + titleOffsetFromImage;
       page.drawText(title, { x: titleX, y: titleY, size: titleSize, font: bold, color: rgb(0, 0, 0) });
+      drawBrandBlock(page, fallbackPageH);
 
       frameX = pageMargin;
       frameY = 140;
       frameW = fallbackPageW - pageMargin * 2;
-      frameH = fallbackPageH - frameY - (titleTopPadding + titleSize + titleGapToImage) - pageMargin;
+      frameH = fallbackPageH - frameY - headerBlockHeight - pageMargin;
       page.drawRectangle({ x: frameX, y: frameY, width: frameW, height: frameH, borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 1 });
       page.drawText("No se pudo incrustar la imagen. URL firmada:", { x: frameX + 10, y: frameY + frameH - 30, size: 10, font });
       page.drawText(ev.signed_url.slice(0, 95), { x: frameX + 10, y: frameY + frameH - 48, size: 8, font, color: rgb(0.2, 0.2, 0.2) });
@@ -889,7 +952,7 @@ serve(async (req: Request) => {
       const areaLabel = typeof meta.area_label === "string" ? meta.area_label : null;
       const subareaLabel = typeof meta.subarea_label === "string" ? meta.subarea_label : null;
       const photoLabel = typeof meta.photo_label === "string" ? meta.photo_label : null;
-      const zone = normalizeZone(meta);
+      const zone = buildZoneWithSubzone(meta);
       const shiftRestaurantId = Number((shifts ?? []).find((s) => Number(s.id) === Number(photo.shift_id))?.restaurant_id ?? NaN);
       const restaurantName = Number.isFinite(shiftRestaurantId)
         ? (restaurantNameMap.get(shiftRestaurantId) ?? `#${shiftRestaurantId}`)
@@ -998,39 +1061,67 @@ serve(async (req: Request) => {
         const startEvidences = (row.start_evidences as Array<Record<string, unknown>> | undefined) ?? [];
         const endEvidences = (row.end_evidences as Array<Record<string, unknown>> | undefined) ?? [];
 
-        startEvidences.forEach((ev, idx) => {
-          const signedUrl = typeof ev.signed_url === "string" ? ev.signed_url : "";
-          if (!signedUrl) return;
-          evidenceRowsForExport.push({
-            shift_id: Number(row.shift_id),
-            phase: "Antes",
-            index: idx + 1,
-            path: String(ev.path ?? ""),
-            signed_url: signedUrl,
-            captured_at: (ev.captured_at as string | null) ?? null,
-            zone: String(ev.zone ?? "Zona no especificada"),
-            restaurant_name: String(ev.restaurant_name ?? (row.restaurant_name ?? "N/A")),
-            employee_name: String(ev.employee_name ?? (row.employee_name ?? "Sin nombre")),
-            watermark_text: String(ev.watermark_text ?? ""),
-          });
-        });
+        const startValid = startEvidences.filter((ev) => typeof ev.signed_url === "string" && ev.signed_url.length > 0);
+        const endValid = endEvidences.filter((ev) => typeof ev.signed_url === "string" && ev.signed_url.length > 0);
 
-        endEvidences.forEach((ev, idx) => {
-          const signedUrl = typeof ev.signed_url === "string" ? ev.signed_url : "";
-          if (!signedUrl) return;
-          evidenceRowsForExport.push({
-            shift_id: Number(row.shift_id),
-            phase: "Despues",
-            index: idx + 1,
-            path: String(ev.path ?? ""),
-            signed_url: signedUrl,
-            captured_at: (ev.captured_at as string | null) ?? null,
-            zone: String(ev.zone ?? "Zona no especificada"),
-            restaurant_name: String(ev.restaurant_name ?? (row.restaurant_name ?? "N/A")),
-            employee_name: String(ev.employee_name ?? (row.employee_name ?? "Sin nombre")),
-            watermark_text: String(ev.watermark_text ?? ""),
-          });
-        });
+        const startByZone = new Map<string, Array<Record<string, unknown>>>();
+        const endByZone = new Map<string, Array<Record<string, unknown>>>();
+        const zoneOrder: string[] = [];
+
+        const pushByZone = (target: Map<string, Array<Record<string, unknown>>>, evidence: Record<string, unknown>) => {
+          const zoneLabel = String(evidence.zone ?? "Zona no especificada");
+          const zoneKey = normalizeColumnKey(zoneLabel);
+          if (!target.has(zoneKey)) {
+            target.set(zoneKey, []);
+          }
+          if (!zoneOrder.includes(zoneKey)) {
+            zoneOrder.push(zoneKey);
+          }
+          target.get(zoneKey)?.push(evidence);
+        };
+
+        startValid.forEach((ev) => pushByZone(startByZone, ev));
+        endValid.forEach((ev) => pushByZone(endByZone, ev));
+
+        for (const zoneKey of zoneOrder) {
+          const starts = startByZone.get(zoneKey) ?? [];
+          const ends = endByZone.get(zoneKey) ?? [];
+          const pairCount = Math.max(starts.length, ends.length);
+
+          for (let idx = 0; idx < pairCount; idx += 1) {
+            const evStart = starts[idx];
+            if (evStart) {
+              evidenceRowsForExport.push({
+                shift_id: Number(row.shift_id),
+                phase: "Antes",
+                index: idx + 1,
+                path: String(evStart.path ?? ""),
+                signed_url: String(evStart.signed_url),
+                captured_at: (evStart.captured_at as string | null) ?? null,
+                zone: String(evStart.zone ?? "Zona no especificada"),
+                restaurant_name: String(evStart.restaurant_name ?? (row.restaurant_name ?? "N/A")),
+                employee_name: String(evStart.employee_name ?? (row.employee_name ?? "Sin nombre")),
+                watermark_text: String(evStart.watermark_text ?? ""),
+              });
+            }
+
+            const evEnd = ends[idx];
+            if (evEnd) {
+              evidenceRowsForExport.push({
+                shift_id: Number(row.shift_id),
+                phase: "Despues",
+                index: idx + 1,
+                path: String(evEnd.path ?? ""),
+                signed_url: String(evEnd.signed_url),
+                captured_at: (evEnd.captured_at as string | null) ?? null,
+                zone: String(evEnd.zone ?? "Zona no especificada"),
+                restaurant_name: String(evEnd.restaurant_name ?? (row.restaurant_name ?? "N/A")),
+                employee_name: String(evEnd.employee_name ?? (row.employee_name ?? "Sin nombre")),
+                watermark_text: String(evEnd.watermark_text ?? ""),
+              });
+            }
+          }
+        }
       }
     }
 
