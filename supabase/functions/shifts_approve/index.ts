@@ -41,8 +41,10 @@ serve(async (req) => {
     userRole = user.role;
     roleGuard(user, ["supervisora", "super_admin"]);
     await requireAcceptedActiveLegalTerm(user.id);
-    const trustedDevice = await requireTrustedDevice({ userId: user.id, req });
-    await requireShiftOtpSession({ req, userId: user.id, trustedDeviceId: trustedDevice.id });
+    if (user.role !== "super_admin") {
+      const trustedDevice = await requireTrustedDevice({ userId: user.id, req });
+      await requireShiftOtpSession({ req, userId: user.id, trustedDeviceId: trustedDevice.id });
+    }
 
     const payload = await parseBody(req, payloadSchema);
     idempotencyKey = requireIdempotencyKey(req);
