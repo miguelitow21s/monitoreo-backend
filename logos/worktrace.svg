@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Capa_1" data-name="Capa 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 586.62 125.01">
+  <defs>
+    <style>
+      .cls-1, .cls-2 {
+        fill: #00ff01;
+      }
+
+      .cls-3 {
+        font-family: Arial-BoldItalicMT, Arial;
+        font-size: 100px;
+        font-style: italic;
+      }
+
+      .cls-3, .cls-4 {
+        font-weight: 700;
+      }
+
+      .cls-4 {
+        font-family: Arial-BoldMT, Arial;
+        font-size: 20px;
+        letter-spacing: .11em;
+      }
+
+      .cls-2 {
+        stroke-width: 0px;
+      }
+    </style>
+  </defs>
+  <path class="cls-2" d="m.41,58.86c-3.3-3.31,13.97-11.5,21.97-9.66,12.7,2.91,10.24,22.88,20.26,23.41C48.51,72.91,64.66,24.71,115.64.01c1.82-.88-33.06,37.3-59.26,88.48-4.97,9.71-11.21,23.64-20.04,22.55-6.97-.86.26-15.93-35.92-52.18Z"/>
+  <text class="cls-3" transform="translate(86.37 87.37)"><tspan x="0" y="0">work</tspan><tspan class="cls-1" x="233.4" y="0">trace </tspan></text>
+  <text class="cls-4" transform="translate(94.37 110.84)"><tspan x="0" y="0">TRACK WORK. IMPROVE PERFORMANCE</tspan><tspan class="cls-1" x="472.64" y="0"> </tspan></text>
+</svg>

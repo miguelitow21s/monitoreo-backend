@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Capa_1" data-name="Capa 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 461.7 187.15">
+  <defs>
+    <style>
+      .cls-1 {
+        fill: none;
+        stroke: #000;
+        stroke-miterlimit: 10;
+        stroke-width: 6px;
+      }
+
+      .cls-2 {
+        font-family: Arial-BoldItalicMT, Arial;
+        font-size: 137.54px;
+        font-style: italic;
+        font-weight: 700;
+      }
+
+      .cls-3 {
+        fill: #00ff01;
+        stroke-width: 0px;
+      }
+    </style>
+  </defs>
+  <path class="cls-3" d="m14.19,72.66c-4.01-4.08,17-14.2,26.74-11.93,15.45,3.6,12.46,28.25,24.66,28.9,7.13.38,26.78-59.12,88.81-89.61,2.21-1.09-40.23,46.05-72.11,109.23-6.05,11.99-13.64,29.18-24.39,27.84-8.48-1.06.32-19.66-43.71-64.42Z"/>
+  <text class="cls-2" transform="translate(99.27 135.37)"><tspan x="0" y="0">erifiK</tspan></text>
+  <polyline class="cls-1" points="80.45 49.52 3 49.52 3 149.5 96.66 149.5 96.66 122.62"/>
+</svg>

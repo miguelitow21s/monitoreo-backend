@@ -16,6 +16,9 @@ import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { WORKTRACE_LOGO_PNG_BASE64 } from "./worktraceLogo.ts";
+import { WORKTRACE_LOGO_NEW_PNG_BASE64 } from "./worktraceLogoNew.ts";
+import { VERIFIK_LOGO_PNG_BASE64 } from "./verifikLogo.ts";
+import { R3_LOGO_PNG_BASE64 } from "./r3Logo.ts";
 
 const endpoint = "reports_generate";
 const payloadSchema = z.object({
@@ -455,9 +458,9 @@ async function buildSingleDayPdfWithEvidence(params: {
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
   const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-  const brandAppName = "WorkTrace";
   const brandLogoUrl = (Deno.env.get("REPORTS_BRAND_LOGO_URL") ?? "").trim();
   let brandLogo: any = null;
+  let verifikLogo: any = null;
 
   if (brandLogoUrl) {
     try {
@@ -482,14 +485,32 @@ async function buildSingleDayPdfWithEvidence(params: {
     }
   }
 
-  if (!brandLogo && WORKTRACE_LOGO_PNG_BASE64) {
+  if (!brandLogo) {
     try {
-      const logoBinary = atob(WORKTRACE_LOGO_PNG_BASE64);
+      const src = WORKTRACE_LOGO_NEW_PNG_BASE64 || WORKTRACE_LOGO_PNG_BASE64;
+      const logoBinary = atob(src);
       const logoBytes = Uint8Array.from(logoBinary, (ch) => ch.charCodeAt(0));
       brandLogo = await pdfDoc.embedPng(logoBytes);
     } catch {
       brandLogo = null;
     }
+  }
+
+  try {
+    const vkBinary = atob(VERIFIK_LOGO_PNG_BASE64);
+    const vkBytes = Uint8Array.from(vkBinary, (ch) => ch.charCodeAt(0));
+    verifikLogo = await pdfDoc.embedPng(vkBytes);
+  } catch {
+    verifikLogo = null;
+  }
+
+  let r3Logo: any = null;
+  try {
+    const r3Binary = atob(R3_LOGO_PNG_BASE64);
+    const r3Bytes = Uint8Array.from(r3Binary, (ch) => ch.charCodeAt(0));
+    r3Logo = await pdfDoc.embedPng(r3Bytes);
+  } catch {
+    r3Logo = null;
   }
 
   const fitTextByWidth = (txt: string, maxWidth: number, fontSize: number) => {
@@ -502,53 +523,108 @@ async function buildSingleDayPdfWithEvidence(params: {
     return `${base}...`;
   };
 
+  const totalPageCount = 1 + params.evidenceRows.length;
+  let currentPageNum = 0;
+
+  const drawPageHeader = (page: any, pw: number, ph: number) => {
+    const logoTopY = ph - 10;
+    const logoMaxH = 32;
+
+    // Left: 3R logo
+    if (r3Logo) {
+      const s = Math.min(80 / r3Logo.width, logoMaxH / r3Logo.height, 1);
+      page.drawImage(r3Logo, { x: 24, y: logoTopY - r3Logo.height * s, width: r3Logo.width * s, height: r3Logo.height * s });
+    }
+
+    // Center: system name
+    const sysLabel = "Sistema de Control de Empleados";
+    const sysW = bold.widthOfTextAtSize(sysLabel, 8);
+    page.drawText(sysLabel, { x: (pw - sysW) / 2, y: ph - 24, size: 8, font: bold, color: rgb(0.3, 0.3, 0.3) });
+
+    // Right: WorkTrace logo
+    if (brandLogo) {
+      const s = Math.min(110 / brandLogo.width, logoMaxH / brandLogo.height, 1);
+      const lw = brandLogo.width * s;
+      const lh = brandLogo.height * s;
+      page.drawImage(brandLogo, { x: pw - 24 - lw, y: logoTopY - lh, width: lw, height: lh });
+    }
+
+    page.drawLine({ start: { x: 24, y: ph - logoMaxH - 16 }, end: { x: pw - 24, y: ph - logoMaxH - 16 }, thickness: 0.5, color: rgb(0.8, 0.8, 0.8) });
+  };
+
+  const drawPageFooter = (page: any, pw: number) => {
+    page.drawLine({ start: { x: 24, y: 28 }, end: { x: pw - 24, y: 28 }, thickness: 0.5, color: rgb(0.8, 0.8, 0.8) });
+    page.drawText("VerifiK | verifikhm@gmail.com | +57 324 397 7861 | www.verifik.com", { x: 24, y: 10, size: 7, font, color: rgb(0.4, 0.4, 0.4) });
+    const pageLabel = `Pag. ${currentPageNum} / ${totalPageCount}`;
+    const labelW = font.widthOfTextAtSize(pageLabel, 8);
+    page.drawText(pageLabel, { x: pw - 24 - labelW, y: 10, size: 8, font: bold, color: rgb(0.3, 0.3, 0.3) });
+  };
+
   const summaryPage = pdfDoc.addPage([595, 842]);
-  summaryPage.drawText("Reporte de turnos - Evidencias dia unico", { x: 40, y: 800, size: 16, font: bold, color: rgb(0, 0, 0) });
-  summaryPage.drawText(`Restaurante: ${params.restaurantLabel}`, { x: 40, y: 770, size: 11, font });
-  summaryPage.drawText(`Periodo: ${params.periodStart} a ${params.periodEnd}`, { x: 40, y: 752, size: 11, font });
-  summaryPage.drawText(`Generado: ${formatDateTime(params.generatedAt)}`, { x: 40, y: 734, size: 11, font });
-  summaryPage.drawText(`Total turnos: ${params.totalShifts}`, { x: 40, y: 716, size: 11, font });
-  summaryPage.drawText(`Horas trabajadas: ${formatDuration(params.totalHours)}`, { x: 40, y: 698, size: 11, font });
-  summaryPage.drawText(`Horas programadas: ${formatDuration(params.totalScheduledHours)}`, { x: 40, y: 680, size: 11, font });
+  const pageW = 595;
+  const pageMarginX = 40;
+  const logoMaxH = 38;
+
+  // --- Logo row (top of cover page) ---
+  let logoRowBottomY = 820;
+
+  // Left: 3R logo
+  if (r3Logo) {
+    const logoMaxW = 130;
+    const scale = Math.min(logoMaxW / r3Logo.width, logoMaxH / r3Logo.height, 1);
+    const lw = r3Logo.width * scale;
+    const lh = r3Logo.height * scale;
+    summaryPage.drawImage(r3Logo, { x: pageMarginX, y: 842 - pageMarginX - lh, width: lw, height: lh });
+    logoRowBottomY = Math.min(logoRowBottomY, 842 - pageMarginX - lh);
+  }
+
+  // Right: WorkTrace logo
+  if (brandLogo) {
+    const logoMaxW = 180;
+    const scale = Math.min(logoMaxW / brandLogo.width, logoMaxH / brandLogo.height, 1);
+    const lw = brandLogo.width * scale;
+    const lh = brandLogo.height * scale;
+    summaryPage.drawImage(brandLogo, { x: pageW - pageMarginX - lw, y: 842 - pageMarginX - lh, width: lw, height: lh });
+    logoRowBottomY = Math.min(logoRowBottomY, 842 - pageMarginX - lh);
+  }
+
+  // R3 contact info below logo
+  summaryPage.drawText("R3 Service & Solutions Inc.  |  Montrose, CA 91020  |  Danny@r3servicesol.com  |  818.795.7744", {
+    x: pageMarginX, y: logoRowBottomY - 14, size: 7, font, color: rgb(0.4, 0.4, 0.4),
+  });
+
+  // Divider line below logos
+  const dividerY = logoRowBottomY - 28;
+  summaryPage.drawLine({ start: { x: pageMarginX, y: dividerY }, end: { x: pageW - pageMarginX, y: dividerY }, thickness: 0.5, color: rgb(0.8, 0.8, 0.8) });
+
+  // --- Content ---
+  const contentStartY = dividerY - 28;
+  summaryPage.drawText("Reporte de Turnos - Evidencias Dia Unico", { x: pageMarginX, y: contentStartY, size: 16, font: bold, color: rgb(0, 0, 0) });
+  summaryPage.drawText(`Restaurante: ${params.restaurantLabel}`, { x: pageMarginX, y: contentStartY - 32, size: 11, font });
+  summaryPage.drawText(`Periodo: ${params.periodStart} a ${params.periodEnd}`, { x: pageMarginX, y: contentStartY - 50, size: 11, font });
+  summaryPage.drawText(`Generado: ${formatDateTime(params.generatedAt)}`, { x: pageMarginX, y: contentStartY - 68, size: 11, font });
+  summaryPage.drawText(`Total de Turnos: ${params.totalShifts}`, { x: pageMarginX, y: contentStartY - 86, size: 11, font });
+  summaryPage.drawText(`Horas Trabajadas: ${formatDuration(params.totalHours)}`, { x: pageMarginX, y: contentStartY - 104, size: 11, font });
+  summaryPage.drawText(`Horas Programadas: ${formatDuration(params.totalScheduledHours)}`, { x: pageMarginX, y: contentStartY - 122, size: 11, font });
   summaryPage.drawText("Las siguientes paginas incluyen fotos Antes/Despues con datos de trazabilidad.", {
-    x: 40,
-    y: 650,
+    x: pageMarginX,
+    y: contentStartY - 158,
     size: 10,
     font,
     color: rgb(0.2, 0.2, 0.2),
   });
+  currentPageNum = 1;
+  drawPageFooter(summaryPage, pageW);
 
   for (const ev of params.evidenceRows) {
+    currentPageNum++;
     const pageMargin = 24;
-    const bottomPadding = 24;
+    const bottomPadding = 44;
     const headerBlockHeight = 96;
     const titleOffsetFromImage = 22;
     const titleSize = 16;
     const maxImageWidth = 760;
     const maxImageHeight = 1100;
-    const drawBrandBlock = (page: any, pageH: number) => {
-      const logoTopY = pageH - 16;
-      let appLabelY = logoTopY - 12;
-
-      if (brandLogo) {
-        const logoMaxW = 120;
-        const logoMaxH = 32;
-        const logoScale = Math.min(logoMaxW / brandLogo.width, logoMaxH / brandLogo.height, 1);
-        const logoW = brandLogo.width * logoScale;
-        const logoH = brandLogo.height * logoScale;
-        const logoY = logoTopY - logoH;
-        page.drawImage(brandLogo, { x: pageMargin, y: logoY, width: logoW, height: logoH });
-        appLabelY = logoY - 12;
-      }
-
-      page.drawText(brandAppName, {
-        x: pageMargin,
-        y: Math.max(8, appLabelY),
-        size: 10,
-        font: bold,
-        color: rgb(0.2, 0.2, 0.2),
-      });
-    };
 
     const zoneLabel = typeof ev.zone === "string" && ev.zone.trim().length > 0 ? ev.zone.trim() : "Zona no especificada";
     const phaseLabel = ev.phase === "Despues" ? "Después" : ev.phase;
@@ -591,7 +667,8 @@ async function buildSingleDayPdfWithEvidence(params: {
       const titleX = Math.max(pageMargin, (pageW - titleWidth) / 2);
       const titleY = bottomPadding + drawH + titleOffsetFromImage;
       page.drawText(title, { x: titleX, y: titleY, size: titleSize, font: bold, color: rgb(0, 0, 0) });
-      drawBrandBlock(page, pageH);
+      drawPageHeader(page, pageW, pageH);
+      drawPageFooter(page, pageW);
 
       frameW = drawW;
       frameH = drawH;
@@ -609,7 +686,8 @@ async function buildSingleDayPdfWithEvidence(params: {
       const titleX = Math.max(pageMargin, (fallbackPageW - titleWidth) / 2);
       const titleY = frameY + (fallbackPageH - frameY - headerBlockHeight - pageMargin) + titleOffsetFromImage;
       page.drawText(title, { x: titleX, y: titleY, size: titleSize, font: bold, color: rgb(0, 0, 0) });
-      drawBrandBlock(page, fallbackPageH);
+      drawPageHeader(page, fallbackPageW, fallbackPageH);
+      drawPageFooter(page, fallbackPageW);
 
       frameX = pageMargin;
       frameY = 140;
