@@ -566,23 +566,27 @@ async function buildSingleDayPdfWithEvidence(params: {
   };
 
   const drawPageFooter = (page: any, pw: number) => {
-    page.drawLine({ start: { x: 24, y: 60 }, end: { x: pw - 24, y: 60 }, thickness: 0.5, color: rgb(0.8, 0.8, 0.8) });
+    page.drawLine({ start: { x: 24, y: 58 }, end: { x: pw - 24, y: 58 }, thickness: 0.5, color: rgb(0.8, 0.8, 0.8) });
 
-    // VerifiK logo on left
+    // VerifiK logo on left — allow wider scale so height fills the footer
     let infoX = 24;
     if (verifikLogo) {
-      const s = Math.min(58 / verifikLogo.width, 44 / verifikLogo.height, 1);
+      const s = Math.min(100 / verifikLogo.width, 40 / verifikLogo.height, 1);
       const lw = verifikLogo.width * s;
       const lh = verifikLogo.height * s;
-      page.drawImage(verifikLogo, { x: 24, y: 10, width: lw, height: lh });
+      page.drawImage(verifikLogo, { x: 24, y: 8, width: lw, height: lh });
       infoX = 24 + lw + 8;
+
+      // Text vertically centered on logo
+      const logoCenterY = 8 + lh / 2;
+      page.drawText("VerifiK  —  Desarrollador de WorkTrace", { x: infoX, y: logoCenterY + 7, size: 8.5, font: bold, color: rgb(0.25, 0.25, 0.25) });
+      page.drawText("verifikhm@gmail.com  |  +57 324 397 7861  |  www.verifik.com", { x: infoX, y: logoCenterY - 6, size: 8, font, color: rgb(0.4, 0.4, 0.4) });
+    } else {
+      page.drawText("VerifiK  —  Desarrollador de WorkTrace", { x: infoX, y: 36, size: 8.5, font: bold, color: rgb(0.25, 0.25, 0.25) });
+      page.drawText("verifikhm@gmail.com  |  +57 324 397 7861  |  www.verifik.com", { x: infoX, y: 23, size: 8, font, color: rgb(0.4, 0.4, 0.4) });
     }
 
-    // Contact info to right of VerifiK logo
-    page.drawText("VerifiK  —  Desarrollador de WorkTrace", { x: infoX, y: 38, size: 8.5, font: bold, color: rgb(0.25, 0.25, 0.25) });
-    page.drawText("verifikhm@gmail.com  |  +57 324 397 7861  |  www.verifik.com", { x: infoX, y: 25, size: 8, font, color: rgb(0.4, 0.4, 0.4) });
-
-    // Page number on right, vertically centered
+    // Page number on right
     const pageLabel = `Pag. ${currentPageNum} / ${totalPageCount}`;
     const labelW = bold.widthOfTextAtSize(pageLabel, 9);
     page.drawText(pageLabel, { x: pw - 24 - labelW, y: 32, size: 9, font: bold, color: rgb(0.3, 0.3, 0.3) });
@@ -601,8 +605,9 @@ async function buildSingleDayPdfWithEvidence(params: {
   const tableW = pageW - 2 * pageMarginX;
 
   // --- Black title banner ---
+  // bannerY is the BOTTOM of the rectangle; top = bannerY + bannerH must be below headerDivY
   const bannerH = 32;
-  const bannerY = headerDivY - 28;
+  const bannerY = headerDivY - bannerH - 22; // 22px gap below the header divider
   summaryPage.drawRectangle({ x: pageMarginX, y: bannerY, width: tableW, height: bannerH, color: rgb(0.05, 0.05, 0.05) });
   const titleTxt = "REPORTE DE TURNOS - EVIDENCIAS DIA UNICO";
   const titleTxtW = bold.widthOfTextAtSize(titleTxt, 12);
