@@ -579,13 +579,13 @@ async function buildSingleDayPdfWithEvidence(params: {
     }
 
     // Contact info to right of VerifiK logo
-    page.drawText("VerifiK  —  Desarrollador de WorkTrace", { x: infoX, y: 48, size: 8.5, font: bold, color: rgb(0.25, 0.25, 0.25) });
-    page.drawText("verifikhm@gmail.com  |  +57 324 397 7861  |  www.verifik.com", { x: infoX, y: 35, size: 8, font, color: rgb(0.4, 0.4, 0.4) });
+    page.drawText("VerifiK  —  Desarrollador de WorkTrace", { x: infoX, y: 38, size: 8.5, font: bold, color: rgb(0.25, 0.25, 0.25) });
+    page.drawText("verifikhm@gmail.com  |  +57 324 397 7861  |  www.verifik.com", { x: infoX, y: 25, size: 8, font, color: rgb(0.4, 0.4, 0.4) });
 
     // Page number on right, vertically centered
     const pageLabel = `Pag. ${currentPageNum} / ${totalPageCount}`;
     const labelW = bold.widthOfTextAtSize(pageLabel, 9);
-    page.drawText(pageLabel, { x: pw - 24 - labelW, y: 40, size: 9, font: bold, color: rgb(0.3, 0.3, 0.3) });
+    page.drawText(pageLabel, { x: pw - 24 - labelW, y: 32, size: 9, font: bold, color: rgb(0.3, 0.3, 0.3) });
   };
 
   const summaryPage = pdfDoc.addPage([595, 842]);
