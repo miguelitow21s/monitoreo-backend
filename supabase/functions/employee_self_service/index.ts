@@ -188,7 +188,7 @@ serve(async (req: Request) => {
         .maybeSingle();
 
       if (activeShiftError) {
-        throw { code: 409, message: "No se pudo consultar turno activo", category: "BUSINESS", details: activeShiftError };
+        throw { code: 409, message: "No se pudo consultar servicio activo", category: "BUSINESS", details: activeShiftError };
       }
 
       let activeShiftWithEvidence = activeShift ?? null;
@@ -253,7 +253,7 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se pudo consultar turno activo", category: "BUSINESS", details: activeShiftRes.error };
       }
       if (linksRes.error) {
-        throw { code: 409, message: "No se pudo consultar restaurantes asignados", category: "BUSINESS", details: linksRes.error };
+        throw { code: 409, message: "No se pudo consultar sitios asignados", category: "BUSINESS", details: linksRes.error };
       }
       if (scheduleRes.error) {
         throw { code: 409, message: "No se pudo consultar agenda", category: "BUSINESS", details: scheduleRes.error };
@@ -289,7 +289,7 @@ serve(async (req: Request) => {
       ]);
 
       if (restaurantsRes.error) {
-        throw { code: 409, message: "No se pudieron consultar restaurantes", category: "BUSINESS", details: restaurantsRes.error };
+        throw { code: 409, message: "No se pudieron consultar sitios", category: "BUSINESS", details: restaurantsRes.error };
       }
 
       const restaurantsById = new Map(
@@ -313,7 +313,7 @@ serve(async (req: Request) => {
           .maybeSingle();
 
         if (scheduledActiveError) {
-          throw { code: 409, message: "No se pudo consultar turno programado activo", category: "BUSINESS", details: scheduledActiveError };
+          throw { code: 409, message: "No se pudo consultar servicio asignado activo", category: "BUSINESS", details: scheduledActiveError };
         }
 
         const restaurant = restaurantsById.get(Number(active_shift.restaurant_id)) ?? null;
@@ -394,7 +394,7 @@ serve(async (req: Request) => {
         .limit(payload.limit);
 
       if (shiftsError) {
-        throw { code: 409, message: "No se pudo consultar historial de turnos", category: "BUSINESS", details: shiftsError };
+        throw { code: 409, message: "No se pudo consultar historial de servicios", category: "BUSINESS", details: shiftsError };
       }
 
       const shiftIds = [...new Set((shifts ?? []).map((s) => Number(s.id)).filter((id) => Number.isFinite(id)))];
@@ -406,7 +406,7 @@ serve(async (req: Request) => {
         : { data: [], error: null };
 
       if (scheduledRes.error) {
-        throw { code: 409, message: "No se pudo consultar turnos programados", category: "BUSINESS", details: scheduledRes.error };
+        throw { code: 409, message: "No se pudo consultar servicios asignados", category: "BUSINESS", details: scheduledRes.error };
       }
 
       const scheduledByShiftId = new Map<number, { scheduled_start: string | null; scheduled_end: string | null }>();
@@ -428,7 +428,7 @@ serve(async (req: Request) => {
         : { data: [], error: null };
 
       if (restaurantsRes.error) {
-        throw { code: 409, message: "No se pudo consultar restaurantes del historial", category: "BUSINESS", details: restaurantsRes.error };
+        throw { code: 409, message: "No se pudo consultar sitios del historial", category: "BUSINESS", details: restaurantsRes.error };
       }
 
       const restaurantsById = new Map((restaurantsRes.data ?? []).map((r) => [Number(r.id), r]));
@@ -475,7 +475,7 @@ serve(async (req: Request) => {
       .single();
 
     if (shiftError || !shift) {
-      throw { code: 404, message: "Turno no encontrado para el empleado", category: "BUSINESS", details: shiftError };
+      throw { code: 404, message: "Servicio no encontrado", category: "BUSINESS", details: shiftError };
     }
 
     const description = payload.kind === "alert"

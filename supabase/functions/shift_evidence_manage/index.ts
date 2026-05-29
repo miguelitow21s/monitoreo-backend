@@ -61,11 +61,11 @@ serve(async (req: Request) => {
         .single();
 
       if (shiftError || !shift) {
-        throw { code: 404, message: "Turno no encontrado", category: "BUSINESS", details: shiftError };
+        throw { code: 404, message: "Servicio no encontrado", category: "BUSINESS", details: shiftError };
       }
 
       if (String(shift.employee_id) !== user.id) {
-        throw { code: 403, message: "Solo puede ver evidencias de su turno", category: "PERMISSION" };
+        throw { code: 403, message: "Solo puede ver evidencias de su servicio", category: "PERMISSION" };
       }
     } else if (user.role === "supervisora") {
       await ensureSupervisorShiftAccess(user.id, payload.shift_id);

@@ -73,7 +73,7 @@ serve(async (req: Request) => {
         .maybeSingle();
 
       if (activeShiftError) {
-        throw { code: 409, message: "No se pudo consultar turno activo", category: "BUSINESS", details: activeShiftError };
+        throw { code: 409, message: "No se pudo consultar servicio activo", category: "BUSINESS", details: activeShiftError };
       }
 
       const successPayload = { success: true, data: activeShift ?? null, error: null, request_id };
@@ -96,7 +96,7 @@ serve(async (req: Request) => {
         .eq("user_id", user.id);
 
       if (scopeError) {
-        throw { code: 409, message: "No se pudo resolver alcance de supervisora", category: "BUSINESS", details: scopeError };
+        throw { code: 409, message: "No se pudo resolver alcance de inspector", category: "BUSINESS", details: scopeError };
       }
 
       restaurantIds = [...new Set((scopeLinks ?? []).map((row) => Number(row.restaurant_id)).filter((n) => Number.isFinite(n)))];
@@ -120,7 +120,7 @@ serve(async (req: Request) => {
 
     const { data: shifts, error: shiftsError } = await query;
     if (shiftsError) {
-      throw { code: 409, message: "No se pudieron listar turnos activos", category: "BUSINESS", details: shiftsError };
+      throw { code: 409, message: "No se pudieron listar servicios activos", category: "BUSINESS", details: shiftsError };
     }
 
     const shiftIds = (shifts ?? []).map((s) => Number(s.id)).filter((n) => Number.isFinite(n));

@@ -9,7 +9,7 @@ export async function ensureUserRestaurantAccess(userId: string, restaurantId: n
     .maybeSingle();
 
   if (error || !data) {
-    throw { code: 403, message: "Usuario sin alcance sobre restaurante", category: "PERMISSION" };
+    throw { code: 403, message: "Sin acceso a este sitio", category: "PERMISSION" };
   }
 }
 
@@ -17,7 +17,7 @@ export async function ensureSupervisorRestaurantAccess(supervisorId: string, res
   try {
     await ensureUserRestaurantAccess(supervisorId, restaurantId);
   } catch {
-    throw { code: 403, message: "Supervisora sin alcance sobre restaurante", category: "PERMISSION" };
+    throw { code: 403, message: "Sin acceso a este sitio", category: "PERMISSION" };
   }
 }
 
@@ -29,7 +29,7 @@ export async function ensureSupervisorShiftAccess(supervisorId: string, shiftId:
     .single();
 
   if (shiftErr || !shift) {
-    throw { code: 404, message: "Turno no encontrado", category: "BUSINESS" };
+    throw { code: 404, message: "Servicio no encontrado", category: "BUSINESS" };
   }
 
   await ensureSupervisorRestaurantAccess(supervisorId, shift.restaurant_id);

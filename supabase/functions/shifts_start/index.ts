@@ -90,7 +90,7 @@ serve(async (req) => {
     if (scheduledShiftError) {
       throw {
         code: 409,
-        message: "No se pudo validar turno programado",
+        message: "No se pudo validar servicio asignado",
         category: "BUSINESS",
         details: scheduledShiftError,
       };
@@ -99,7 +99,7 @@ serve(async (req) => {
     if (!scheduledShift) {
       throw {
         code: 409,
-        message: "No hay turno programado disponible para iniciar",
+        message: "No hay servicio asignado disponible",
         category: "BUSINESS",
       };
     }
@@ -107,7 +107,7 @@ serve(async (req) => {
     if (scheduledShift.scheduled_end && new Date(scheduledShift.scheduled_end) < now) {
       throw {
         code: 409,
-        message: "Turno programado ya vencido",
+        message: "Ventana de servicio vencida",
         category: "BUSINESS",
       };
     }
@@ -123,7 +123,7 @@ serve(async (req) => {
         throw {
           code: 422,
           error_code: "SHIFT_START_OUTSIDE_WINDOW",
-          message: "Fuera de la ventana permitida para iniciar el turno",
+          message: "Fuera de la ventana de servicio permitida",
           category: "VALIDATION",
           details: { earliest: earliest.toISOString(), latest: latest.toISOString() },
         };
@@ -133,7 +133,7 @@ serve(async (req) => {
     if (Number(scheduledShift.restaurant_id) !== Number(restaurant_id)) {
       throw {
         code: 409,
-        message: "Restaurante no coincide con turno programado",
+        message: "Sitio no coincide con el servicio asignado",
         category: "BUSINESS",
       };
     }
@@ -160,7 +160,7 @@ serve(async (req) => {
       .single();
 
     if (error || !data) {
-      throw { code: 409, message: "No se pudo iniciar turno", category: "BUSINESS", details: error };
+      throw { code: 409, message: "No se pudo iniciar servicio", category: "BUSINESS", details: error };
     }
 
     const { error: scheduleUpdateError } = await clientAdmin
@@ -224,7 +224,7 @@ serve(async (req) => {
       .limit(10);
 
     if (openTasksError) {
-      throw { code: 409, message: "No se pudieron cargar alertas de tareas", category: "BUSINESS", details: openTasksError };
+      throw { code: 409, message: "No se pudieron cargar alertas de tareas pendientes", category: "BUSINESS", details: openTasksError };
     }
 
     const successData = {

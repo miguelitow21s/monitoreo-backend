@@ -70,7 +70,7 @@ serve(async (req) => {
     const settings = await getSystemSettings(clientAdmin);
 
     const shift = await getOwnedShift(clientUser, user.id, shift_id);
-    ensureShiftState(shift.state, ["activo"], "No se puede finalizar este turno");
+    ensureShiftState(shift.state, ["activo"], "No se puede finalizar este servicio");
     if (user.role === "supervisora") {
       await ensureSupervisorRestaurantAccess(user.id, shift.restaurant_id);
     }
@@ -118,7 +118,7 @@ serve(async (req) => {
       if (missingTypes.length > 0) {
         throw {
           code: 422,
-          message: "Faltan fotos obligatorias de turno",
+          message: "Faltan fotos obligatorias del servicio",
           category: "VALIDATION",
           details: { missing_types: missingTypes },
         };
@@ -135,7 +135,7 @@ serve(async (req) => {
     if (scheduledShiftError) {
       throw {
         code: 409,
-        message: "No se pudo validar turno programado",
+        message: "No se pudo validar servicio asignado",
         category: "BUSINESS",
         details: scheduledShiftError,
       };
@@ -160,7 +160,7 @@ serve(async (req) => {
       if (fallbackError) {
         throw {
           code: 409,
-          message: "No se pudo validar turno programado",
+          message: "No se pudo validar servicio asignado",
           category: "BUSINESS",
           details: fallbackError,
         };
@@ -199,7 +199,7 @@ serve(async (req) => {
       .single();
 
     if (error || !data) {
-      throw { code: 409, message: "No se pudo finalizar turno", category: "BUSINESS", details: error };
+      throw { code: 409, message: "No se pudo finalizar servicio", category: "BUSINESS", details: error };
     }
 
     const { error: healthError } = await clientUser

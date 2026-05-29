@@ -108,7 +108,7 @@ serve(async (req: Request) => {
       if (hours < minHours || hours > maxHours) {
         throw {
           code: 422,
-          message: "Duracion de turno fuera de rango permitido",
+          message: "Duracion de ventana de servicio fuera de rango permitido",
           category: "VALIDATION",
           details: { min_hours: minHours, max_hours: maxHours, hours },
         };
@@ -136,7 +136,7 @@ serve(async (req: Request) => {
       });
 
       if (error || !data) {
-        throw { code: 409, message: "No se pudo programar turno", category: "BUSINESS", details: error };
+        throw { code: 409, message: "No se pudo asignar servicio", category: "BUSINESS", details: error };
       }
 
       await safeWriteAudit({
@@ -189,7 +189,7 @@ serve(async (req: Request) => {
           });
 
           if (error || !data) {
-            throw error ?? { message: "No se pudo programar turno" };
+            throw error ?? { message: "No se pudo asignar servicio" };
           }
 
           created += 1;
@@ -252,13 +252,13 @@ serve(async (req: Request) => {
           .single();
 
         if (rowError || !row) {
-          throw { code: 404, message: "Turno programado no encontrado", category: "BUSINESS", details: rowError };
+          throw { code: 404, message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
         }
 
         assertDurationWindow(payload.scheduled_start, payload.scheduled_end);
 
         if (row.status !== "scheduled") {
-          throw { code: 409, message: "Solo se puede reprogramar un turno en estado scheduled", category: "BUSINESS" };
+          throw { code: 409, message: "Solo se puede reprogramar un servicio en estado programado", category: "BUSINESS" };
         }
 
         const { data: overlap, error: overlapError } = await clientAdmin
@@ -272,11 +272,11 @@ serve(async (req: Request) => {
           .limit(1);
 
         if (overlapError) {
-          throw { code: 409, message: "No se pudo validar cruce de turnos", category: "BUSINESS", details: overlapError };
+          throw { code: 409, message: "No se pudo validar cruce de servicios", category: "BUSINESS", details: overlapError };
         }
 
         if (overlap && overlap.length > 0) {
-          throw { code: 409, message: "El empleado ya tiene un turno programado en ese rango", category: "BUSINESS" };
+          throw { code: 409, message: "El contratista ya tiene un servicio asignado en ese rango", category: "BUSINESS" };
         }
 
         const newNotes = payload.notes ? payload.notes.trim() : null;
@@ -291,7 +291,7 @@ serve(async (req: Request) => {
           .eq("id", payload.scheduled_shift_id);
 
         if (updateError) {
-          throw { code: 409, message: "No se pudo reprogramar turno", category: "BUSINESS", details: updateError };
+          throw { code: 409, message: "No se pudo reprogramar servicio", category: "BUSINESS", details: updateError };
         }
       } else {
         const { data: row, error: rowError } = await clientUser
@@ -301,7 +301,7 @@ serve(async (req: Request) => {
           .single();
 
         if (rowError || !row) {
-          throw { code: 404, message: "Turno programado no encontrado", category: "BUSINESS", details: rowError };
+          throw { code: 404, message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
         }
 
         assertDurationWindow(payload.scheduled_start, payload.scheduled_end);
@@ -314,7 +314,7 @@ serve(async (req: Request) => {
         });
 
         if (error) {
-          throw { code: 409, message: "No se pudo reprogramar turno", category: "BUSINESS", details: error };
+          throw { code: 409, message: "No se pudo reprogramar servicio", category: "BUSINESS", details: error };
         }
       }
 
@@ -343,11 +343,11 @@ serve(async (req: Request) => {
           .single();
 
         if (rowError || !row) {
-          throw { code: 404, message: "Turno programado no encontrado", category: "BUSINESS", details: rowError };
+          throw { code: 404, message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
         }
 
         if (!["scheduled", "started"].includes(String(row.status))) {
-          throw { code: 409, message: "Solo se pueden cancelar turnos scheduled o started", category: "BUSINESS" };
+          throw { code: 409, message: "Solo se pueden cancelar servicios programados o iniciados", category: "BUSINESS" };
         }
 
         const reason = payload.reason?.trim();
@@ -364,7 +364,7 @@ serve(async (req: Request) => {
           .eq("id", payload.scheduled_shift_id);
 
         if (updateError) {
-          throw { code: 409, message: "No se pudo cancelar turno", category: "BUSINESS", details: updateError };
+          throw { code: 409, message: "No se pudo cancelar servicio", category: "BUSINESS", details: updateError };
         }
       } else {
         const { data: row, error: rowError } = await clientUser
@@ -374,7 +374,7 @@ serve(async (req: Request) => {
           .single();
 
         if (rowError || !row) {
-          throw { code: 404, message: "Turno programado no encontrado", category: "BUSINESS", details: rowError };
+          throw { code: 404, message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
         }
 
         const { error } = await clientUser.rpc("cancel_scheduled_shift", {
@@ -383,7 +383,7 @@ serve(async (req: Request) => {
         });
 
         if (error) {
-          throw { code: 409, message: "No se pudo cancelar turno", category: "BUSINESS", details: error };
+          throw { code: 409, message: "No se pudo cancelar servicio", category: "BUSINESS", details: error };
         }
       }
 

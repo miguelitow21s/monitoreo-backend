@@ -79,7 +79,7 @@ serve(async (req) => {
       .single();
 
     if (error || !data) {
-      throw { code: 409, message: "No se pudo aprobar turno", category: "BUSINESS", details: error };
+      throw { code: 409, message: "No se pudo aprobar servicio", category: "BUSINESS", details: error };
     }
 
     await safeWriteAudit({

@@ -30,6 +30,13 @@ if ($LASTEXITCODE -ne 0) {
   throw "supabase db push failed with code $LASTEXITCODE"
 }
 
+$environmentValue = if ($Environment -eq 'prod') { 'production' } elseif ($Environment -eq 'staging') { 'staging' } else { 'development' }
+Write-Host "[STEP] Setting ENVIRONMENT secret -> $environmentValue"
+supabase secrets set "ENVIRONMENT=$environmentValue" --project-ref $supabaseProjectRef
+if ($LASTEXITCODE -ne 0) {
+  throw "supabase secrets set ENVIRONMENT failed with code $LASTEXITCODE"
+}
+
 Write-Host "[STEP] Deploying edge functions"
 & "$PSScriptRoot/deploy-functions.ps1" -ProjectRef $supabaseProjectRef
 if ($LASTEXITCODE -ne 0) {

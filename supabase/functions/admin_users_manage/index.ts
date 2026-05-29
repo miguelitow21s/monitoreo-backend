@@ -14,6 +14,8 @@ import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { getSystemSettings } from "../_shared/systemSettings.ts";
+import { randomNumericCode } from "../_shared/crypto.ts";
+import { notifyContractorCreated, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
 
 const endpoint = "admin_users_manage";
 
@@ -94,7 +96,7 @@ function assertRolePhoneRequirement(role: AppRole, phoneNumber: string | null) {
   if (phoneNumber && !E164_PHONE_REGEX.test(phoneNumber)) {
     throw {
       code: 422,
-      message: "Celular invalido. Use formato E.164 (+573001112233)",
+      message: "Celular invalido. Use formato E.164 (+11234567890)",
       category: "VALIDATION",
     };
   }
@@ -102,7 +104,7 @@ function assertRolePhoneRequirement(role: AppRole, phoneNumber: string | null) {
   if ((role === "empleado" || role === "supervisora") && !phoneNumber) {
     throw {
       code: 422,
-      message: "Celular es obligatorio para empleado y supervisora. Use formato E.164 (+573001112233)",
+      message: "Celular es obligatorio para contratista e inspector. Use formato E.164 (+11234567890)",
       category: "VALIDATION",
     };
   }
@@ -170,7 +172,7 @@ serve(async (req: Request) => {
       if (user.role === "supervisora" && payload.role !== "empleado") {
         throw {
           code: 403,
-          message: "Supervisora solo puede crear empleados",
+          message: "Inspector de calidad solo puede crear contratistas",
           category: "PERMISSION",
         };
       }
@@ -206,9 +208,10 @@ serve(async (req: Request) => {
       const phoneNumber = normalizePhoneNumber(payload.phone_number);
       assertRolePhoneRequirement(payload.role, phoneNumber);
       const isActive = payload.is_active ?? true;
+      const pinLength = Number(settings.security?.pin_length ?? 6);
       const usingDefaultPassword = !payload.password;
       const mustChangePin = usingDefaultPassword ? true : settings.security.force_password_change_on_first_login === true;
-      const password = payload.password ?? "123456";
+      const password = payload.password ?? randomNumericCode(pinLength);
 
       const { data: createdAuth, error: createAuthError } = await clientAdmin.auth.admin.createUser({
         email: payload.email,
@@ -264,6 +267,21 @@ serve(async (req: Request) => {
         request_id,
       });
 
+      if (usingDefaultPassword && isActive) {
+        try {
+          await notifyContractorCreated({
+            recipientEmail: payload.email,
+            recipientUserId: newUserId,
+            fullName: fullName,
+            role: payload.role,
+            pin: password,
+          });
+          await safeDispatchPendingEmailNotifications({ limit: 5, maxAttempts: 3 });
+        } catch {
+          // PIN email failure is non-fatal
+        }
+      }
+
       const successPayload = { success: true, data: { user: createdProfile }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
@@ -272,7 +290,7 @@ serve(async (req: Request) => {
     if (payload.action === "reset_password") {
       const settings = await getSystemSettings(clientAdmin);
       const expectedLen = Number(settings.security?.pin_length ?? 6);
-      const password = payload.new_password ?? "123456";
+      const password = payload.new_password ?? randomNumericCode(expectedLen);
 
       if (!/^\d+$/.test(password) || password.length !== expectedLen) {
         throw {
@@ -390,7 +408,7 @@ serve(async (req: Request) => {
         }
 
         if (targetProfile.role !== "empleado") {
-          throw { code: 403, message: "Supervisora solo puede desactivar empleados", category: "PERMISSION" };
+          throw { code: 403, message: "Inspector de calidad solo puede desactivar contratistas", category: "PERMISSION" };
         }
       }
 

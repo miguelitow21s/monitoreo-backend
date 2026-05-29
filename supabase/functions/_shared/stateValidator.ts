@@ -9,7 +9,7 @@ export async function ensureNoActiveShift(client: SupabaseClient, user_id: strin
     .eq("state", "activo");
 
   if (error) throw { code: 500, message: "No se pudo validar estado", category: "SYSTEM", details: error };
-  if ((count ?? 0) > 0) throw { code: 409, message: "Ya existe un turno activo", category: "BUSINESS" };
+  if ((count ?? 0) > 0) throw { code: 409, message: "Ya existe un servicio activo", category: "BUSINESS" };
 }
 
 export async function getOwnedShift(client: SupabaseClient, user_id: string, shift_id: number) {
@@ -21,7 +21,7 @@ export async function getOwnedShift(client: SupabaseClient, user_id: string, shi
     .single();
 
   if (error || !data) {
-    throw { code: 403, message: "Turno no pertenece al usuario", category: "PERMISSION" };
+    throw { code: 403, message: "Servicio no pertenece al usuario", category: "PERMISSION" };
   }
 
   return data as { id: number; employee_id: string; restaurant_id: number; state: ShiftState; start_time: string };
@@ -46,11 +46,11 @@ export async function ensureEvidenceNotDuplicate(client: SupabaseClient, shift_i
 
 export async function ensureShiftFinalized(client: SupabaseClient, shift_id: number) {
   const { data, error } = await client.from("shifts").select("id, state").eq("id", shift_id).single();
-  if (error || !data) throw { code: 404, message: "Turno no encontrado", category: "BUSINESS" };
+  if (error || !data) throw { code: 404, message: "Servicio no encontrado", category: "BUSINESS" };
   if (data.state !== "finalizado") {
     throw {
       code: 409,
-      message: "Solo turnos finalizados pueden aprobarse o rechazarse",
+      message: "Solo servicios finalizados pueden aprobarse o rechazarse",
       category: "BUSINESS",
     };
   }

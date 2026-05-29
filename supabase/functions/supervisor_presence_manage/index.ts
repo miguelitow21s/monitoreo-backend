@@ -223,7 +223,7 @@ function mapPresenceInsertError(raw: unknown) {
   if (normalized.includes("gps fuera de geocerca")) {
     return {
       code: 422,
-      message: "Ubicacion fuera del rango permitido para este restaurante",
+      message: "Ubicacion fuera del rango permitido para este sitio",
       category: "VALIDATION" as const,
       details: raw,
     };
@@ -232,7 +232,7 @@ function mapPresenceInsertError(raw: unknown) {
   if (normalized.includes("ya existe un start abierto")) {
     return {
       code: 409,
-      message: "Ya existe una supervision de inicio abierta para este restaurante hoy",
+      message: "Ya existe una auditoria de inicio abierta para este sitio hoy",
       category: "BUSINESS" as const,
       details: raw,
     };
@@ -241,7 +241,7 @@ function mapPresenceInsertError(raw: unknown) {
   if (normalized.includes("supervisora no asignada al restaurante")) {
     return {
       code: 403,
-      message: "La supervisora no tiene alcance sobre este restaurante",
+      message: "Sin acceso a este sitio",
       category: "PERMISSION" as const,
       details: raw,
     };
@@ -465,7 +465,7 @@ serve(async (req: Request) => {
       const { data, error } = await query;
 
       if (error) {
-        throw { code: 409, message: "No se pudo listar presencia por restaurante", category: "BUSINESS", details: error };
+        throw { code: 409, message: "No se pudo listar auditorias por sitio", category: "BUSINESS", details: error };
       }
 
       const items = data ?? [];
@@ -554,7 +554,7 @@ serve(async (req: Request) => {
           if (geoMessage.includes("gps fuera de radio")) {
             throw {
               code: 422,
-              message: "Ubicacion fuera del rango permitido para este restaurante",
+              message: "Ubicacion fuera del rango permitido para este sitio",
               category: "VALIDATION",
               details: geoError,
             };
@@ -577,7 +577,7 @@ serve(async (req: Request) => {
         if (restaurantGeoError || restaurantGeo?.lat == null || restaurantGeo?.lng == null) {
           throw {
             code: 409,
-            message: "No se pudo resolver geocerca de restaurante",
+            message: "No se pudo resolver geocerca del sitio",
             category: "BUSINESS",
             details: restaurantGeoError,
           };

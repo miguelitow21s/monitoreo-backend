@@ -407,8 +407,8 @@ export async function notifyShiftEvent(params: {
       ? "aprobado"
       : "rechazado";
 
-  const subject = `Turno ${actionLabel} | #${context.shift_id}`;
-  const bodyText = `El turno #${context.shift_id} fue ${actionLabel}. Actor: ${params.actorUserId}. Restaurante: ${context.restaurant_id}.`;
+  const subject = `Servicio ${actionLabel} | #${context.shift_id}`;
+  const bodyText = `El servicio #${context.shift_id} fue ${actionLabel}. Actor: ${params.actorUserId}. Sitio: ${context.restaurant_id}.`;
 
   await enqueueForRecipients({
     eventType: params.eventType,
@@ -444,7 +444,7 @@ export async function notifyIncidentCreated(params: {
     dedupePrefix: `incident_created:${params.incidentId}`,
     recipients,
     subject: `Incidente reportado | #${params.incidentId}`,
-    bodyText: `Se reporto la incidencia #${params.incidentId} en el turno #${params.shiftId}. Actor: ${params.actorUserId}.`,
+    bodyText: `Se reporto la incidencia #${params.incidentId} en el servicio #${params.shiftId}. Actor: ${params.actorUserId}.`,
     payload: {
       incident_id: params.incidentId,
       shift_id: params.shiftId,
@@ -471,8 +471,8 @@ async function enqueueShiftNotStartedNotificationForSchedule(params: {
     includeEmployee: true,
   });
 
-  const subject = `Turno no iniciado | Programacion #${params.scheduledShiftId}`;
-  const bodyText = `El turno programado #${params.scheduledShiftId} no se inicio a tiempo. Inicio: ${params.scheduledStart}. Fin: ${params.scheduledEnd}.`;
+  const subject = `Servicio no iniciado | Asignacion #${params.scheduledShiftId}`;
+  const bodyText = `El servicio asignado #${params.scheduledShiftId} no se inicio en la ventana de servicio. Ventana inicio: ${params.scheduledStart}. Ventana fin: ${params.scheduledEnd}.`;
 
   await enqueueForRecipients({
     eventType: "shift_not_started",
@@ -490,6 +490,63 @@ async function enqueueShiftNotStartedNotificationForSchedule(params: {
     restaurantId: params.restaurantId,
     scheduledShiftId: params.scheduledShiftId,
   });
+}
+
+export async function notifyContractorCreated(params: {
+  recipientEmail: string;
+  recipientUserId: string;
+  fullName: string | null;
+  role: string;
+  pin: string;
+  restaurantId?: number;
+}) {
+  const roleLabel =
+    params.role === "super_admin"
+      ? "Administrador"
+      : params.role === "supervisora"
+      ? "Inspector de Calidad"
+      : "Contratista";
+
+  const subject = `Bienvenido a WorkTrace | Tu codigo de acceso`;
+  const bodyText = [
+    `Hola${params.fullName ? ` ${params.fullName}` : ""},`,
+    ``,
+    `Tu cuenta ha sido creada en WorkTrace como ${roleLabel}.`,
+    ``,
+    `Tu codigo de acceso (PIN) inicial es: ${params.pin}`,
+    ``,
+    `Por seguridad, se te pedira que lo cambies al iniciar sesion por primera vez.`,
+    ``,
+    `Plataforma: WorkTrace / R3 Service & Solutions Inc.`,
+  ].join("\n");
+
+  const nowIso = new Date().toISOString();
+  const row = {
+    event_type: "shift_scheduled" as NotificationEventType,
+    dedupe_key: `contractor_created:${params.recipientUserId}`,
+    recipient_email: normalizeEmail(params.recipientEmail),
+    recipient_user_id: params.recipientUserId,
+    subject: sanitizeText(subject, 300),
+    body_text: sanitizeText(bodyText, 5000),
+    payload: { role: params.role, pin_sent: true },
+    restaurant_id: params.restaurantId ?? null,
+    shift_id: null,
+    incident_id: null,
+    scheduled_shift_id: null,
+    status: "pending",
+    attempts: 0,
+    scheduled_for: nowIso,
+    created_at: nowIso,
+    updated_at: nowIso,
+  };
+
+  const { error } = await clientAdmin
+    .from("email_notifications")
+    .upsert([row], { onConflict: "dedupe_key", ignoreDuplicates: true });
+
+  if (error) {
+    throw { code: 500, message: "No se pudo encolar email de bienvenida", category: "SYSTEM", details: error };
+  }
 }
 
 export async function enqueueOverdueShiftNotStartedNotifications(params?: {
