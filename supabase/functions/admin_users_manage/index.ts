@@ -267,6 +267,7 @@ serve(async (req: Request) => {
         request_id,
       });
 
+      let emailSent = false;
       if (usingDefaultPassword && isActive) {
         try {
           await notifyContractorCreated({
@@ -277,12 +278,19 @@ serve(async (req: Request) => {
             pin: password,
           });
           await safeDispatchPendingEmailNotifications({ limit: 5, maxAttempts: 3 });
+          emailSent = true;
         } catch {
           // PIN email failure is non-fatal
         }
       }
 
-      const successPayload = { success: true, data: { user: createdProfile }, error: null, request_id };
+      const responseData: Record<string, unknown> = { user: createdProfile };
+      if (usingDefaultPassword) {
+        responseData.initial_pin = password;
+        responseData.pin_email_sent = emailSent;
+      }
+
+      const successPayload = { success: true, data: responseData, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
@@ -331,7 +339,12 @@ serve(async (req: Request) => {
         request_id,
       });
 
-      const successPayload = { success: true, data: { user_id: userRow.id, email: userRow.email }, error: null, request_id };
+      const resetData: Record<string, unknown> = { user_id: userRow.id, email: userRow.email };
+      if (!payload.new_password) {
+        resetData.new_pin = password;
+      }
+
+      const successPayload = { success: true, data: resetData, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
