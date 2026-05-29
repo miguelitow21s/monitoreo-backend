@@ -13,12 +13,8 @@ export async function ensureUserRestaurantAccess(userId: string, restaurantId: n
   }
 }
 
-export async function ensureSupervisorRestaurantAccess(supervisorId: string, restaurantId: number) {
-  try {
-    await ensureUserRestaurantAccess(supervisorId, restaurantId);
-  } catch {
-    throw { code: 403, message: "Sin acceso a este sitio", category: "PERMISSION" };
-  }
+export async function ensureSupervisorRestaurantAccess(_supervisorId: string, _restaurantId: number) {
+  // Inspectors (supervisora role) have global site access — no assignment required.
 }
 
 export async function ensureSupervisorShiftAccess(supervisorId: string, shiftId: number) {
