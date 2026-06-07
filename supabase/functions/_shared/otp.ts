@@ -1,14 +1,8 @@
 import { clientAdmin } from "./supabaseClient.ts";
 import { randomNumericCode, randomTokenHex, sha256Hex } from "./crypto.ts";
+import { sendOtpEmail } from "./emailNotifications.ts";
 
 const OTP_PURPOSE = "shift_ops";
-const E164_PHONE_REGEX = /^\+[1-9][0-9]{7,14}$/;
-
-type OtpDeliveryResult =
-  | { status: "sent"; provider_ref: string | null }
-  | { status: "debug"; provider_ref: null }
-  | { status: "screen"; provider_ref: null }
-  | { status: "provider_not_configured"; provider_ref: null };
 
 function parseEnvInt(name: string, fallback: number): number {
   const value = Number(Deno.env.get(name));
@@ -19,65 +13,13 @@ function envIsTrue(name: string): boolean {
   return (Deno.env.get(name) ?? "").trim().toLowerCase() === "true";
 }
 
-function maskPhone(phone: string): string {
-  if (phone.length <= 6) return "***";
-  return `${phone.slice(0, 3)}***${phone.slice(-3)}`;
-}
-
-function buildOtpMessage(code: string, ttlSeconds: number): string {
-  const ttlMinutes = Math.max(1, Math.ceil(ttlSeconds / 60));
-  const template = Deno.env.get("OTP_SMS_TEMPLATE")?.trim();
-  if (template) {
-    return template.replaceAll("{{code}}", code).replaceAll("{{minutes}}", String(ttlMinutes));
-  }
-  return `Tu codigo de acceso al sitio es: ${code}. Expira en ${ttlMinutes} minutos.`;
-}
-
-async function sendSmsViaTwilio(toPhone: string, message: string): Promise<OtpDeliveryResult> {
-  const accountSid = Deno.env.get("TWILIO_ACCOUNT_SID")?.trim();
-  const authToken = Deno.env.get("TWILIO_AUTH_TOKEN")?.trim();
-  const messagingServiceSid = Deno.env.get("TWILIO_MESSAGING_SERVICE_SID")?.trim();
-  const fromNumber = Deno.env.get("TWILIO_FROM_NUMBER")?.trim();
-
-  if (!accountSid || !authToken || (!messagingServiceSid && !fromNumber)) {
-    return { status: "provider_not_configured", provider_ref: null };
-  }
-
-  const body = new URLSearchParams({
-    To: toPhone,
-    Body: message,
-  });
-
-  if (messagingServiceSid) {
-    body.set("MessagingServiceSid", messagingServiceSid);
-  } else if (fromNumber) {
-    body.set("From", fromNumber);
-  }
-
-  const auth = btoa(`${accountSid}:${authToken}`);
-  const res = await fetch(`https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Messages.json`, {
-    method: "POST",
-    headers: {
-      Authorization: `Basic ${auth}`,
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body,
-  });
-
-  const payload = (await res.json().catch(() => null)) as { sid?: string; message?: string; code?: number } | null;
-  if (!res.ok) {
-    throw {
-      code: 503,
-      message: "No se pudo enviar OTP por SMS",
-      category: "SYSTEM",
-      details: payload ?? { status: res.status },
-    };
-  }
-
-  return {
-    status: "sent",
-    provider_ref: payload?.sid ?? null,
-  };
+function maskEmail(email: string): string {
+  const atIndex = email.indexOf("@");
+  if (atIndex <= 0) return "***";
+  const local = email.slice(0, atIndex);
+  const domain = email.slice(atIndex);
+  const masked = local.length <= 2 ? "***" : `${local[0]}***${local.slice(-1)}`;
+  return `${masked}${domain}`;
 }
 
 async function hashOtpCode(userId: string, code: string): Promise<string> {
@@ -85,65 +27,61 @@ async function hashOtpCode(userId: string, code: string): Promise<string> {
   return sha256Hex(`${userId}:${code}:${pepper}`);
 }
 
-export async function getUserPhoneForOtp(
-  userId: string,
-  opts?: { allowMissing?: boolean }
-): Promise<string | null> {
-  const { data, error } = await clientAdmin.from("users").select("id, phone_e164").eq("id", userId).single();
-
-  if (error || !data) {
-    throw { code: 404, message: "Usuario no encontrado", category: "BUSINESS", details: error };
-  }
-
-  const phone = (data as { phone_e164?: string | null }).phone_e164?.trim() ?? "";
-  if (!phone) {
-    if (opts?.allowMissing) return null;
-    throw { code: 409, message: "Usuario sin celular verificado en perfil", category: "BUSINESS" };
-  }
-
-  if (!E164_PHONE_REGEX.test(phone)) {
-    if (opts?.allowMissing) return null;
-    throw { code: 409, message: "Celular invalido. Usa formato E.164 (+573001112233)", category: "BUSINESS" };
-  }
-
-  return phone;
-}
-
 export async function issueShiftOtp(params: {
   userId: string;
 }): Promise<{
   otp_id: number;
   expires_at: string;
-  masked_phone: string;
+  masked_email: string;
   delivery_status: "sent" | "debug" | "screen";
   debug_code?: string;
 }> {
   const ttlSeconds = parseEnvInt("OTP_TTL_SECONDS", 300);
   const debugMode = envIsTrue("OTP_DEBUG_MODE");
   const screenMode = envIsTrue("OTP_SCREEN_MODE");
-  const phone = await getUserPhoneForOtp(params.userId, { allowMissing: screenMode });
-  const code = randomNumericCode(6);
-  const message = buildOtpMessage(code, ttlSeconds);
 
-  let delivery: OtpDeliveryResult;
-  if (screenMode) {
-    delivery = { status: "screen", provider_ref: null };
-  } else {
-    try {
-      delivery = await sendSmsViaTwilio(phone ?? "", message);
-    } catch (err) {
-      if (!debugMode) {
-        throw err;
-      }
-      delivery = { status: "debug", provider_ref: null };
+  let userEmail: string | null = null;
+  if (!screenMode) {
+    const { data: userRow, error: userError } = await clientAdmin
+      .from("users")
+      .select("email")
+      .eq("id", params.userId)
+      .maybeSingle();
+
+    if (userError || !userRow) {
+      throw { code: 404, message: "Usuario no encontrado", category: "BUSINESS" };
     }
 
-    if (delivery.status === "provider_not_configured" && !debugMode) {
+    userEmail = (userRow as { email?: string | null })?.email?.trim() || null;
+    if (!userEmail) {
+      throw { code: 409, message: "Usuario sin correo registrado", category: "BUSINESS" };
+    }
+  }
+
+  const code = randomNumericCode(6);
+
+  let deliveryStatus: "sent" | "debug" | "screen";
+  if (screenMode) {
+    deliveryStatus = "screen";
+  } else {
+    const emailResult = await sendOtpEmail({ to: userEmail!, code, ttlSeconds });
+    if (emailResult.ok) {
+      deliveryStatus = "sent";
+    } else if (emailResult.error === "provider_not_configured" && debugMode) {
+      deliveryStatus = "debug";
+    } else if (emailResult.error === "provider_not_configured") {
       throw {
         code: 503,
-        message: "Proveedor SMS no configurado",
+        message: "Proveedor de email no configurado",
         category: "SYSTEM",
-        details: { required_env: ["TWILIO_ACCOUNT_SID", "TWILIO_AUTH_TOKEN", "TWILIO_FROM_NUMBER|TWILIO_MESSAGING_SERVICE_SID"] },
+        details: { required_env: ["RESEND_API_KEY", "EMAIL_FROM"] },
+      };
+    } else {
+      throw {
+        code: 503,
+        message: "No se pudo enviar codigo de acceso por email",
+        category: "SYSTEM",
+        details: { error: emailResult.error },
       };
     }
   }
@@ -167,14 +105,14 @@ export async function issueShiftOtp(params: {
     .from("user_phone_otps")
     .insert({
       user_id: params.userId,
-      phone_e164: phone,
+      phone_e164: null,
       purpose: OTP_PURPOSE,
       code_hash: codeHash,
       expires_at: expiresAt,
       max_attempts: 5,
       attempts: 0,
-      delivery_status: delivery.status,
-      provider_ref: delivery.provider_ref,
+      delivery_status: deliveryStatus,
+      provider_ref: null,
       created_at: nowIso,
       updated_at: nowIso,
     })
@@ -185,25 +123,25 @@ export async function issueShiftOtp(params: {
     throw { code: 500, message: "No se pudo crear OTP", category: "SYSTEM", details: error };
   }
 
-  const response: {
+  const result: {
     otp_id: number;
     expires_at: string;
-    masked_phone: string;
+    masked_email: string;
     delivery_status: "sent" | "debug" | "screen";
     debug_code?: string;
   } = {
     otp_id: data.id as number,
     expires_at: expiresAt,
-    masked_phone: phone ? maskPhone(phone) : "OTP en pantalla",
-    delivery_status: delivery.status === "sent" ? "sent" : delivery.status === "screen" ? "screen" : "debug",
+    masked_email: userEmail ? maskEmail(userEmail) : "OTP en pantalla",
+    delivery_status: deliveryStatus,
   };
 
   const isProduction = (Deno.env.get("ENVIRONMENT") ?? "").toLowerCase() === "production";
   if ((debugMode || screenMode) && !isProduction) {
-    response.debug_code = code;
+    result.debug_code = code;
   }
 
-  return response;
+  return result;
 }
 
 export async function verifyShiftOtpCode(params: {

@@ -492,6 +492,19 @@ async function enqueueShiftNotStartedNotificationForSchedule(params: {
   });
 }
 
+export async function sendOtpEmail(params: {
+  to: string;
+  code: string;
+  ttlSeconds: number;
+}): Promise<{ ok: true; provider_ref: string | null } | { ok: false; error: string }> {
+  const ttlMinutes = Math.max(1, Math.ceil(params.ttlSeconds / 60));
+  return sendEmailViaResend({
+    to: params.to,
+    subject: "Tu codigo de acceso WorkTrace",
+    text: `Tu codigo de acceso al sitio es: ${params.code}. Expira en ${ttlMinutes} minutos.`,
+  });
+}
+
 export async function notifyContractorCreated(params: {
   recipientEmail: string;
   recipientUserId: string;
