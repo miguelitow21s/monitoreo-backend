@@ -9,21 +9,23 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
-import { revokeTrustedDevice } from "../_shared/deviceTrust.ts";
+import { revokeTrustedDevice, revokeAllTrustedDevicesForUser } from "../_shared/deviceTrust.ts";
+import { roleGuard } from "../_shared/roleGuard.ts";
 
 const endpoint = "trusted_device_revoke";
 
 const payloadSchema = z
   .object({
+    target_user_id: z.string().uuid().optional(),
     device_id: z.number().int().positive().optional(),
     device_fingerprint: z.string().trim().min(16).max(256).optional(),
   })
   .superRefine((value, ctx) => {
-    if (!value.device_id && !value.device_fingerprint) {
+    if (!value.target_user_id && !value.device_id && !value.device_fingerprint) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["device_id"],
-        message: "Debe enviar device_id o device_fingerprint",
+        message: "Debe enviar target_user_id, device_id o device_fingerprint",
       });
     }
   });
@@ -60,19 +62,27 @@ serve(async (req) => {
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 20, window_seconds: 60 });
 
-    const revoked = await revokeTrustedDevice({
-      userId: user.id,
-      deviceId: payload.device_id,
-      fingerprint: payload.device_fingerprint,
-      revokedBy: user.id,
-    });
+    let revoked: Record<string, unknown>;
+
+    if (payload.target_user_id) {
+      roleGuard(user, ["super_admin", "supervisora"]);
+      revoked = await revokeAllTrustedDevicesForUser({
+        targetUserId: payload.target_user_id,
+        revokedBy: user.id,
+      });
+    } else {
+      revoked = await revokeTrustedDevice({
+        userId: user.id,
+        deviceId: payload.device_id,
+        fingerprint: payload.device_fingerprint,
+        revokedBy: user.id,
+      });
+    }
 
     await safeWriteAudit({
       user_id: user.id,
       action: "DEVICE_TRUST_REVOKE",
-      context: {
-        revoked_device_id: revoked.revoked_device_id,
-      },
+      context: revoked,
       request_id,
     });
 

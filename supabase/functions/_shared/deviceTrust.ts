@@ -306,3 +306,23 @@ export async function revokeTrustedDevice(params: {
 
   return { revoked_device_id: target.id as number };
 }
+
+export async function revokeAllTrustedDevicesForUser(params: {
+  targetUserId: string;
+  revokedBy: string;
+}): Promise<{ target_user_id: string; revoked_count: number }> {
+  const nowIso = new Date().toISOString();
+
+  const { data, error } = await clientAdmin
+    .from("user_trusted_devices")
+    .update({ revoked_at: nowIso, revoked_by: params.revokedBy, updated_at: nowIso })
+    .eq("user_id", params.targetUserId)
+    .is("revoked_at", null)
+    .select("id");
+
+  if (error) {
+    throw { code: 500, message: "No se pudo revocar dispositivos del usuario", category: "SYSTEM", details: error };
+  }
+
+  return { target_user_id: params.targetUserId, revoked_count: (data ?? []).length };
+}
