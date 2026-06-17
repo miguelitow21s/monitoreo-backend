@@ -116,9 +116,8 @@ serve(async (req) => {
       const scheduledStart = new Date(scheduledShift.scheduled_start);
       const scheduledEnd = new Date(scheduledShift.scheduled_end);
       const earlyToleranceMs = Math.max(0, settings.shifts.early_start_tolerance_minutes) * 60 * 1000;
-      const lateToleranceMs = Math.max(0, settings.shifts.late_start_tolerance_minutes) * 60 * 1000;
       const earliest = new Date(scheduledStart.getTime() - earlyToleranceMs);
-      const latest = new Date(scheduledEnd.getTime() + lateToleranceMs);
+      const latest = scheduledEnd;
       if (now < earliest || now > latest) {
         throw {
           code: 422,

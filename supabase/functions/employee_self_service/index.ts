@@ -89,9 +89,8 @@ function buildStartWindow(
   }
 
   const earlyToleranceMs = Math.max(0, Number(settings.shifts.early_start_tolerance_minutes ?? 0)) * 60 * 1000;
-  const lateToleranceMs = Math.max(0, Number(settings.shifts.late_start_tolerance_minutes ?? 0)) * 60 * 1000;
   const earliest = new Date(start.getTime() - earlyToleranceMs);
-  const latest = new Date(end.getTime() + lateToleranceMs);
+  const latest = end;
   const canStartNow = canStartShift && now >= earliest && now <= latest;
 
   return {
