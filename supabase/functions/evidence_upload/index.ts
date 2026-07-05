@@ -21,7 +21,7 @@ import { getSystemSettings } from "../_shared/systemSettings.ts";
 const endpoint = "evidence_upload";
 const bucket = "shift-evidence";
 const maxBytes = 8 * 1024 * 1024;
-const allowedMime = new Set(["image/jpeg", "image/png", "image/webp"]);
+const allowedMime = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"]);
 
 async function ensureBucketExists(name: string) {
   const { data, error } = await clientAdmin.storage.getBucket(name);
@@ -96,6 +96,12 @@ async function detectMimeByMagic(blob: Blob): Promise<string> {
     head[10] === 0x42 &&
     head[11] === 0x50;
   if (isWebp) return "image/webp";
+
+  if (head.length >= 12 && String.fromCharCode(...head.slice(4, 8)) === "ftyp") {
+    const brand = String.fromCharCode(...head.slice(8, 12)).toLowerCase();
+    if (["heic", "heix", "hevc", "hevx"].includes(brand)) return "image/heic";
+    if (["mif1", "msf1", "heif"].includes(brand)) return "image/heif";
+  }
 
   return "application/octet-stream";
 }

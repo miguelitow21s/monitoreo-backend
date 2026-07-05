@@ -344,7 +344,7 @@
   ```
 
   Rules
-  - Supervisora can only operate on assigned restaurants.
+  - An employee can have multiple scheduled services in the same time window.
   - Bulk scheduling supports up to 200 entries.
 
   ---
@@ -400,6 +400,7 @@
   ```
   { "action": "request_evidence_upload", "task_id": 123, "mime_type": "image/jpeg" }
   ```
+  Allowed image MIME types: `image/jpeg`, `image/png`, `image/webp`, `image/heic`, `image/heif`.
 
   Action: request_manifest_upload
   ```

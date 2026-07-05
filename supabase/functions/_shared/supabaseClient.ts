@@ -8,12 +8,16 @@ if (!url || !serviceRoleKey || !anonKey) {
   throw new Error("Missing SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY or SUPABASE_ANON_KEY env vars");
 }
 
-export const clientAdmin = createClient(url, serviceRoleKey, {
+const supabaseUrl = url;
+const supabaseServiceRoleKey = serviceRoleKey;
+const supabaseAnonKey = anonKey;
+
+export const clientAdmin = createClient(supabaseUrl, supabaseServiceRoleKey, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
 export function createUserClient(jwt: string) {
-  return createClient(url, anonKey, {
+  return createClient(supabaseUrl, supabaseAnonKey, {
     auth: { persistSession: false, autoRefreshToken: false },
     global: {
       headers: {

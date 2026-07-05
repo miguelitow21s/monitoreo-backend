@@ -414,6 +414,7 @@ Upload flow:
 ```
 { "action": "request_evidence_upload", "phase": "start", "mime_type": "image/jpeg" }
 ```
+Allowed image MIME types: `image/jpeg`, `image/png`, `image/webp`, `image/heic`, `image/heif`.
 Then upload to signed URL and call:
 ```
 { "action": "finalize_evidence_upload", "path": "users/<uid>/supervisor-start/<uuid>.jpg" }

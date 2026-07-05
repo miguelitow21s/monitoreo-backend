@@ -19,7 +19,9 @@ import { geoValidatorByRestaurant } from "../_shared/geoValidator.ts";
 const endpoint = "supervisor_presence_manage";
 const evidenceBucket = "shift-evidence";
 const evidenceMaxBytes = 8 * 1024 * 1024;
-const allowedMime = new Set(["image/jpeg", "image/png", "image/webp"]);
+const allowedMimeValues = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"] as const;
+const allowedMime = new Set<string>(allowedMimeValues);
+const imageMimeSchema = z.enum(allowedMimeValues);
 
 async function ensureBucketExists(name: string) {
   const { data, error } = await clientAdmin.storage.getBucket(name);
@@ -44,7 +46,7 @@ const evidenceItemSchema = z
     path: z.string().min(5).max(500),
     label: z.string().trim().min(1).max(200).optional(),
     hash: z.string().min(16).max(200).optional(),
-    mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]).optional(),
+    mime_type: imageMimeSchema.optional(),
     size_bytes: z.coerce.number().int().positive().max(50_000_000).optional(),
   })
   .strict();
@@ -58,7 +60,7 @@ const registerAction = z.object({
   accuracy: z.coerce.number().min(0).max(10000).optional(),
   evidence_path: z.string().min(5).max(500).optional(),
   evidence_hash: z.string().min(16).max(200).optional(),
-  evidence_mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]).optional(),
+  evidence_mime_type: imageMimeSchema.optional(),
   evidence_size_bytes: z.coerce.number().int().positive().max(50000000).optional(),
   evidences: z.array(evidenceItemSchema).min(1).max(20).optional(),
   notes: z.string().trim().max(1000).optional().nullable(),
@@ -67,7 +69,7 @@ const registerAction = z.object({
 const requestEvidenceUploadAction = z.object({
   action: z.literal("request_evidence_upload"),
   phase: z.enum(["start", "end"]),
-  mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]).default("image/jpeg"),
+  mime_type: imageMimeSchema.default("image/jpeg"),
 });
 
 const finalizeEvidenceUploadAction = z.object({
@@ -108,6 +110,8 @@ function mimeToExtension(mimeType: string) {
   if (mimeType === "image/jpeg") return "jpg";
   if (mimeType === "image/png") return "png";
   if (mimeType === "image/webp") return "webp";
+  if (mimeType === "image/heic") return "heic";
+  if (mimeType === "image/heif") return "heif";
   return "bin";
 }
 
@@ -147,7 +151,42 @@ async function detectMimeByMagic(blob: Blob): Promise<string> {
     head[11] === 0x50;
   if (isWebp) return "image/webp";
 
+  const brand = String.fromCharCode(...head.slice(8, 12)).toLowerCase();
+  if (head.length >= 12 && String.fromCharCode(...head.slice(4, 8)) === "ftyp") {
+    if (["heic", "heix", "hevc", "hevx"].includes(brand)) return "image/heic";
+    if (["mif1", "msf1", "heif"].includes(brand)) return "image/heif";
+  }
+
   return "application/octet-stream";
+}
+
+async function ensureActiveRestaurant(restaurantId: number) {
+  const { data, error } = await clientAdmin
+    .from("restaurants")
+    .select("id, is_active, lat, lng, radius, geofence_radius_m")
+    .eq("id", restaurantId)
+    .single();
+
+  if (error || !data) {
+    throw { code: 404, message: "Restaurante no encontrado", category: "BUSINESS", details: error };
+  }
+
+  if (data.is_active === false) {
+    throw { code: 422, message: "Restaurante inactivo", category: "VALIDATION" };
+  }
+
+  const radius = Number.isFinite(Number(data.geofence_radius_m))
+    ? Number(data.geofence_radius_m)
+    : Number(data.radius);
+
+  if (
+    !Number.isFinite(Number(data.lat)) ||
+    !Number.isFinite(Number(data.lng)) ||
+    !Number.isFinite(radius) ||
+    radius <= 0
+  ) {
+    throw { code: 422, message: "Restaurante sin geocerca configurada", category: "VALIDATION" };
+  }
 }
 
 function getBogotaDayRange() {
@@ -543,48 +582,23 @@ serve(async (req: Request) => {
     }
 
     if (payload.action === "register") {
-      if (settings.gps.require_gps_for_supervision) {
-        try {
-          await geoValidatorByRestaurant(clientUser, payload.restaurant_id, payload.lat, payload.lng, {
-            settings,
-            accuracy: payload.accuracy,
-          });
-        } catch (geoError) {
-          const geoMessage = String((geoError as { message?: string })?.message ?? "").toLowerCase();
-          if (geoMessage.includes("gps fuera de radio")) {
-            throw {
-              code: 422,
-              message: "Ubicacion fuera del rango permitido para este sitio",
-              category: "VALIDATION",
-              details: geoError,
-            };
-          }
-          throw geoError;
-        }
-      }
-
-      let writeLat = payload.lat;
-      let writeLng = payload.lng;
-      if (!settings.gps.require_gps_for_supervision) {
-        // DB trigger still enforces restaurant geofence. When supervision GPS is disabled
-        // in settings, anchor stored coordinates to restaurant center to avoid false rejects.
-        const { data: restaurantGeo, error: restaurantGeoError } = await clientAdmin
-          .from("restaurants")
-          .select("lat, lng")
-          .eq("id", payload.restaurant_id)
-          .single();
-
-        if (restaurantGeoError || restaurantGeo?.lat == null || restaurantGeo?.lng == null) {
+      await ensureActiveRestaurant(payload.restaurant_id);
+      try {
+        await geoValidatorByRestaurant(clientAdmin, payload.restaurant_id, payload.lat, payload.lng, {
+          settings,
+          accuracy: payload.accuracy,
+        });
+      } catch (geoError) {
+        const geoMessage = String((geoError as { message?: string })?.message ?? "").toLowerCase();
+        if (geoMessage.includes("gps fuera de radio")) {
           throw {
-            code: 409,
-            message: "No se pudo resolver geocerca del sitio",
-            category: "BUSINESS",
-            details: restaurantGeoError,
+            code: 422,
+            message: "Ubicacion fuera del rango permitido para este sitio",
+            category: "VALIDATION",
+            details: geoError,
           };
         }
-
-        writeLat = Number(restaurantGeo.lat);
-        writeLng = Number(restaurantGeo.lng);
+        throw geoError;
       }
 
       const incomingEvidences = payload.evidences ?? [];
@@ -650,8 +664,8 @@ serve(async (req: Request) => {
           supervisor_id: user.id,
           restaurant_id: payload.restaurant_id,
           phase: payload.phase,
-          lat: writeLat,
-          lng: writeLng,
+          lat: payload.lat,
+          lng: payload.lng,
           evidence_path: primaryEvidence?.storage_path ?? null,
           evidence_hash: primaryEvidence?.sha256 ?? null,
           evidence_mime_type: primaryEvidence?.mime_type ?? null,

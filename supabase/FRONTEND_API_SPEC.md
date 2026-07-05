@@ -195,6 +195,7 @@ Finalize upload:
 ```json
 {"action":"finalize_upload","shift_id":123,"type":"inicio","path":"...","lat":-34.6,"lng":-58.38,"accuracy":12,"captured_at":"2026-03-12T00:00:00Z"}
 ```
+Allowed image MIME types: `image/jpeg`, `image/png`, `image/webp`, `image/heic`, `image/heif`.
 
 ### POST `/shift_evidence_manage`
 - Roles: **empleado**, **supervisora**, **super_admin**
@@ -278,6 +279,8 @@ List:
 ```json
 {"action":"list","employee_id":"uuid?","restaurant_id":1,"status":"scheduled","from":"...","to":"...","limit":100}
 ```
+Notes:
+- An employee can have multiple scheduled services in the same time window.
 
 ---
 
@@ -304,6 +307,7 @@ Request evidence upload:
 ```json
 {"action":"request_evidence_upload","task_id":123,"mime_type":"image/jpeg"}
 ```
+Allowed image MIME types: `image/jpeg`, `image/png`, `image/webp`, `image/heic`, `image/heif`.
 
 Complete:
 ```json

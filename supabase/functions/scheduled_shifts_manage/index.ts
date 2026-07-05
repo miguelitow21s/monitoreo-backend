@@ -261,24 +261,6 @@ serve(async (req: Request) => {
           throw { code: 409, message: "Solo se puede reprogramar un servicio en estado programado", category: "BUSINESS" };
         }
 
-        const { data: overlap, error: overlapError } = await clientAdmin
-          .from("scheduled_shifts")
-          .select("id")
-          .eq("employee_id", row.employee_id)
-          .in("status", ["scheduled", "started"])
-          .lt("scheduled_start", payload.scheduled_end)
-          .gt("scheduled_end", payload.scheduled_start)
-          .neq("id", payload.scheduled_shift_id)
-          .limit(1);
-
-        if (overlapError) {
-          throw { code: 409, message: "No se pudo validar cruce de servicios", category: "BUSINESS", details: overlapError };
-        }
-
-        if (overlap && overlap.length > 0) {
-          throw { code: 409, message: "El contratista ya tiene un servicio asignado en ese rango", category: "BUSINESS" };
-        }
-
         const newNotes = payload.notes ? payload.notes.trim() : null;
         const { error: updateError } = await clientAdmin
           .from("scheduled_shifts")

@@ -17,6 +17,8 @@ import { getSystemSettings } from "../_shared/systemSettings.ts";
 
 const endpoint = "operational_tasks_manage";
 const evidenceBucket = "shift-evidence";
+const allowedImageMimeValues = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"] as const;
+const imageMimeSchema = z.enum(allowedImageMimeValues);
 
 const createAction = z.object({
   action: z.literal("create"),
@@ -71,7 +73,7 @@ const requestManifestUploadAction = z.object({
 const requestEvidenceUploadAction = z.object({
   action: z.literal("request_evidence_upload"),
   task_id: z.number().int().positive(),
-  mime_type: z.enum(["image/jpeg", "image/png", "image/webp"]).default("image/jpeg"),
+  mime_type: imageMimeSchema.default("image/jpeg"),
 });
 
 const completeAction = z.object({
@@ -117,6 +119,8 @@ function mimeToExtension(mimeType: string) {
   if (mimeType === "image/jpeg") return "jpg";
   if (mimeType === "image/png") return "png";
   if (mimeType === "image/webp") return "webp";
+  if (mimeType === "image/heic") return "heic";
+  if (mimeType === "image/heif") return "heif";
   return "json";
 }
 
@@ -128,6 +132,8 @@ function inferMimeType(path: string, blobType: string) {
   if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
   if (lower.endsWith(".png")) return "image/png";
   if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".heic")) return "image/heic";
+  if (lower.endsWith(".heif")) return "image/heif";
   if (lower.endsWith(".json")) return "application/json";
   return "application/octet-stream";
 }
@@ -891,7 +897,7 @@ serve(async (req: Request) => {
           upload: data,
           bucket: evidenceBucket,
           path,
-          allowed_mime: ["image/jpeg", "image/png", "image/webp"],
+          allowed_mime: [...allowedImageMimeValues],
           max_bytes: 8 * 1024 * 1024,
         },
         error: null,
@@ -951,7 +957,7 @@ serve(async (req: Request) => {
       }
 
       const evidenceMimeType = inferMimeType(payload.evidence_path, fileBlob.type);
-      const allowedMime = ["application/json", "image/jpeg", "image/png", "image/webp"];
+      const allowedMime = ["application/json", ...allowedImageMimeValues];
       if (!allowedMime.includes(evidenceMimeType)) {
         throw { code: 422, message: "Mime de evidencia no permitido", category: "VALIDATION", details: { mime_type: evidenceMimeType } };
       }

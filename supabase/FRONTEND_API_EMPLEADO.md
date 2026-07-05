@@ -365,7 +365,7 @@ Response data:
   "bucket": "shift-evidence",
   "path": "<user>/<shift>/inicio/<uuid>.bin",
   "max_bytes": 8388608,
-  "allowed_mime": ["image/jpeg", "image/png", "image/webp"]
+  "allowed_mime": ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"]
 }
 ```
 
@@ -390,7 +390,7 @@ Response data:
 Rules
 - `type` only supports `inicio` and `fin`.
 - Upload file using the signed URL, then call `finalize_upload`.
-- File must be jpeg/png/webp and <= 8 MB.
+- File must be jpeg/png/webp/heic/heif and <= 8 MB.
 - `finalize_upload` validates geo location and file contents.
 
 ---
@@ -477,7 +477,7 @@ Response data:
   "upload": { "signedUrl": "...", "path": "..." },
   "bucket": "shift-evidence",
   "path": "users/<employee_id>/task-evidence/<task_id>/<uuid>.jpg",
-  "allowed_mime": ["image/jpeg", "image/png", "image/webp"],
+  "allowed_mime": ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"],
   "max_bytes": 8388608
 }
 ```
