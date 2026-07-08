@@ -14,7 +14,7 @@
   - Supervisora can report incidents and optionally create tasks from incidents.
   - Supervisora can validate employee shift checkout (approve or reject).
   - Supervisora can deliver supplies and view supplies and deliveries.
-  - Supervisora can generate reports for assigned restaurants.
+  - Supervisora has global access to all restaurants and can generate reports for any restaurant.
 
   Explicit exclusions
   - Do not call `employee_self_service` with supervisora tokens. It returns 403.
@@ -160,7 +160,7 @@
 
     Rules
     - Must not have an active shift.
-    - Restaurant must be assigned to the supervisora.
+    - Supervisora has global restaurant access; no per-restaurant assignment is required.
     - Geo validation is enforced.
     - Health form is required at start (`fit_for_work` + optional `declaration`).
     - Must have a scheduled shift for the supervisor in the start window.
@@ -270,7 +270,7 @@
 
   Rules
   - Shift must be in state `finalizado`.
-  - Supervisora must have access to the shift restaurant.
+  - Supervisora has global access to the shift restaurant.
 
   ---
 
@@ -286,7 +286,7 @@
 
   Rules
   - Shift must be in state `finalizado`.
-  - Supervisora must have access to the shift restaurant.
+  - Supervisora has global access to the shift restaurant.
 
   ---
 
@@ -372,7 +372,7 @@
   ```
 
   Rules
-  - Supervisora can only assign and list inside assigned restaurants.
+  - Supervisora can assign and list staff across all restaurants.
 
   ---
 
@@ -413,7 +413,7 @@
   ```
 
   Rules
-  - Use `list_supervision` scoped by `restaurant_id` to avoid cross-scope errors.
+  - `restaurant_id` is optional for filtering; supervisora access is global.
   - Evidence path must belong to the assigned employee.
   - Evidence can be image or JSON manifest.
 
@@ -441,7 +441,7 @@
 
   Rules
   - Supervisora can create tasks from incidents.
-  - Supervisora must have access to the shift restaurant.
+  - Supervisora has global access to the shift restaurant.
 
   ---
 
@@ -481,7 +481,7 @@
   ```
 
   Rules
-  - Supervisora can only generate reports for assigned restaurants.
+  - Supervisora can generate reports for any restaurant.
 
   ---
 

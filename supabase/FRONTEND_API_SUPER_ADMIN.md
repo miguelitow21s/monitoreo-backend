@@ -9,7 +9,7 @@ Role scope (UI)
 - Super admin uses a management and oversight view, not the employee view.
 - Super admin does not start or end shifts.
 - Super admin can create, edit, activate, and deactivate users and restaurants.
-- Super admin can assign supervisors to restaurants.
+- Supervisoras have global restaurant access; super admin can still manage legacy supervisor tags.
 - Super admin can schedule, reschedule, cancel, and bulk schedule shifts.
 - Super admin can view metrics, costs, productivity, supplies, and historical data.
 - Super admin can deliver supplies and list supplies and deliveries.
@@ -258,6 +258,8 @@ Notes
 ---
 
 ### POST /admin_supervisors_manage
+
+Note: `supervisora` access is global across restaurants. Assign/unassign is legacy tagging only; list responses include `global_access: true`.
 
 Action: assign
 ```
@@ -517,7 +519,7 @@ Notes
 3. Send and verify OTP, store `verification_token`.
 4. Manage users and roles with `admin_users_manage`.
 5. Manage restaurants and geolocation rules with `admin_restaurants_manage`.
-6. Assign supervisors with `admin_supervisors_manage`.
+6. Use `admin_supervisors_manage` only for legacy supervisor tags; access is global.
 7. Schedule shifts and bulk schedules with `scheduled_shifts_manage`.
 8. Review and approve or reject shifts with `shifts_approve` or `shifts_reject` (OTP required).
 9. Monitor metrics and costs with `admin_dashboard_metrics`.

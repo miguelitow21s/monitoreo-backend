@@ -413,6 +413,8 @@ List:
 
 ### POST `/admin_supervisors_manage` (super_admin only)
 
+Note: `supervisora` access is global across restaurants. Assign/unassign is kept for legacy tagging only; list responses include `global_access: true`.
+
 Assign:
 ```json
 {"action":"assign","supervisor_id":"uuid","restaurant_id":1}

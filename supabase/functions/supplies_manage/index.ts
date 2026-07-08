@@ -151,22 +151,6 @@ serve(async (req: Request) => {
         await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
       }
       restaurantIds = [payload.restaurant_id];
-    } else if (user.role === "supervisora") {
-      const { data: scopeLinks, error: scopeError } = await clientAdmin
-        .from("restaurant_employees")
-        .select("restaurant_id")
-        .eq("user_id", user.id);
-
-      if (scopeError) {
-        throw { code: 409, message: "No se pudo resolver alcance de supervisora", category: "BUSINESS", details: scopeError };
-      }
-
-      restaurantIds = [...new Set((scopeLinks ?? []).map((row) => Number(row.restaurant_id)).filter((n) => Number.isFinite(n)))];
-      if (restaurantIds.length === 0) {
-        const emptyPayload = { success: true, data: { items: [] }, error: null, request_id };
-        await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: emptyPayload });
-        return response(true, emptyPayload.data, null, request_id);
-      }
     }
 
     let query = clientAdmin

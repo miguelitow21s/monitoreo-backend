@@ -98,36 +98,9 @@ async function loadActiveUsersByRoleId(roleId: number): Promise<Recipient[]> {
     .map((row) => ({ id: row.id, email: normalizeEmail(row.email) }));
 }
 
-async function loadSupervisorsForRestaurant(restaurantId: number): Promise<Recipient[]> {
-  const { data: relData, error: relError } = await clientAdmin
-    .from("restaurant_employees")
-    .select("user_id")
-    .eq("restaurant_id", restaurantId);
-
-  if (relError) {
-    throw { code: 500, message: "No se pudo cargar alcance de supervisoras", category: "SYSTEM", details: relError };
-  }
-
-  const userIds = [...new Set(((relData ?? []) as { user_id: string }[]).map((row) => row.user_id))];
-  if (userIds.length === 0) return [];
-
+async function loadSupervisorsForRestaurant(_restaurantId: number): Promise<Recipient[]> {
   const { supervisora: supervisoraRoleId } = await getRoleIds();
-
-  const { data, error } = await clientAdmin
-    .from("users")
-    .select("id, email")
-    .in("id", userIds)
-    .eq("role_id", supervisoraRoleId)
-    .eq("is_active", true)
-    .not("email", "is", null);
-
-  if (error) {
-    throw { code: 500, message: "No se pudieron cargar supervisoras del restaurante", category: "SYSTEM", details: error };
-  }
-
-  return ((data ?? []) as { id: string; email: string }[])
-    .filter((row) => Boolean(row.email))
-    .map((row) => ({ id: row.id, email: normalizeEmail(row.email) }));
+  return await loadActiveUsersByRoleId(supervisoraRoleId);
 }
 
 async function loadShiftContext(shiftId: number): Promise<{ shift_id: number; restaurant_id: number; employee_id: string }> {

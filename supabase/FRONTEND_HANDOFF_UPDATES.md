@@ -61,9 +61,9 @@
   - For **supervisora**, `restaurant_id` is required.
 
 ### QA checklist for frontend
-- Verify supervisora can only start shift in assigned restaurants.
+- Verify supervisora can start shift in any valid restaurant when scheduled.
 - Verify supervisora can end only own active shift.
-- Verify supervisor can assign/unassign employees only within authorized restaurants.
+- Verify supervisor can assign/unassign employees across all restaurants.
 - Verify supervisor can schedule/reschedule/cancel shifts (single + bulk).
 - Verify supervisor can create operational tasks for employees and they show as alerts.
 - Verify employee can upload photo evidence and complete operational tasks successfully.

@@ -212,36 +212,31 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se pudo listar asignaciones de supervisora", category: "BUSINESS", details: linksError };
       }
 
-      const supervisorIds = [...new Set((links ?? []).map((x) => String(x.user_id)))];
-      const { data: profiles, error: profilesError } = supervisorIds.length
-        ? await clientAdmin
-            .from("profiles")
-            .select("id, first_name, last_name, full_name, email, role, is_active")
-            .in("id", supervisorIds)
-            .eq("role", "supervisora")
-        : { data: [], error: null };
+      const { data: profiles, error: profilesError } = await clientAdmin
+        .from("profiles")
+        .select("id, first_name, last_name, full_name, email, role, is_active")
+        .eq("role", "supervisora")
+        .eq("is_active", true)
+        .order("full_name", { ascending: true });
 
       if (profilesError) {
         throw { code: 409, message: "No se pudieron cargar supervisoras", category: "BUSINESS", details: profilesError };
       }
 
-      const byId = new Map((profiles ?? []).map((p) => [String(p.id), p]));
-      const items = (links ?? [])
-        .map((row) => {
-          const profile = byId.get(String(row.user_id));
-          if (!profile) return null;
-          return {
-            supervisor_id: row.user_id,
-            assigned_at: row.created_at,
-            supervisor: profile,
-          };
-        })
-        .filter(Boolean);
+      const assignedAtById = new Map((links ?? []).map((row) => [String(row.user_id), row.created_at]));
+      const items = (profiles ?? []).map((profile) => ({
+        supervisor_id: profile.id,
+        assigned_at: assignedAtById.get(String(profile.id)) ?? null,
+        global_access: true,
+        supervisor: profile,
+      }));
 
       const successPayload = { success: true, data: { items }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
+
+    await ensureSupervisorUser(payload.supervisor_id);
 
     const { data: links, error: linksError } = await clientAdmin
       .from("restaurant_employees")
@@ -253,30 +248,23 @@ serve(async (req: Request) => {
       throw { code: 409, message: "No se pudo listar restaurantes de supervisora", category: "BUSINESS", details: linksError };
     }
 
-    const restaurantIds = [...new Set((links ?? []).map((x) => Number(x.restaurant_id)))];
-    const { data: restaurants, error: restaurantsError } = restaurantIds.length
-      ? await clientAdmin
-          .from("restaurants")
-          .select("id, name, is_active, city, state")
-          .in("id", restaurantIds)
-      : { data: [], error: null };
+    const { data: restaurants, error: restaurantsError } = await clientAdmin
+      .from("restaurants")
+      .select("id, name, is_active, city, state")
+      .eq("is_active", true)
+      .order("name", { ascending: true });
 
     if (restaurantsError) {
       throw { code: 409, message: "No se pudieron cargar restaurantes", category: "BUSINESS", details: restaurantsError };
     }
 
-    const byRestaurantId = new Map((restaurants ?? []).map((r) => [Number(r.id), r]));
-    const items = (links ?? [])
-      .map((row) => {
-        const restaurant = byRestaurantId.get(Number(row.restaurant_id));
-        if (!restaurant) return null;
-        return {
-          restaurant_id: row.restaurant_id,
-          assigned_at: row.created_at,
-          restaurant,
-        };
-      })
-      .filter(Boolean);
+    const assignedAtByRestaurantId = new Map((links ?? []).map((row) => [Number(row.restaurant_id), row.created_at]));
+    const items = (restaurants ?? []).map((restaurant) => ({
+      restaurant_id: restaurant.id,
+      assigned_at: assignedAtByRestaurantId.get(Number(restaurant.id)) ?? null,
+      global_access: true,
+      restaurant,
+    }));
 
     const successPayload = { success: true, data: { items }, error: null, request_id };
     await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
