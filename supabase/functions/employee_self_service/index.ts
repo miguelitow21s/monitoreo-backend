@@ -331,10 +331,18 @@ serve(async (req: Request) => {
 
       const canStartShift = !active_shift;
 
-      const assigned_restaurants = (linksRes.data ?? []).map((row) => ({
-        restaurant_id: row.restaurant_id,
-        assigned_at: row.created_at,
-        restaurant: restaurantsById.get(Number(row.restaurant_id)) ?? null,
+      const assignedAtByRestaurantId = new Map(
+        (linksRes.data ?? []).map((row) => [Number(row.restaurant_id), row.created_at])
+      );
+      const scheduledAtByRestaurantId = new Map(
+        (scheduleRes.data ?? []).map((row) => [Number(row.restaurant_id), row.scheduled_start])
+      );
+
+      const assigned_restaurants = restaurantIds.map((restaurantId) => ({
+        restaurant_id: restaurantId,
+        assigned_at: assignedAtByRestaurantId.get(restaurantId) ?? scheduledAtByRestaurantId.get(restaurantId) ?? null,
+        access_source: assignedAtByRestaurantId.has(restaurantId) ? "assignment" : "schedule",
+        restaurant: restaurantsById.get(restaurantId) ?? null,
       }));
 
       const scheduled_shifts = (scheduleRes.data ?? []).map((row) => ({

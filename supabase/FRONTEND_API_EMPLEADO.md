@@ -10,7 +10,7 @@ Role scope (UI)
 - Empleado can start and end own shift.
 - Empleado must complete health form at start and end.
 - Empleado must upload mandatory shift photos (inicio + fin).
-- Empleado can see assigned restaurants and schedule.
+- Empleado can see assigned restaurants and restaurants from scheduled services.
 - Empleado can see assigned tasks and upload evidence.
 - Empleado can create observations and alerts.
 - Public signup/bootstrap must persist `phone_number` in E.164 because OTP reads from `users.phone_e164`.

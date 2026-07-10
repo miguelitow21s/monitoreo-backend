@@ -367,6 +367,7 @@ Actions:
 Notes:
 - `list_my_restaurants` devuelve `cleaning_areas` ya resuelto con fallback según `evidence.areas_mode`.
 - `list_assignable_employees` devuelve **todos los empleados**, incluyendo no asignados.
+- Scheduling a service auto-grants the employee access to that restaurant; the front should not require a separate employee-restaurant assignment step.
 - En respuesta incluye `assigned_restaurants_count` y, si se envía `restaurant_id`, también `assigned_to_restaurant`.
 
 ### POST /operational_tasks_manage (Supervisora)

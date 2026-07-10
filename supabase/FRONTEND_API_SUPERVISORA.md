@@ -345,6 +345,7 @@
 
   Rules
   - An employee can have multiple scheduled services in the same time window.
+  - Scheduling a service auto-grants the employee access to that restaurant.
   - Bulk scheduling supports up to 200 entries.
 
   ---

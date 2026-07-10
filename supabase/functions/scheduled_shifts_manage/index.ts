@@ -262,6 +262,20 @@ serve(async (req: Request) => {
         }
 
         const newNotes = payload.notes ? payload.notes.trim() : null;
+        const { error: assignmentError } = await clientAdmin
+          .from("restaurant_employees")
+          .upsert(
+            {
+              restaurant_id: row.restaurant_id,
+              user_id: row.employee_id,
+            },
+            { onConflict: "restaurant_id,user_id" }
+          );
+
+        if (assignmentError) {
+          throw { code: 409, message: "No se pudo habilitar el sitio para el empleado", category: "BUSINESS", details: assignmentError };
+        }
+
         const { error: updateError } = await clientAdmin
           .from("scheduled_shifts")
           .update({

@@ -194,14 +194,43 @@ async function ensureEmployeeRestaurantAccess(employeeId: string, restaurantId: 
     .eq("restaurant_id", restaurantId)
     .maybeSingle();
 
-  if (!link) {
-    throw {
-      code: 403,
-      message: "No tienes acceso a tareas de este restaurante",
-      category: "PERMISSION",
-      details: { diagnostic_code: "RESTAURANT_FORBIDDEN" },
-    };
+  if (link) {
+    return;
   }
+
+  const { data: scheduledShift } = await clientAdmin
+    .from("scheduled_shifts")
+    .select("id")
+    .eq("employee_id", employeeId)
+    .eq("restaurant_id", restaurantId)
+    .in("status", ["scheduled", "started"])
+    .gte("scheduled_end", new Date().toISOString())
+    .limit(1)
+    .maybeSingle();
+
+  if (scheduledShift) {
+    return;
+  }
+
+  const { data: activeShift } = await clientAdmin
+    .from("shifts")
+    .select("id")
+    .eq("employee_id", employeeId)
+    .eq("restaurant_id", restaurantId)
+    .eq("state", "activo")
+    .limit(1)
+    .maybeSingle();
+
+  if (activeShift) {
+    return;
+  }
+
+  throw {
+    code: 403,
+    message: "No tienes acceso a tareas de este restaurante",
+    category: "PERMISSION",
+    details: { diagnostic_code: "RESTAURANT_FORBIDDEN" },
+  };
 }
 
 async function ensureActiveShiftAtRestaurant(employeeId: string, restaurantId: number) {
@@ -1013,15 +1042,33 @@ serve(async (req: Request) => {
     if (payload.action === "list_my_open") {
       roleGuard(user, ["empleado"]);
 
-      // Get restaurants where the employee works to include restaurant-scoped tasks
-      const { data: restaurantLinks } = await clientAdmin
-        .from("restaurant_employees")
-        .select("restaurant_id")
-        .eq("user_id", user.id);
+      const nowIso = new Date().toISOString();
 
-      const employeeRestaurantIds = (restaurantLinks ?? [])
-        .map((r) => Number(r.restaurant_id))
-        .filter((n) => Number.isFinite(n) && n > 0);
+      const [{ data: restaurantLinks }, { data: scheduledRestaurantRows }, { data: activeShiftRows }] = await Promise.all([
+        clientAdmin
+          .from("restaurant_employees")
+          .select("restaurant_id")
+          .eq("user_id", user.id),
+        clientAdmin
+          .from("scheduled_shifts")
+          .select("restaurant_id")
+          .eq("employee_id", user.id)
+          .in("status", ["scheduled", "started"])
+          .gte("scheduled_end", nowIso),
+        clientAdmin
+          .from("shifts")
+          .select("restaurant_id")
+          .eq("employee_id", user.id)
+          .eq("state", "activo"),
+      ]);
+
+      const employeeRestaurantIds = [
+        ...new Set(
+          [...(restaurantLinks ?? []), ...(scheduledRestaurantRows ?? []), ...(activeShiftRows ?? [])]
+            .map((row) => Number(row.restaurant_id))
+            .filter((n) => Number.isFinite(n) && n > 0)
+        ),
+      ];
 
       let query = clientUser
         .from("operational_tasks")
