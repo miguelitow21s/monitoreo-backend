@@ -62,7 +62,10 @@ jobs:
           echo "HEALTH_ADMIN_EMAIL=${{ secrets.HEALTH_ADMIN_EMAIL }}" >> $GITHUB_ENV
           echo "HEALTH_ADMIN_PASSWORD=${{ secrets.HEALTH_ADMIN_PASSWORD }}" >> $GITHUB_ENV
 
+      # Only sync Vercel env when we're also triggering the frontend deploy.
+      # Backend-only deploys (run_frontend_hook=false) must not fail on Vercel.
       - name: Configure Vercel + Supabase secrets
+        if: ${{ inputs.run_frontend_hook }}
         shell: pwsh
         run: ./ops/set-secrets.ps1 -Environment "${{ inputs.environment }}"
 
