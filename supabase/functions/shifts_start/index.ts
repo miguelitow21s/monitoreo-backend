@@ -90,7 +90,8 @@ serve(async (req) => {
     if (scheduledShiftError) {
       throw {
         code: 409,
-        message: "No se pudo validar servicio asignado",
+        error_code: "SCHEDULE_LOOKUP_FAILED",
+        message: "No se pudo validar el servicio asignado",
         category: "BUSINESS",
         details: scheduledShiftError,
       };
@@ -99,16 +100,20 @@ serve(async (req) => {
     if (!scheduledShift) {
       throw {
         code: 409,
-        message: "No hay servicio asignado disponible",
+        error_code: "SCHEDULE_NOT_FOUND",
+        message: "No tienes un servicio asignado disponible en este sitio",
         category: "BUSINESS",
+        details: { restaurant_id, scheduled_shift_id: payload.scheduled_shift_id ?? null },
       };
     }
 
     if (scheduledShift.scheduled_end && new Date(scheduledShift.scheduled_end) < now) {
       throw {
         code: 409,
-        message: "Ventana de servicio vencida",
+        error_code: "SCHEDULE_WINDOW_EXPIRED",
+        message: "La ventana de este servicio ya vencio",
         category: "BUSINESS",
+        details: { scheduled_end: scheduledShift.scheduled_end, server_now: now.toISOString() },
       };
     }
 
@@ -122,9 +127,9 @@ serve(async (req) => {
         throw {
           code: 422,
           error_code: "SHIFT_START_OUTSIDE_WINDOW",
-          message: "Fuera de la ventana de servicio permitida",
+          message: "Estas fuera de la ventana horaria permitida para iniciar este servicio",
           category: "VALIDATION",
-          details: { earliest: earliest.toISOString(), latest: latest.toISOString() },
+          details: { earliest: earliest.toISOString(), latest: latest.toISOString(), server_now: now.toISOString() },
         };
       }
     }
@@ -132,8 +137,10 @@ serve(async (req) => {
     if (Number(scheduledShift.restaurant_id) !== Number(restaurant_id)) {
       throw {
         code: 409,
-        message: "Sitio no coincide con el servicio asignado",
+        error_code: "SHIFT_SITE_MISMATCH",
+        message: "El sitio seleccionado no coincide con el de tu servicio asignado",
         category: "BUSINESS",
+        details: { selected_restaurant_id: Number(restaurant_id), scheduled_restaurant_id: Number(scheduledShift.restaurant_id) },
       };
     }
 
@@ -159,7 +166,7 @@ serve(async (req) => {
       .single();
 
     if (error || !data) {
-      throw { code: 409, message: "No se pudo iniciar servicio", category: "BUSINESS", details: error };
+      throw { code: 409, error_code: "SHIFT_INSERT_FAILED", message: "No se pudo iniciar el servicio", category: "BUSINESS", details: error };
     }
 
     const { error: scheduleUpdateError } = await clientAdmin
@@ -188,7 +195,7 @@ serve(async (req) => {
       );
 
     if (healthError) {
-      throw { code: 409, message: "No se pudo registrar formulario de ingreso", category: "BUSINESS", details: healthError };
+      throw { code: 409, error_code: "HEALTH_FORM_FAILED", message: "No se pudo registrar el formulario de ingreso", category: "BUSINESS", details: healthError };
     }
 
     await safeWriteAudit({
@@ -223,7 +230,7 @@ serve(async (req) => {
       .limit(10);
 
     if (openTasksError) {
-      throw { code: 409, message: "No se pudieron cargar alertas de tareas pendientes", category: "BUSINESS", details: openTasksError };
+      throw { code: 409, error_code: "PENDING_TASKS_LOAD_FAILED", message: "No se pudieron cargar las tareas pendientes", category: "BUSINESS", details: openTasksError };
     }
 
     const successData = {

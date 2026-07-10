@@ -70,7 +70,7 @@ serve(async (req) => {
     const settings = await getSystemSettings(clientAdmin);
 
     const shift = await getOwnedShift(clientUser, user.id, shift_id);
-    ensureShiftState(shift.state, ["activo"], "No se puede finalizar este servicio");
+    ensureShiftState(shift.state, ["activo"], "Este servicio no esta activo, no se puede finalizar", "SHIFT_NOT_ACTIVE");
     if (user.role === "supervisora") {
       await ensureSupervisorRestaurantAccess(user.id, shift.restaurant_id);
     }
@@ -88,11 +88,11 @@ serve(async (req) => {
         .limit(1);
 
       if (openTasksError) {
-        throw { code: 409, message: "No se pudieron validar tareas especiales", category: "BUSINESS", details: openTasksError };
+        throw { code: 409, error_code: "SPECIAL_TASKS_CHECK_FAILED", message: "No se pudieron validar las tareas especiales", category: "BUSINESS", details: openTasksError };
       }
 
       if ((openTasks ?? []).length > 0) {
-        throw { code: 422, message: "Debe completar tareas especiales antes de finalizar", category: "VALIDATION" };
+        throw { code: 422, error_code: "SPECIAL_TASKS_INCOMPLETE", message: "Debes completar las tareas especiales antes de finalizar", category: "VALIDATION" };
       }
     }
 
@@ -110,7 +110,7 @@ serve(async (req) => {
         .in("type", requiredTypes);
 
       if (shiftPhotosError) {
-        throw { code: 409, message: "No se pudo validar evidencia obligatoria", category: "BUSINESS", details: shiftPhotosError };
+        throw { code: 409, error_code: "EVIDENCE_CHECK_FAILED", message: "No se pudo validar la evidencia obligatoria", category: "BUSINESS", details: shiftPhotosError };
       }
 
       const existingTypes = new Set((shiftPhotos ?? []).map((p) => String(p.type)));
@@ -118,6 +118,7 @@ serve(async (req) => {
       if (missingTypes.length > 0) {
         throw {
           code: 422,
+          error_code: "EVIDENCE_PHOTOS_MISSING",
           message: "Faltan fotos obligatorias del servicio",
           category: "VALIDATION",
           details: { missing_types: missingTypes },
@@ -135,7 +136,8 @@ serve(async (req) => {
     if (scheduledShiftError) {
       throw {
         code: 409,
-        message: "No se pudo validar servicio asignado",
+        error_code: "SCHEDULE_LOOKUP_FAILED",
+        message: "No se pudo validar el servicio asignado",
         category: "BUSINESS",
         details: scheduledShiftError,
       };
@@ -160,7 +162,8 @@ serve(async (req) => {
       if (fallbackError) {
         throw {
           code: 409,
-          message: "No se pudo validar servicio asignado",
+          error_code: "SCHEDULE_LOOKUP_FAILED",
+          message: "No se pudo validar el servicio asignado",
           category: "BUSINESS",
           details: fallbackError,
         };
@@ -177,8 +180,10 @@ serve(async (req) => {
     if (endedEarly && !early_end_reason) {
       throw {
         code: 422,
-        message: "Debe indicar motivo de salida anticipada",
+        error_code: "EARLY_END_REASON_REQUIRED",
+        message: "Debes indicar el motivo de la salida anticipada",
         category: "VALIDATION",
+        details: { scheduled_end: scheduledEnd?.toISOString() ?? null, server_now: now.toISOString() },
       };
     }
 
@@ -199,7 +204,7 @@ serve(async (req) => {
       .single();
 
     if (error || !data) {
-      throw { code: 409, message: "No se pudo finalizar servicio", category: "BUSINESS", details: error };
+      throw { code: 409, error_code: "SHIFT_END_FAILED", message: "No se pudo finalizar el servicio", category: "BUSINESS", details: error };
     }
 
     const { error: healthError } = await clientUser
@@ -217,7 +222,7 @@ serve(async (req) => {
       );
 
     if (healthError) {
-      throw { code: 409, message: "No se pudo registrar formulario de salida", category: "BUSINESS", details: healthError };
+      throw { code: 409, error_code: "HEALTH_FORM_FAILED", message: "No se pudo registrar el formulario de salida", category: "BUSINESS", details: healthError };
     }
 
     if (scheduledShiftId) {

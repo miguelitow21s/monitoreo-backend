@@ -13,8 +13,12 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
+import { resolveTimezoneFromCoords, isValidIanaTimezone } from "../_shared/timezone.ts";
 
 const endpoint = "admin_restaurants_manage";
+
+const RESTAURANT_COLUMNS =
+  "id, name, lat, lng, radius, geofence_radius_m, timezone, is_active, address_line, city, state, postal_code, country, place_id, cleaning_areas, created_at, updated_at";
 
 type AppRole = "super_admin" | "supervisora" | "empleado";
 
@@ -45,6 +49,7 @@ const createAction = z.object({
   lat: commonSchemas.lat,
   lng: commonSchemas.lng,
   radius: z.number().int().min(1).max(20000),
+  timezone: z.string().trim().max(64).optional().nullable(),
   address_line: z.string().trim().max(250).optional().nullable(),
   city: z.string().trim().max(120).optional().nullable(),
   state: z.string().trim().max(120).optional().nullable(),
@@ -62,6 +67,7 @@ const updateAction = z.object({
   lat: commonSchemas.lat.optional(),
   lng: commonSchemas.lng.optional(),
   radius: z.number().int().min(1).max(20000).optional(),
+  timezone: z.string().trim().max(64).optional().nullable(),
   address_line: z.string().trim().max(250).optional().nullable(),
   city: z.string().trim().max(120).optional().nullable(),
   state: z.string().trim().max(120).optional().nullable(),
@@ -139,6 +145,10 @@ serve(async (req: Request) => {
     if (payload.action === "create") {
       const now = new Date().toISOString();
       const insertClient = user.role === "supervisora" ? clientAdmin : clientUser;
+      const timezone =
+        payload.timezone && isValidIanaTimezone(payload.timezone.trim())
+          ? payload.timezone.trim()
+          : resolveTimezoneFromCoords(payload.lat, payload.lng);
       const { data, error } = await insertClient
         .from("restaurants")
         .insert({
@@ -147,6 +157,7 @@ serve(async (req: Request) => {
           lng: payload.lng,
           radius: payload.radius,
           geofence_radius_m: payload.radius,
+          timezone,
           address_line: payload.address_line ?? null,
           city: payload.city ?? null,
           state: payload.state ?? null,
@@ -157,7 +168,7 @@ serve(async (req: Request) => {
           cleaning_areas: payload.cleaning_areas ?? null,
           updated_at: now,
         })
-        .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, cleaning_areas, created_at, updated_at")
+        .select(RESTAURANT_COLUMNS)
         .single();
 
       if (error || !data) {
@@ -185,6 +196,12 @@ serve(async (req: Request) => {
         patch.radius = payload.radius;
         patch.geofence_radius_m = payload.radius;
       }
+      // Timezone: explicit override wins; otherwise re-derive when both coords are provided.
+      if (payload.timezone !== undefined && payload.timezone && isValidIanaTimezone(payload.timezone.trim())) {
+        patch.timezone = payload.timezone.trim();
+      } else if (payload.lat !== undefined && payload.lng !== undefined) {
+        patch.timezone = resolveTimezoneFromCoords(payload.lat, payload.lng);
+      }
       if (payload.address_line !== undefined) patch.address_line = payload.address_line ?? null;
       if (payload.city !== undefined) patch.city = payload.city ?? null;
       if (payload.state !== undefined) patch.state = payload.state ?? null;
@@ -198,7 +215,7 @@ serve(async (req: Request) => {
         .from("restaurants")
         .update(patch)
         .eq("id", payload.restaurant_id)
-        .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, cleaning_areas, created_at, updated_at")
+        .select(RESTAURANT_COLUMNS)
         .single();
 
       if (error || !data) {
@@ -224,7 +241,7 @@ serve(async (req: Request) => {
         .from("restaurants")
         .update({ is_active: isActive, updated_at: new Date().toISOString() })
         .eq("id", payload.restaurant_id)
-        .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, cleaning_areas, created_at, updated_at")
+        .select(RESTAURANT_COLUMNS)
         .single();
 
       if (error || !data) {

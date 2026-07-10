@@ -102,13 +102,14 @@ serve(async (req: Request) => {
       const start = new Date(startIso);
       const end = new Date(endIso);
       if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-        throw { code: 422, message: "Rango horario invalido", category: "VALIDATION" };
+        throw { code: 422, error_code: "SCHEDULE_TIME_RANGE_INVALID", message: "Rango horario invalido", category: "VALIDATION" };
       }
       const hours = (end.getTime() - start.getTime()) / 3600000;
       if (hours < minHours || hours > maxHours) {
         throw {
           code: 422,
-          message: "Duracion de ventana de servicio fuera de rango permitido",
+          error_code: "SCHEDULE_DURATION_OUT_OF_RANGE",
+          message: "La duracion de la ventana de servicio esta fuera del rango permitido",
           category: "VALIDATION",
           details: { min_hours: minHours, max_hours: maxHours, hours },
         };
@@ -136,7 +137,7 @@ serve(async (req: Request) => {
       });
 
       if (error || !data) {
-        throw { code: 409, message: "No se pudo asignar servicio", category: "BUSINESS", details: error };
+        throw { code: 409, error_code: "SCHEDULE_ASSIGN_FAILED", message: "No se pudo asignar el servicio", category: "BUSINESS", details: error };
       }
 
       await safeWriteAudit({
@@ -252,7 +253,7 @@ serve(async (req: Request) => {
           .single();
 
         if (rowError || !row) {
-          throw { code: 404, message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
+          throw { code: 404, error_code: "SCHEDULE_NOT_FOUND", message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
         }
 
         assertDurationWindow(payload.scheduled_start, payload.scheduled_end);
@@ -287,7 +288,7 @@ serve(async (req: Request) => {
           .eq("id", payload.scheduled_shift_id);
 
         if (updateError) {
-          throw { code: 409, message: "No se pudo reprogramar servicio", category: "BUSINESS", details: updateError };
+          throw { code: 409, error_code: "SCHEDULE_RESCHEDULE_FAILED", message: "No se pudo reprogramar el servicio", category: "BUSINESS", details: updateError };
         }
       } else {
         const { data: row, error: rowError } = await clientUser
@@ -297,7 +298,7 @@ serve(async (req: Request) => {
           .single();
 
         if (rowError || !row) {
-          throw { code: 404, message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
+          throw { code: 404, error_code: "SCHEDULE_NOT_FOUND", message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
         }
 
         assertDurationWindow(payload.scheduled_start, payload.scheduled_end);
@@ -339,7 +340,7 @@ serve(async (req: Request) => {
           .single();
 
         if (rowError || !row) {
-          throw { code: 404, message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
+          throw { code: 404, error_code: "SCHEDULE_NOT_FOUND", message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
         }
 
         if (!["scheduled", "started"].includes(String(row.status))) {
@@ -360,7 +361,7 @@ serve(async (req: Request) => {
           .eq("id", payload.scheduled_shift_id);
 
         if (updateError) {
-          throw { code: 409, message: "No se pudo cancelar servicio", category: "BUSINESS", details: updateError };
+          throw { code: 409, error_code: "SCHEDULE_CANCEL_FAILED", message: "No se pudo cancelar el servicio", category: "BUSINESS", details: updateError };
         }
       } else {
         const { data: row, error: rowError } = await clientUser
@@ -370,7 +371,7 @@ serve(async (req: Request) => {
           .single();
 
         if (rowError || !row) {
-          throw { code: 404, message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
+          throw { code: 404, error_code: "SCHEDULE_NOT_FOUND", message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
         }
 
         const { error } = await clientUser.rpc("cancel_scheduled_shift", {
@@ -401,7 +402,7 @@ serve(async (req: Request) => {
     const listClient = user.role === "supervisora" ? clientAdmin : clientUser;
     let query = listClient
       .from("scheduled_shifts")
-      .select("id, employee_id, restaurant_id, scheduled_start, scheduled_end, status, notes, started_shift_id, created_by, created_at, updated_at")
+      .select("id, employee_id, restaurant_id, scheduled_start, scheduled_end, status, notes, started_shift_id, created_by, created_at, updated_at, restaurants(name, timezone, city, state)")
       .order("scheduled_start", { ascending: false })
       .limit(payload.limit);
 
@@ -413,10 +414,24 @@ serve(async (req: Request) => {
 
     const { data, error } = await query;
     if (error) {
-      throw { code: 409, message: "No se pudo listar agenda", category: "BUSINESS", details: error };
+      throw { code: 409, error_code: "SCHEDULE_LIST_FAILED", message: "No se pudo listar la agenda", category: "BUSINESS", details: error };
     }
 
-    const successPayload = { success: true, data: { items: data ?? [] }, error: null, request_id };
+    // Flatten the embedded restaurant so the frontend can render each row in the
+    // restaurant's local timezone without a second lookup.
+    const items = (data ?? []).map((row: Record<string, unknown>) => {
+      const restaurant = (row.restaurants ?? null) as { name?: string; timezone?: string | null; city?: string | null; state?: string | null } | null;
+      const { restaurants: _embedded, ...rest } = row;
+      return {
+        ...rest,
+        restaurant_name: restaurant?.name ?? null,
+        restaurant_timezone: restaurant?.timezone ?? null,
+        restaurant_city: restaurant?.city ?? null,
+        restaurant_state: restaurant?.state ?? null,
+      };
+    });
+
+    const successPayload = { success: true, data: { items }, error: null, request_id };
     await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
     return response(true, successPayload.data, null, request_id);
   } catch (err) {

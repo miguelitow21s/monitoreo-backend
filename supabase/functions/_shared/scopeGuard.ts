@@ -9,7 +9,13 @@ export async function ensureUserRestaurantAccess(userId: string, restaurantId: n
     .maybeSingle();
 
   if (error || !data) {
-    throw { code: 403, message: "Sin acceso a este sitio", category: "PERMISSION" };
+    throw {
+      code: 403,
+      error_code: "RESTAURANT_ACCESS_DENIED",
+      message: "No tienes este sitio asignado",
+      category: "PERMISSION",
+      details: { restaurant_id: restaurantId },
+    };
   }
 }
 
@@ -25,7 +31,7 @@ export async function ensureSupervisorShiftAccess(supervisorId: string, shiftId:
     .single();
 
   if (shiftErr || !shift) {
-    throw { code: 404, message: "Servicio no encontrado", category: "BUSINESS" };
+    throw { code: 404, error_code: "SHIFT_NOT_FOUND", message: "Servicio no encontrado", category: "BUSINESS", details: { shift_id: shiftId } };
   }
 
   await ensureSupervisorRestaurantAccess(supervisorId, shift.restaurant_id);

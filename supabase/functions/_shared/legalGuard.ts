@@ -19,7 +19,7 @@ export async function getActiveLegalTerm(): Promise<ActiveLegalTerm> {
     .single();
 
   if (error || !data) {
-    throw { code: 503, message: "No hay version legal activa configurada", category: "SYSTEM", details: error };
+    throw { code: 503, error_code: "LEGAL_TERM_NOT_CONFIGURED", message: "No hay version legal activa configurada", category: "SYSTEM", details: error };
   }
 
   return data as ActiveLegalTerm;
@@ -37,7 +37,7 @@ export async function hasAcceptedActiveLegalTerm(userId: string): Promise<{ acce
     .maybeSingle();
 
   if (error) {
-    throw { code: 500, message: "No se pudo validar consentimiento legal", category: "SYSTEM", details: error };
+    throw { code: 500, error_code: "LEGAL_CONSENT_CHECK_FAILED", message: "No se pudo validar consentimiento legal", category: "SYSTEM", details: error };
   }
 
   return {
@@ -50,7 +50,7 @@ export async function hasAcceptedActiveLegalTerm(userId: string): Promise<{ acce
 export async function requireAcceptedActiveLegalTerm(userId: string): Promise<void> {
   const status = await hasAcceptedActiveLegalTerm(userId);
   if (!status.accepted) {
-    throw { code: 403, message: "Debe aceptar tratamiento de datos para continuar", category: "PERMISSION" };
+    throw { code: 403, error_code: "LEGAL_NOT_ACCEPTED", message: "Debes aceptar el tratamiento de datos para continuar", category: "PERMISSION" };
   }
 
   const settings = await getSystemSettings(clientAdmin);
@@ -62,11 +62,11 @@ export async function requireAcceptedActiveLegalTerm(userId: string): Promise<vo
       .single();
 
     if (error) {
-      throw { code: 500, message: "No se pudo validar estado de PIN", category: "SYSTEM", details: error };
+      throw { code: 500, error_code: "PIN_STATE_CHECK_FAILED", message: "No se pudo validar estado de PIN", category: "SYSTEM", details: error };
     }
 
     if (data?.must_change_pin) {
-      throw { code: 403, message: "Debe cambiar su PIN para continuar", category: "PERMISSION" };
+      throw { code: 403, error_code: "PIN_CHANGE_REQUIRED", message: "Debes cambiar tu PIN antes de continuar", category: "PERMISSION" };
     }
   }
 }

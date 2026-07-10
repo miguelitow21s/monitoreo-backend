@@ -15,12 +15,12 @@ export async function geoValidatorByRestaurant(
 ) {
   const { data: restaurant, error } = await client
     .from("restaurants")
-    .select("id, lat, lng, radius, geofence_radius_m")
+    .select("id, name, lat, lng, radius, geofence_radius_m")
     .eq("id", restaurant_id)
     .single();
 
   if (error || !restaurant) {
-    throw { code: 422, message: "Restaurante invalido", category: "VALIDATION" };
+    throw { code: 422, error_code: "RESTAURANT_INVALID", message: "Restaurante invalido", category: "VALIDATION", details: { restaurant_id } };
   }
 
   const settings = options.settings;
@@ -31,18 +31,45 @@ export async function geoValidatorByRestaurant(
       : settings?.gps.default_radius_meters;
 
   if (!radius || !Number.isFinite(radius)) {
-    throw { code: 422, message: "Restaurante sin geocerca configurada", category: "VALIDATION" };
+    throw {
+      code: 422,
+      error_code: "GEOFENCE_NOT_CONFIGURED",
+      message: "El sitio no tiene geocerca configurada",
+      category: "VALIDATION",
+      details: { restaurant_id, restaurant_name: restaurant.name },
+    };
   }
 
   if (settings?.gps.min_accuracy_meters && options.accuracy !== null && options.accuracy !== undefined) {
     if (options.accuracy > settings.gps.min_accuracy_meters) {
-      throw { code: 422, message: "Precision GPS insuficiente", category: "VALIDATION" };
+      throw {
+        code: 422,
+        error_code: "GPS_ACCURACY_INSUFFICIENT",
+        message: "La precision del GPS es insuficiente. Muevete a un lugar con mejor senal e intenta de nuevo",
+        category: "VALIDATION",
+        details: { accuracy_m: options.accuracy, required_accuracy_m: settings.gps.min_accuracy_meters },
+      };
     }
   }
 
   const dist = earthDistance(restaurant.lat, restaurant.lng, lat, lng);
   if (dist > radius) {
-    throw { code: 409, message: "GPS fuera de radio", category: "BUSINESS" };
+    throw {
+      code: 409,
+      error_code: "GPS_OUT_OF_RANGE",
+      message: `Estas fuera del rango permitido para ${restaurant.name}: ${Math.round(dist)} m del sitio (radio ${Math.round(radius)} m)`,
+      category: "BUSINESS",
+      details: {
+        restaurant_id: restaurant.id,
+        restaurant_name: restaurant.name,
+        distance_m: Math.round(dist),
+        radius_m: Math.round(radius),
+        provided_lat: lat,
+        provided_lng: lng,
+        restaurant_lat: restaurant.lat,
+        restaurant_lng: restaurant.lng,
+      },
+    };
   }
 
   return restaurant;
@@ -62,7 +89,7 @@ export async function geoValidatorByShift(
     .single();
 
   if (shiftErr || !shift) {
-    throw { code: 422, message: "Turno invalido", category: "VALIDATION" };
+    throw { code: 422, error_code: "SHIFT_INVALID", message: "Servicio invalido", category: "VALIDATION", details: { shift_id } };
   }
 
   await geoValidatorByRestaurant(client, shift.restaurant_id, lat, lng, options);

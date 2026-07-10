@@ -28,11 +28,11 @@ export async function authGuard(req: Request): Promise<{ user: InternalUser; tok
   const rawAuth = (bearerMatch?.[1] ?? authHeader).trim();
 
   if (!rawAuth || rawAuth.toLowerCase() === "undefined" || rawAuth.toLowerCase() === "null") {
-    throw { code: 401, message: "No autenticado", category: "AUTH" };
+    throw { code: 401, error_code: "AUTH_MISSING_TOKEN", message: "No autenticado: falta la sesion. Inicia sesion de nuevo", category: "AUTH" };
   }
 
   const parsed = authHeaderSchema.safeParse(rawAuth);
-  if (!parsed.success) throw { code: 401, message: "No autenticado", category: "AUTH" };
+  if (!parsed.success) throw { code: 401, error_code: "AUTH_MALFORMED_TOKEN", message: "No autenticado: sesion mal formada. Inicia sesion de nuevo", category: "AUTH" };
 
   const token = parsed.data;
   const claims = readJwtPayload(token);
@@ -42,16 +42,16 @@ export async function authGuard(req: Request): Promise<{ user: InternalUser; tok
     const now = Math.floor(Date.now() / 1000);
 
     if (role === "anon") {
-      throw { code: 401, message: "Token anon no permitido", category: "AUTH" };
+      throw { code: 401, error_code: "AUTH_ANON_TOKEN", message: "Token anonimo no permitido. Inicia sesion", category: "AUTH" };
     }
     if (exp !== null && exp <= now) {
-      throw { code: 401, message: "Sesion expirada", category: "AUTH" };
+      throw { code: 401, error_code: "AUTH_SESSION_EXPIRED", message: "Tu sesion expiro. Inicia sesion de nuevo", category: "AUTH" };
     }
   }
 
   const { data, error } = await clientAdmin.auth.getUser(token);
   if (error || !data?.user?.id) {
-    throw { code: 401, message: "Sesion invalida", category: "AUTH" };
+    throw { code: 401, error_code: "AUTH_SESSION_INVALID", message: "Sesion invalida. Inicia sesion de nuevo", category: "AUTH" };
   }
 
   const { data: dbUser, error: dbError } = await clientAdmin
@@ -61,16 +61,16 @@ export async function authGuard(req: Request): Promise<{ user: InternalUser; tok
     .single();
 
   if (dbError || !dbUser?.id) {
-    throw { code: 403, message: "Usuario sin perfil interno", category: "PERMISSION" };
+    throw { code: 403, error_code: "USER_NO_INTERNAL_PROFILE", message: "Tu usuario no tiene perfil interno. Contacta al administrador", category: "PERMISSION" };
   }
 
   if (dbUser.is_active === false) {
-    throw { code: 403, message: "Usuario inactivo", category: "PERMISSION" };
+    throw { code: 403, error_code: "USER_INACTIVE", message: "Tu usuario esta inactivo. Contacta al administrador", category: "PERMISSION" };
   }
 
   const role = (dbUser.roles as { name?: UserRole } | null)?.name;
   if (!role || !validRoles.includes(role)) {
-    throw { code: 403, message: "Rol invalido", category: "PERMISSION" };
+    throw { code: 403, error_code: "USER_ROLE_INVALID", message: "Tu usuario no tiene un rol valido. Contacta al administrador", category: "PERMISSION" };
   }
 
   return {

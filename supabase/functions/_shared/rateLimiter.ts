@@ -16,10 +16,16 @@ export async function rateLimiter(params: {
   });
 
   if (error) {
-    throw { code: 500, message: "Fallo rate limit", category: "SYSTEM", details: error };
+    throw { code: 500, error_code: "RATE_LIMIT_CHECK_FAILED", message: "No se pudo validar el limite de solicitudes", category: "SYSTEM", details: error };
   }
 
   if (!data) {
-    throw { code: 429, message: "Rate limit excedido", category: "PERMISSION" };
+    throw {
+      code: 429,
+      error_code: "RATE_LIMITED",
+      message: "Demasiadas solicitudes en poco tiempo. Espera un momento e intenta de nuevo",
+      category: "PERMISSION",
+      details: { endpoint: params.endpoint, limit: params.limit, window_seconds: params.window_seconds },
+    };
   }
 }

@@ -151,7 +151,7 @@ export async function verifyShiftOtpCode(params: {
 }): Promise<{ verification_token: string; expires_at: string }> {
   const code = params.code.trim();
   if (!/^\d{6}$/.test(code)) {
-    throw { code: 422, message: "Codigo de acceso invalido", category: "VALIDATION" };
+    throw { code: 422, error_code: "OTP_CODE_FORMAT_INVALID", message: "El codigo debe tener 6 digitos", category: "VALIDATION" };
   }
 
   const { data: otp, error: otpError } = await clientAdmin
@@ -169,19 +169,19 @@ export async function verifyShiftOtpCode(params: {
   }
 
   if (!otp) {
-    throw { code: 409, message: "No hay codigo de acceso activo", category: "BUSINESS" };
+    throw { code: 409, error_code: "OTP_NO_ACTIVE_CODE", message: "No hay un codigo activo. Solicita uno nuevo", category: "BUSINESS" };
   }
 
   const now = Date.now();
   const otpExpires = new Date(otp.expires_at as string).getTime();
   if (!Number.isFinite(otpExpires) || otpExpires <= now) {
     await clientAdmin.from("user_phone_otps").update({ consumed_at: new Date().toISOString() }).eq("id", otp.id as number);
-    throw { code: 409, message: "Codigo de acceso expirado", category: "BUSINESS" };
+    throw { code: 409, error_code: "OTP_CODE_EXPIRED", message: "El codigo expiro. Solicita uno nuevo", category: "BUSINESS" };
   }
 
   if ((otp.attempts as number) >= (otp.max_attempts as number)) {
     await clientAdmin.from("user_phone_otps").update({ consumed_at: new Date().toISOString() }).eq("id", otp.id as number);
-    throw { code: 409, message: "Codigo de acceso bloqueado por demasiados intentos", category: "BUSINESS" };
+    throw { code: 409, error_code: "OTP_CODE_BLOCKED", message: "Codigo bloqueado por demasiados intentos. Solicita uno nuevo", category: "BUSINESS" };
   }
 
   const expectedHash = otp.code_hash as string;
@@ -205,7 +205,13 @@ export async function verifyShiftOtpCode(params: {
       throw { code: 500, message: "No se pudo actualizar OTP", category: "SYSTEM", details: attemptError };
     }
 
-    throw { code: 422, message: "Codigo de acceso incorrecto", category: "VALIDATION" };
+    throw {
+      code: 422,
+      error_code: "OTP_CODE_INCORRECT",
+      message: "Codigo incorrecto",
+      category: "VALIDATION",
+      details: { attempts, max_attempts: maxAttempts, remaining_attempts: Math.max(0, maxAttempts - attempts) },
+    };
   }
 
   const nowIso = new Date().toISOString();
@@ -267,7 +273,8 @@ export async function requireShiftOtpSession(params: {
   if (!token || token.length < 16 || token.length > 512) {
     throw {
       code: 403,
-      message: "Codigo de acceso requerido para iniciar servicio",
+      error_code: "OTP_SESSION_REQUIRED",
+      message: "Necesitas verificar tu codigo de acceso (OTP) antes de iniciar el servicio",
       category: "PERMISSION",
     };
   }
@@ -285,11 +292,11 @@ export async function requireShiftOtpSession(params: {
     .maybeSingle();
 
   if (error) {
-    throw { code: 500, message: "No se pudo validar sesion OTP", category: "SYSTEM", details: error };
+    throw { code: 500, error_code: "OTP_SESSION_CHECK_FAILED", message: "No se pudo validar la sesion OTP", category: "SYSTEM", details: error };
   }
 
   if (!session) {
-    throw { code: 403, message: "Codigo de acceso invalido", category: "PERMISSION" };
+    throw { code: 403, error_code: "OTP_SESSION_INVALID", message: "Tu verificacion OTP no es valida para este dispositivo. Verifica de nuevo", category: "PERMISSION" };
   }
 
   const expiresAt = new Date(session.expires_at as string).getTime();
@@ -299,6 +306,6 @@ export async function requireShiftOtpSession(params: {
       .update({ revoked_at: new Date().toISOString(), updated_at: new Date().toISOString() })
       .eq("id", session.id as number);
 
-    throw { code: 403, message: "Codigo de acceso expirado", category: "PERMISSION" };
+    throw { code: 403, error_code: "OTP_SESSION_EXPIRED", message: "Tu verificacion OTP expiro. Solicita y verifica un nuevo codigo", category: "PERMISSION" };
   }
 }

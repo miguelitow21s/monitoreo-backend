@@ -39,11 +39,11 @@ export function getDeviceFingerprint(req: Request, bodyFingerprint?: string | nu
   const candidate = (bodyFingerprint ?? byHeader ?? "").trim();
 
   if (!candidate) {
-    throw { code: 422, message: "Falta identificador de dispositivo", category: "VALIDATION" };
+    throw { code: 422, error_code: "DEVICE_FINGERPRINT_MISSING", message: "Falta el identificador del dispositivo (x-device-fingerprint)", category: "VALIDATION" };
   }
 
   if (candidate.length < MIN_FINGERPRINT_LENGTH || candidate.length > MAX_FINGERPRINT_LENGTH) {
-    throw { code: 422, message: "Identificador de dispositivo invalido", category: "VALIDATION" };
+    throw { code: 422, error_code: "DEVICE_FINGERPRINT_INVALID", message: "El identificador del dispositivo es invalido", category: "VALIDATION" };
   }
 
   return candidate;
@@ -141,14 +141,16 @@ export async function requireTrustedDevice(params: {
   if (status.first_login_binding) {
     throw {
       code: 428,
-      message: "Debes registrar tu dispositivo en el primer login",
+      error_code: "DEVICE_REGISTRATION_REQUIRED",
+      message: "Debes registrar este dispositivo antes de continuar",
       category: "PERMISSION",
     };
   }
 
   throw {
     code: 403,
-    message: "Dispositivo no confiable para esta cuenta",
+    error_code: "DEVICE_NOT_TRUSTED",
+    message: "Este dispositivo no esta autorizado para tu cuenta. Registralo o pide que revoquen el anterior",
     category: "PERMISSION",
   };
 }
@@ -202,6 +204,7 @@ export async function registerTrustedDevice(params: {
     } else {
       throw {
         code: 409,
+        error_code: "DEVICE_ALREADY_BOUND",
         message: "Esta cuenta ya esta vinculada a otro dispositivo. Revoca el dispositivo actual para registrar uno nuevo",
         category: "BUSINESS",
       };
@@ -211,6 +214,7 @@ export async function registerTrustedDevice(params: {
   if (!existing && activeCount >= MAX_TRUSTED_DEVICES_PER_USER && !params.allowDeviceReplacement) {
     throw {
       code: 409,
+      error_code: "DEVICE_ALREADY_BOUND",
       message: "Esta cuenta ya esta vinculada a otro dispositivo. Revoca el dispositivo actual para registrar uno nuevo",
       category: "BUSINESS",
     };
@@ -263,7 +267,7 @@ export async function revokeTrustedDevice(params: {
   revokedBy?: string;
 }): Promise<{ revoked_device_id: number }> {
   if (!params.deviceId && !params.fingerprint) {
-    throw { code: 422, message: "Debe indicar device_id o device_fingerprint", category: "VALIDATION" };
+    throw { code: 422, error_code: "DEVICE_REVOKE_TARGET_REQUIRED", message: "Debe indicar device_id o device_fingerprint", category: "VALIDATION" };
   }
 
   let query = clientAdmin
@@ -286,7 +290,7 @@ export async function revokeTrustedDevice(params: {
   }
 
   if (!target?.id) {
-    throw { code: 404, message: "Dispositivo confiable no encontrado", category: "BUSINESS" };
+    throw { code: 404, error_code: "DEVICE_NOT_FOUND", message: "Dispositivo confiable no encontrado", category: "BUSINESS" };
   }
 
   const { error: updateError } = await clientAdmin

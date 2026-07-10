@@ -272,7 +272,7 @@ serve(async (req: Request) => {
         restaurantIds.length
           ? clientAdmin
               .from("restaurants")
-              .select("id, name, is_active, city, state, address_line, cleaning_areas")
+              .select("id, name, is_active, city, state, address_line, timezone, cleaning_areas")
               .in("id", restaurantIds)
           : Promise.resolve({ data: [], error: null }),
         assignedRestaurantIds.length > 0
@@ -322,6 +322,7 @@ serve(async (req: Request) => {
           ...active_shift,
           restaurant,
           restaurant_name: restaurant?.name ?? null,
+          restaurant_timezone: (restaurant as { timezone?: string | null } | null)?.timezone ?? null,
           scheduled_start: scheduledActive?.scheduled_start ?? null,
           scheduled_end: scheduledActive?.scheduled_end ?? null,
           scheduled_hours,
@@ -353,6 +354,8 @@ serve(async (req: Request) => {
         status: row.status,
         notes: row.notes,
         restaurant: restaurantsById.get(Number(row.restaurant_id)) ?? null,
+        restaurant_timezone:
+          (restaurantsById.get(Number(row.restaurant_id)) as { timezone?: string | null } | undefined)?.timezone ?? null,
         start_window: buildStartWindow(row.scheduled_start, row.scheduled_end, settings, now, canStartShift),
       }));
 

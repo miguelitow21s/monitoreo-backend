@@ -2,21 +2,21 @@ import { z } from "npm:zod@3.23.8";
 
 export function requireMethod(req: Request, allowed: string[]) {
   if (!allowed.includes(req.method)) {
-    throw { code: 405, message: "Metodo no permitido", category: "VALIDATION", details: { allowed } };
+    throw { code: 405, error_code: "METHOD_NOT_ALLOWED", message: "Metodo no permitido", category: "VALIDATION", details: { allowed, received: req.method } };
   }
 }
 
 export async function parseBody<T>(req: Request, schema: z.ZodType<T>): Promise<T> {
   const contentType = req.headers.get("content-type")?.toLowerCase() ?? "";
   if (!contentType.includes("application/json")) {
-    throw { code: 415, message: "Content-Type no soportado", category: "VALIDATION" };
+    throw { code: 415, error_code: "UNSUPPORTED_CONTENT_TYPE", message: "Content-Type no soportado (usa application/json)", category: "VALIDATION", details: { received: contentType || null } };
   }
 
   let raw: unknown;
   try {
     raw = await req.json();
   } catch {
-    throw { code: 422, message: "Body JSON invalido", category: "VALIDATION" };
+    throw { code: 422, error_code: "INVALID_JSON_BODY", message: "El cuerpo de la solicitud no es JSON valido", category: "VALIDATION" };
   }
 
   const parsed = schema.safeParse(raw);
@@ -27,9 +27,10 @@ export async function parseBody<T>(req: Request, schema: z.ZodType<T>): Promise<
     const friendly = `Payload invalido: ${issuePath} ${issueMessage}`.trim();
     throw {
       code: 422,
+      error_code: "PAYLOAD_VALIDATION_FAILED",
       message: friendly,
       category: "VALIDATION",
-      details: parsed.error.flatten(),
+      details: { field: issuePath, issue: issueMessage, ...parsed.error.flatten() },
     };
   }
 
@@ -39,7 +40,7 @@ export async function parseBody<T>(req: Request, schema: z.ZodType<T>): Promise<
 export function requireIdempotencyKey(req: Request): string {
   const key = req.headers.get("Idempotency-Key")?.trim();
   if (!key || key.length < 8 || key.length > 128) {
-    throw { code: 422, message: "Idempotency-Key invalido", category: "VALIDATION" };
+    throw { code: 422, error_code: "IDEMPOTENCY_KEY_INVALID", message: "Falta o es invalido el Idempotency-Key de la solicitud", category: "VALIDATION" };
   }
   return key;
 }
