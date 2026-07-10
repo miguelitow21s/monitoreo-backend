@@ -263,7 +263,7 @@ serve(async (req: Request) => {
     const listClient = user.role === "supervisora" ? clientAdmin : clientUser;
     let query = listClient
       .from("restaurants")
-      .select("id, name, lat, lng, radius, geofence_radius_m, is_active, address_line, city, state, postal_code, country, place_id, cleaning_areas, created_at, updated_at")
+      .select(RESTAURANT_COLUMNS)
       .order("name", { ascending: true });
 
     if (payload.is_active !== undefined) query = query.eq("is_active", payload.is_active);
