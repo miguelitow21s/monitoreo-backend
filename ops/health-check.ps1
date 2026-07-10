@@ -126,7 +126,11 @@ function Resolve-HealthJwt([string]$label, [string]$jwtEnv, [string]$emailEnv, [
   $email = Get-OptionalEnv $emailEnv
   $password = Get-OptionalEnv $passwordEnv
   if ($email -and $password) {
-    return Get-AuthToken -supabaseUrl $supabaseUrl -anonKey $anonKey -email $email -password $password -label $label
+    try {
+      return Get-AuthToken -supabaseUrl $supabaseUrl -anonKey $anonKey -email $email -password $password -label $label
+    } catch {
+      Write-Host "[WARN] $label login failed via $emailEnv/$passwordEnv; skipping role-dependent checks. $($_.Exception.Message)"
+    }
   }
 
   $jwt = Get-OptionalEnv $jwtEnv
