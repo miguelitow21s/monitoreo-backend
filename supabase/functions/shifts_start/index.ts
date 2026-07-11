@@ -18,6 +18,7 @@ import { requireTrustedDevice } from "../_shared/deviceTrust.ts";
 import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { requireShiftOtpSession } from "../_shared/otp.ts";
 import { notifyShiftEvent, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
+import { runInBackground } from "../_shared/background.ts";
 import { getSystemSettings } from "../_shared/systemSettings.ts";
 
 const endpoint = "shifts_start";
@@ -169,30 +170,31 @@ serve(async (req) => {
       throw { code: 409, error_code: "SHIFT_INSERT_FAILED", message: "No se pudo iniciar el servicio", category: "BUSINESS", details: error };
     }
 
-    const { error: scheduleUpdateError } = await clientAdmin
-      .from("scheduled_shifts")
-      .update({ status: "started", started_shift_id: data.id, updated_at: new Date().toISOString() })
-      .eq("id", scheduledShift.id);
-
-    const { error: taskLinkError } = await clientAdmin
-      .from("operational_tasks")
-      .update({ shift_id: data.id, updated_at: new Date().toISOString() })
-      .eq("scheduled_shift_id", scheduledShift.id)
-      .is("shift_id", null);
-
-    const { error: healthError } = await clientUser
-      .from("shift_health_forms")
-      .upsert(
-        {
-          shift_id: data.id,
-          phase: "start",
-          fit_for_work,
-          declaration: declaration ?? null,
-          recorded_at: new Date().toISOString(),
-          recorded_by: user.id,
-        },
-        { onConflict: "shift_id,phase" }
-      );
+    // These three writes are independent of each other -> run in parallel (audit M2).
+    const [{ error: scheduleUpdateError }, { error: taskLinkError }, { error: healthError }] = await Promise.all([
+      clientAdmin
+        .from("scheduled_shifts")
+        .update({ status: "started", started_shift_id: data.id, updated_at: new Date().toISOString() })
+        .eq("id", scheduledShift.id),
+      clientAdmin
+        .from("operational_tasks")
+        .update({ shift_id: data.id, updated_at: new Date().toISOString() })
+        .eq("scheduled_shift_id", scheduledShift.id)
+        .is("shift_id", null),
+      clientUser
+        .from("shift_health_forms")
+        .upsert(
+          {
+            shift_id: data.id,
+            phase: "start",
+            fit_for_work,
+            declaration: declaration ?? null,
+            recorded_at: new Date().toISOString(),
+            recorded_by: user.id,
+          },
+          { onConflict: "shift_id,phase" }
+        ),
+    ]);
 
     if (healthError) {
       throw { code: 409, error_code: "HEALTH_FORM_FAILED", message: "No se pudo registrar el formulario de ingreso", category: "BUSINESS", details: healthError };
@@ -219,7 +221,7 @@ serve(async (req) => {
       shiftId: data.id,
       actorUserId: user.id,
     });
-    await safeDispatchPendingEmailNotifications({ limit: 25, maxAttempts: 5 });
+    runInBackground(safeDispatchPendingEmailNotifications({ limit: 25, maxAttempts: 5 }));
 
     const { data: openTasks, error: openTasksError } = await clientUser
       .from("operational_tasks")

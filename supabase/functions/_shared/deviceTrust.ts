@@ -314,7 +314,34 @@ export async function revokeTrustedDevice(params: {
 export async function revokeAllTrustedDevicesForUser(params: {
   targetUserId: string;
   revokedBy: string;
+  actorRole: "super_admin" | "supervisora" | "empleado";
 }): Promise<{ target_user_id: string; revoked_count: number }> {
+  // Scope check (audit A1): a supervisora must not be able to revoke devices of
+  // admins or other supervisoras — only of empleados. super_admin may revoke anyone.
+  const { data: target, error: targetError } = await clientAdmin
+    .from("users")
+    .select("id, roles(name)")
+    .eq("id", params.targetUserId)
+    .maybeSingle();
+
+  if (targetError) {
+    throw { code: 500, error_code: "DEVICE_REVOKE_TARGET_LOOKUP_FAILED", message: "No se pudo consultar el usuario objetivo", category: "SYSTEM", details: targetError };
+  }
+  if (!target) {
+    throw { code: 404, error_code: "USER_NOT_FOUND", message: "Usuario objetivo no encontrado", category: "BUSINESS", details: { target_user_id: params.targetUserId } };
+  }
+
+  const targetRole = (target.roles as { name?: string } | null)?.name ?? null;
+  if (params.actorRole === "supervisora" && targetRole !== "empleado") {
+    throw {
+      code: 403,
+      error_code: "DEVICE_REVOKE_SCOPE_DENIED",
+      message: "Una supervisora solo puede revocar dispositivos de empleados",
+      category: "PERMISSION",
+      details: { target_role: targetRole },
+    };
+  }
+
   const nowIso = new Date().toISOString();
 
   const { data, error } = await clientAdmin

@@ -270,8 +270,12 @@ serve(async (req: Request) => {
 
     const searchRaw = payload.search?.trim();
     if (searchRaw) {
-      const term = searchRaw.replace(/,/g, " ");
-      query = query.or(`name.ilike.%${term}%,city.ilike.%${term}%,state.ilike.%${term}%`);
+      // Sanitize: only letters/numbers/space/._- so the input can't break the
+      // PostgREST or() parser (commas, parentheses, %, backslash). (audit M3)
+      const term = searchRaw.replace(/[^\p{L}\p{N}\s._-]/gu, " ").trim();
+      if (term) {
+        query = query.or(`name.ilike.%${term}%,city.ilike.%${term}%,state.ilike.%${term}%`);
+      }
     }
 
     query = query.limit(payload.limit);

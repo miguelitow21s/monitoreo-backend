@@ -14,6 +14,7 @@ import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { notifyIncidentCreated, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
+import { runInBackground } from "../_shared/background.ts";
 import { getSystemSettings, resolveCleaningAreas } from "../_shared/systemSettings.ts";
 
 const endpoint = "employee_self_service";
@@ -519,7 +520,7 @@ serve(async (req: Request) => {
       shiftId: payload.shift_id,
       actorUserId: user.id,
     });
-    await safeDispatchPendingEmailNotifications({ limit: 25, maxAttempts: 5 });
+    runInBackground(safeDispatchPendingEmailNotifications({ limit: 25, maxAttempts: 5 }));
 
     const successData = {
       incident_id: incident.id,

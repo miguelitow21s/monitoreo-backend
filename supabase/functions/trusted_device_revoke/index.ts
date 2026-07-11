@@ -69,6 +69,7 @@ serve(async (req) => {
       revoked = await revokeAllTrustedDevicesForUser({
         targetUserId: payload.target_user_id,
         revokedBy: user.id,
+        actorRole: user.role,
       });
     } else {
       revoked = await revokeTrustedDevice({

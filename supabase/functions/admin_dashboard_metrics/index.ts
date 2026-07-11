@@ -130,11 +130,6 @@ serve(async (req: Request) => {
       .gte("start_time", fromIso)
       .lte("start_time", toIso);
     if (payload.restaurant_id) shiftsQuery = shiftsQuery.eq("restaurant_id", payload.restaurant_id);
-    const { data: shiftsRaw, error: shiftsError } = await shiftsQuery;
-
-    if (shiftsError) {
-      throw { code: 409, message: "No se pudieron cargar turnos", category: "BUSINESS", details: shiftsError };
-    }
 
     let scheduledQuery = clientAdmin
       .from("scheduled_shifts")
@@ -142,11 +137,6 @@ serve(async (req: Request) => {
       .gte("scheduled_start", fromIso)
       .lte("scheduled_start", toIso);
     if (payload.restaurant_id) scheduledQuery = scheduledQuery.eq("restaurant_id", payload.restaurant_id);
-    const { data: scheduledRaw, error: scheduledError } = await scheduledQuery;
-
-    if (scheduledError) {
-      throw { code: 409, message: "No se pudieron cargar turnos programados", category: "BUSINESS", details: scheduledError };
-    }
 
     let tasksQuery = clientAdmin
       .from("operational_tasks")
@@ -154,11 +144,6 @@ serve(async (req: Request) => {
       .gte("updated_at", fromIso)
       .lte("updated_at", toIso);
     if (payload.restaurant_id) tasksQuery = tasksQuery.eq("restaurant_id", payload.restaurant_id);
-    const { data: tasksRaw, error: tasksError } = await tasksQuery;
-
-    if (tasksError) {
-      throw { code: 409, message: "No se pudieron cargar tareas operativas", category: "BUSINESS", details: tasksError };
-    }
 
     let deliveriesQuery = clientAdmin
       .from("supply_deliveries")
@@ -166,20 +151,35 @@ serve(async (req: Request) => {
       .gte("delivered_at", fromIso)
       .lte("delivered_at", toIso);
     if (payload.restaurant_id) deliveriesQuery = deliveriesQuery.eq("restaurant_id", payload.restaurant_id);
-    const { data: deliveriesRaw, error: deliveriesError } = await deliveriesQuery;
 
+    const incidentsQuery = clientAdmin.from("incidents").select("id, shift_id, created_at").gte("created_at", fromIso).lte("created_at", toIso);
+    const suppliesQuery = clientAdmin.from("supplies").select("id, unit_cost");
+
+    // These six queries are independent -> run in parallel (audit M3).
+    const [
+      { data: shiftsRaw, error: shiftsError },
+      { data: scheduledRaw, error: scheduledError },
+      { data: tasksRaw, error: tasksError },
+      { data: deliveriesRaw, error: deliveriesError },
+      { data: incidentsRaw, error: incidentsError },
+      { data: suppliesRaw, error: suppliesError },
+    ] = await Promise.all([shiftsQuery, scheduledQuery, tasksQuery, deliveriesQuery, incidentsQuery, suppliesQuery]);
+
+    if (shiftsError) {
+      throw { code: 409, message: "No se pudieron cargar turnos", category: "BUSINESS", details: shiftsError };
+    }
+    if (scheduledError) {
+      throw { code: 409, message: "No se pudieron cargar turnos programados", category: "BUSINESS", details: scheduledError };
+    }
+    if (tasksError) {
+      throw { code: 409, message: "No se pudieron cargar tareas operativas", category: "BUSINESS", details: tasksError };
+    }
     if (deliveriesError) {
       throw { code: 409, message: "No se pudieron cargar entregas de insumos", category: "BUSINESS", details: deliveriesError };
     }
-
-    let incidentsQuery = clientAdmin.from("incidents").select("id, shift_id, created_at").gte("created_at", fromIso).lte("created_at", toIso);
-    const { data: incidentsRaw, error: incidentsError } = await incidentsQuery;
-
     if (incidentsError) {
       throw { code: 409, message: "No se pudieron cargar incidentes", category: "BUSINESS", details: incidentsError };
     }
-
-    const { data: suppliesRaw, error: suppliesError } = await clientAdmin.from("supplies").select("id, unit_cost");
     if (suppliesError) {
       throw { code: 409, message: "No se pudieron cargar costos de insumos", category: "BUSINESS", details: suppliesError };
     }

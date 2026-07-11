@@ -18,6 +18,7 @@ import { requireTrustedDevice } from "../_shared/deviceTrust.ts";
 import { requireShiftOtpSession } from "../_shared/otp.ts";
 import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { notifyShiftEvent, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
+import { runInBackground } from "../_shared/background.ts";
 import { getSystemSettings } from "../_shared/systemSettings.ts";
 
 const endpoint = "shifts_end";
@@ -253,7 +254,7 @@ serve(async (req) => {
       shiftId: shift_id,
       actorUserId: user.id,
     });
-    await safeDispatchPendingEmailNotifications({ limit: 25, maxAttempts: 5 });
+    runInBackground(safeDispatchPendingEmailNotifications({ limit: 25, maxAttempts: 5 }));
 
     const successPayload = { success: true, data: {}, error: null, request_id };
     await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });

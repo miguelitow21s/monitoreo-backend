@@ -16,6 +16,7 @@ import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { requireTrustedDevice } from "../_shared/deviceTrust.ts";
 import { requireShiftOtpSession } from "../_shared/otp.ts";
 import { notifyIncidentCreated, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
+import { runInBackground } from "../_shared/background.ts";
 
 const endpoint = "incidents_create";
 const payloadSchema = z.object({
@@ -128,7 +129,7 @@ serve(async (req) => {
       shiftId: shift_id,
       actorUserId: user.id,
     });
-    await safeDispatchPendingEmailNotifications({ limit: 25, maxAttempts: 5 });
+    runInBackground(safeDispatchPendingEmailNotifications({ limit: 25, maxAttempts: 5 }));
 
     const successPayload = { success: true, data: { incident_id: data.id, task_id: taskId }, error: null, request_id };
     await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });

@@ -16,6 +16,7 @@ import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { getSystemSettings } from "../_shared/systemSettings.ts";
 import { randomNumericCode } from "../_shared/crypto.ts";
 import { notifyContractorCreated, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
+import { runInBackground } from "../_shared/background.ts";
 
 const endpoint = "admin_users_manage";
 
@@ -277,7 +278,7 @@ serve(async (req: Request) => {
             role: payload.role,
             pin: password,
           });
-          await safeDispatchPendingEmailNotifications({ limit: 5, maxAttempts: 3 });
+          runInBackground(safeDispatchPendingEmailNotifications({ limit: 5, maxAttempts: 3 }));
           emailSent = true;
         } catch {
           // PIN email failure is non-fatal
@@ -468,10 +469,14 @@ serve(async (req: Request) => {
 
     const searchRaw = payload.search?.trim();
     if (searchRaw) {
-      const term = searchRaw.replace(/,/g, " ");
-      query = query.or(
-        `email.ilike.%${term}%,full_name.ilike.%${term}%,first_name.ilike.%${term}%,last_name.ilike.%${term}%`
-      );
+      // Sanitize so the input can't break the PostgREST or() parser (audit M3).
+      // Keep @ and + for emails, plus letters/numbers/space/._-.
+      const term = searchRaw.replace(/[^\p{L}\p{N}\s._@+-]/gu, " ").trim();
+      if (term) {
+        query = query.or(
+          `email.ilike.%${term}%,full_name.ilike.%${term}%,first_name.ilike.%${term}%,last_name.ilike.%${term}%`
+        );
+      }
     }
 
     query = query.limit(payload.limit);

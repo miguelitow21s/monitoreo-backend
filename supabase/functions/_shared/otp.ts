@@ -136,8 +136,12 @@ export async function issueShiftOtp(params: {
     delivery_status: deliveryStatus,
   };
 
-  const isProduction = (Deno.env.get("ENVIRONMENT") ?? "").toLowerCase() === "production";
-  if ((debugMode || screenMode) && !isProduction) {
+  // Only ever return the plaintext code in an explicitly non-production dev
+  // environment. If ENVIRONMENT is unset or unknown, default to NOT leaking
+  // (audit M5): a misconfigured prod must never expose the OTP code.
+  const env = (Deno.env.get("ENVIRONMENT") ?? "").toLowerCase();
+  const isDevEnv = env === "development" || env === "local" || env === "dev" || env === "test";
+  if ((debugMode || screenMode) && isDevEnv) {
     result.debug_code = code;
   }
 
