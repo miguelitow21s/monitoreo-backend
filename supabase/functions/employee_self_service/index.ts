@@ -236,7 +236,7 @@ serve(async (req: Request) => {
           .limit(payload.schedule_limit),
         clientAdmin
           .from("operational_tasks")
-          .select("id, title, priority, status, due_at, restaurant_id, task_scope")
+          .select("id, title, priority, status, due_at, restaurant_id, task_scope, requires_evidence, evidence_type")
           .eq("assigned_employee_id", user.id)
           .in("status", ["pending", "in_progress"])
           .order("updated_at", { ascending: false })
@@ -279,7 +279,7 @@ serve(async (req: Request) => {
         assignedRestaurantIds.length > 0
           ? clientAdmin
               .from("operational_tasks")
-              .select("id, title, priority, status, due_at, restaurant_id, task_scope")
+              .select("id, title, priority, status, due_at, restaurant_id, task_scope, requires_evidence, evidence_type")
               .eq("task_scope", "restaurant")
               .in("restaurant_id", assignedRestaurantIds)
               .in("status", ["pending", "in_progress"])

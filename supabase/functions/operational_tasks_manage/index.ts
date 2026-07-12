@@ -18,7 +18,25 @@ import { getSystemSettings } from "../_shared/systemSettings.ts";
 const endpoint = "operational_tasks_manage";
 const evidenceBucket = "shift-evidence";
 const allowedImageMimeValues = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"] as const;
-const imageMimeSchema = z.enum(allowedImageMimeValues);
+const allowedVideoMimeValues = ["video/mp4", "video/quicktime", "video/webm"] as const;
+const allowedEvidenceMimeValues = [...allowedImageMimeValues, ...allowedVideoMimeValues] as const;
+const evidenceMimeSchema = z.enum(allowedEvidenceMimeValues);
+
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024; // 8 MB
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // 50 MB
+
+function isVideoMime(mime: string): boolean {
+  return (allowedVideoMimeValues as readonly string[]).includes(mime);
+}
+function isImageMime(mime: string): boolean {
+  return (allowedImageMimeValues as readonly string[]).includes(mime);
+}
+// Which mimes are acceptable for a task given its evidence_type.
+function allowedMimesForEvidenceType(evidenceType: string): string[] {
+  if (evidenceType === "video") return [...allowedVideoMimeValues];
+  if (evidenceType === "any") return [...allowedEvidenceMimeValues];
+  return [...allowedImageMimeValues]; // "photo" (default)
+}
 
 const createAction = z.object({
   action: z.literal("create"),
@@ -33,6 +51,7 @@ const createAction = z.object({
   priority: z.enum(["low", "normal", "high", "critical"]).default("normal"),
   due_at: z.string().datetime().optional().nullable(),
   requires_evidence: z.boolean().optional(),
+  evidence_type: z.enum(["photo", "video", "any"]).optional(),
   origin_page: z.string().trim().max(100).optional(),
 });
 
@@ -73,7 +92,7 @@ const requestManifestUploadAction = z.object({
 const requestEvidenceUploadAction = z.object({
   action: z.literal("request_evidence_upload"),
   task_id: z.number().int().positive(),
-  mime_type: imageMimeSchema.default("image/jpeg"),
+  mime_type: evidenceMimeSchema.default("image/jpeg"),
 });
 
 const completeAction = z.object({
@@ -121,6 +140,9 @@ function mimeToExtension(mimeType: string) {
   if (mimeType === "image/webp") return "webp";
   if (mimeType === "image/heic") return "heic";
   if (mimeType === "image/heif") return "heif";
+  if (mimeType === "video/mp4") return "mp4";
+  if (mimeType === "video/quicktime") return "mov";
+  if (mimeType === "video/webm") return "webm";
   return "json";
 }
 
@@ -134,6 +156,9 @@ function inferMimeType(path: string, blobType: string) {
   if (lower.endsWith(".webp")) return "image/webp";
   if (lower.endsWith(".heic")) return "image/heic";
   if (lower.endsWith(".heif")) return "image/heif";
+  if (lower.endsWith(".mp4")) return "video/mp4";
+  if (lower.endsWith(".mov")) return "video/quicktime";
+  if (lower.endsWith(".webm")) return "video/webm";
   if (lower.endsWith(".json")) return "application/json";
   return "application/octet-stream";
 }
@@ -338,6 +363,7 @@ serve(async (req: Request) => {
             status: "pending",
             due_at: payload.due_at ?? null,
             requires_evidence: payload.requires_evidence ?? true,
+            evidence_type: payload.evidence_type ?? "photo",
             created_at: nowIso,
             updated_at: nowIso,
           })
@@ -474,6 +500,7 @@ serve(async (req: Request) => {
             status: "pending",
             due_at: payload.due_at ?? null,
             requires_evidence: payload.requires_evidence ?? true,
+            evidence_type: payload.evidence_type ?? "photo",
             created_at: nowIso,
             updated_at: nowIso,
           })
@@ -902,12 +929,28 @@ serve(async (req: Request) => {
 
       const { data: task, error: taskError } = await clientUser
         .from("operational_tasks")
-        .select("id, assigned_employee_id, task_scope")
+        .select("id, assigned_employee_id, task_scope, evidence_type")
         .eq("id", payload.task_id)
         .single();
 
       if (taskError || !task) {
         throw { code: 404, message: "Tarea operativa no encontrada", category: "BUSINESS", details: taskError };
+      }
+
+      const evidenceType = String(task.evidence_type ?? "photo");
+      const allowedForTask = allowedMimesForEvidenceType(evidenceType);
+      if (!allowedForTask.includes(payload.mime_type)) {
+        throw {
+          code: 422,
+          error_code: "EVIDENCE_MIME_NOT_ALLOWED_FOR_TASK",
+          message: evidenceType === "video"
+            ? "Esta tarea requiere un video como evidencia"
+            : evidenceType === "photo"
+              ? "Esta tarea requiere una foto como evidencia"
+              : "Tipo de evidencia no permitido para esta tarea",
+          category: "VALIDATION",
+          details: { evidence_type: evidenceType, requested_mime: payload.mime_type, allowed_mime: allowedForTask },
+        };
       }
 
       const actorForPath = task.task_scope === "restaurant"
@@ -926,8 +969,9 @@ serve(async (req: Request) => {
           upload: data,
           bucket: evidenceBucket,
           path,
-          allowed_mime: [...allowedImageMimeValues],
-          max_bytes: 8 * 1024 * 1024,
+          evidence_type: evidenceType,
+          allowed_mime: allowedForTask,
+          max_bytes: isVideoMime(payload.mime_type) ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES,
         },
         error: null,
         request_id,
@@ -942,7 +986,7 @@ serve(async (req: Request) => {
 
       const { data: task, error: taskError } = await clientUser
         .from("operational_tasks")
-        .select("id, restaurant_id, assigned_employee_id, task_scope, requires_evidence")
+        .select("id, restaurant_id, assigned_employee_id, task_scope, requires_evidence, evidence_type")
         .eq("id", payload.task_id)
         .single();
 
@@ -981,14 +1025,35 @@ serve(async (req: Request) => {
         throw { code: 422, message: "Evidencia no disponible en storage", category: "VALIDATION", details: downloadError };
       }
 
-      if (fileBlob.size <= 0 || fileBlob.size > 8 * 1024 * 1024) {
-        throw { code: 422, message: "Tamano de evidencia invalido", category: "VALIDATION", details: { size: fileBlob.size } };
-      }
-
       const evidenceMimeType = inferMimeType(payload.evidence_path, fileBlob.type);
-      const allowedMime = ["application/json", ...allowedImageMimeValues];
+      const allowedMime = ["application/json", ...allowedEvidenceMimeValues];
       if (!allowedMime.includes(evidenceMimeType)) {
         throw { code: 422, message: "Mime de evidencia no permitido", category: "VALIDATION", details: { mime_type: evidenceMimeType } };
+      }
+
+      // Size cap depends on media kind (videos are allowed to be larger).
+      const maxBytes = isVideoMime(evidenceMimeType) ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+      if (fileBlob.size <= 0 || fileBlob.size > maxBytes) {
+        throw { code: 422, message: "Tamano de evidencia invalido", category: "VALIDATION", details: { size: fileBlob.size, max_bytes: maxBytes } };
+      }
+
+      // Real media (not the JSON manifest) must match the task's required evidence_type.
+      const taskEvidenceType = String(task.evidence_type ?? "photo");
+      if (evidenceMimeType !== "application/json") {
+        const allowedForTask = allowedMimesForEvidenceType(taskEvidenceType);
+        if (!allowedForTask.includes(evidenceMimeType)) {
+          throw {
+            code: 422,
+            error_code: "EVIDENCE_TYPE_MISMATCH",
+            message: taskEvidenceType === "video"
+              ? "Esta tarea requiere un video como evidencia"
+              : taskEvidenceType === "photo"
+                ? "Esta tarea requiere una foto como evidencia"
+                : "Tipo de evidencia no permitido para esta tarea",
+            category: "VALIDATION",
+            details: { evidence_type: taskEvidenceType, provided_mime: evidenceMimeType, allowed_mime: allowedForTask },
+          };
+        }
       }
 
       if (evidenceMimeType === "application/json") {
@@ -1072,7 +1137,7 @@ serve(async (req: Request) => {
 
       let query = clientUser
         .from("operational_tasks")
-        .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
+        .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, evidence_type, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
         .in("status", ["pending", "in_progress"])
         .order("updated_at", { ascending: false })
         .limit(payload.limit);
@@ -1107,7 +1172,7 @@ serve(async (req: Request) => {
 
     let query = clientUser
       .from("operational_tasks")
-      .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
+      .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, evidence_type, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
       .order("updated_at", { ascending: false })
       .limit(payload.limit);
 
