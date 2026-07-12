@@ -52,6 +52,7 @@ const createAction = z.object({
   due_at: z.string().datetime().optional().nullable(),
   requires_evidence: z.boolean().optional(),
   evidence_type: z.enum(["photo", "video", "any"]).optional(),
+  instructions_video_path: z.string().trim().max(500).optional().nullable(),
   origin_page: z.string().trim().max(100).optional(),
 });
 
@@ -95,6 +96,14 @@ const requestEvidenceUploadAction = z.object({
   mime_type: evidenceMimeSchema.default("image/jpeg"),
 });
 
+// Inspector uploads an instructions video BEFORE the task exists (no task_id).
+const requestInstructionsUploadAction = z.object({
+  action: z.literal("request_instructions_upload"),
+  restaurant_id: z.number().int().positive(),
+  content_type: z.enum(allowedVideoMimeValues).default("video/mp4"),
+  filename: z.string().trim().max(200).optional(),
+});
+
 const completeAction = z.object({
   action: z.literal("complete"),
   task_id: z.number().int().positive(),
@@ -123,6 +132,7 @@ const payloadSchema = z.discriminatedUnion("action", [
   closeAction,
   requestManifestUploadAction,
   requestEvidenceUploadAction,
+  requestInstructionsUploadAction,
   completeAction,
   listMyOpenAction,
   listSupervisionAction,
@@ -316,6 +326,18 @@ serve(async (req: Request) => {
     if (payload.action === "create") {
       roleGuard(user, ["supervisora", "super_admin"]);
 
+      // Guard the instructions video path so a task can't be pointed at an
+      // arbitrary storage object; it must come from request_instructions_upload.
+      if (payload.instructions_video_path && !payload.instructions_video_path.startsWith("task-instructions/")) {
+        throw {
+          code: 422,
+          error_code: "INSTRUCTIONS_VIDEO_PATH_INVALID",
+          message: "Ruta de video de instrucciones invalida",
+          category: "VALIDATION",
+          details: { instructions_video_path: payload.instructions_video_path },
+        };
+      }
+
       const isRestaurantScope = payload.task_scope === "restaurant" || payload.scope === "restaurant";
 
       if (isRestaurantScope) {
@@ -364,6 +386,7 @@ serve(async (req: Request) => {
             due_at: payload.due_at ?? null,
             requires_evidence: payload.requires_evidence ?? true,
             evidence_type: payload.evidence_type ?? "photo",
+            instructions_video_path: payload.instructions_video_path ?? null,
             created_at: nowIso,
             updated_at: nowIso,
           })
@@ -501,6 +524,7 @@ serve(async (req: Request) => {
             due_at: payload.due_at ?? null,
             requires_evidence: payload.requires_evidence ?? true,
             evidence_type: payload.evidence_type ?? "photo",
+            instructions_video_path: payload.instructions_video_path ?? null,
             created_at: nowIso,
             updated_at: nowIso,
           })
@@ -981,6 +1005,56 @@ serve(async (req: Request) => {
       return response(true, successPayload.data, null, request_id);
     }
 
+    if (payload.action === "request_instructions_upload") {
+      roleGuard(user, ["supervisora", "super_admin"]);
+
+      const { data: restaurant, error: restaurantError } = await clientAdmin
+        .from("restaurants")
+        .select("id")
+        .eq("id", payload.restaurant_id)
+        .maybeSingle();
+
+      if (restaurantError || !restaurant) {
+        throw {
+          code: 404,
+          error_code: "RESTAURANT_NOT_FOUND",
+          message: "Restaurante no encontrado",
+          category: "BUSINESS",
+          details: { restaurant_id: payload.restaurant_id },
+        };
+      }
+
+      if (user.role === "supervisora") {
+        await ensureSupervisorRestaurantAccess(user.id, payload.restaurant_id);
+      }
+
+      const extension = mimeToExtension(payload.content_type);
+      const path = `task-instructions/${payload.restaurant_id}/${request_id}.${extension}`;
+      const { data, error } = await clientAdmin.storage.from(evidenceBucket).createSignedUploadUrl(path);
+      if (error || !data) {
+        throw { code: 500, message: "No se pudo generar URL de carga para video de instrucciones", category: "SYSTEM", details: error };
+      }
+
+      const successPayload = {
+        success: true,
+        data: {
+          signedUrl: data.signedUrl,
+          token: data.token,
+          path,
+          upload: data,
+          bucket: evidenceBucket,
+          content_type: payload.content_type,
+          allowed_mime: [...allowedVideoMimeValues],
+          max_bytes: MAX_VIDEO_BYTES,
+        },
+        error: null,
+        request_id,
+      };
+
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
     if (payload.action === "complete") {
       roleGuard(user, ["empleado", "supervisora", "super_admin"]);
 
@@ -1137,7 +1211,7 @@ serve(async (req: Request) => {
 
       let query = clientUser
         .from("operational_tasks")
-        .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, evidence_type, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
+        .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, evidence_type, instructions_video_path, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
         .in("status", ["pending", "in_progress"])
         .order("updated_at", { ascending: false })
         .limit(payload.limit);
@@ -1157,9 +1231,21 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se pudo listar tareas abiertas", category: "BUSINESS", details: error };
       }
 
-      const items = (data ?? []).map((row) => ({
+      // Sign instructions videos (inspector -> contractor, download-only) in one batch.
+      const rows = data ?? [];
+      const instructionPaths = [...new Set(rows.map((r) => r.instructions_video_path).filter((p) => typeof p === "string" && p.length > 0))];
+      const signedByPath = new Map<string, string>();
+      if (instructionPaths.length > 0) {
+        const { data: signed } = await clientAdmin.storage.from(evidenceBucket).createSignedUrls(instructionPaths, 7200);
+        (signed ?? []).forEach((s, i) => {
+          if (s && s.signedUrl && !s.error) signedByPath.set(instructionPaths[i], s.signedUrl);
+        });
+      }
+
+      const items = rows.map((row) => ({
         ...row,
         task_id: row.id,
+        instructions_video_url: row.instructions_video_path ? (signedByPath.get(row.instructions_video_path) ?? null) : null,
         notes_required: settings.tasks.require_special_task_notes === true,
       }));
 
@@ -1172,7 +1258,7 @@ serve(async (req: Request) => {
 
     let query = clientUser
       .from("operational_tasks")
-      .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, evidence_type, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
+      .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, evidence_type, instructions_video_path, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
       .order("updated_at", { ascending: false })
       .limit(payload.limit);
 
