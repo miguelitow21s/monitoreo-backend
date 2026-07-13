@@ -31,11 +31,12 @@ function isVideoMime(mime: string): boolean {
 function isImageMime(mime: string): boolean {
   return (allowedImageMimeValues as readonly string[]).includes(mime);
 }
-// Which mimes are acceptable for a task given its evidence_type.
-function allowedMimesForEvidenceType(evidenceType: string): string[] {
-  if (evidenceType === "video") return [...allowedVideoMimeValues];
-  if (evidenceType === "any") return [...allowedEvidenceMimeValues];
-  return [...allowedImageMimeValues]; // "photo" (default)
+// Which mimes are acceptable as CONTRACTOR EVIDENCE for a task.
+// Contractor evidence is photo-only: the DB CHECK + guard trigger (migration 043)
+// reject video mimes on operational_tasks.evidence_mime_type, so video evidence
+// can't be completed. (The inspector's instructions video is a separate column.)
+function allowedMimesForEvidenceType(_evidenceType: string): string[] {
+  return [...allowedImageMimeValues];
 }
 
 const createAction = z.object({
@@ -325,6 +326,18 @@ serve(async (req: Request) => {
 
     if (payload.action === "create") {
       roleGuard(user, ["supervisora", "super_admin"]);
+
+      // Contractor video evidence isn't supported at the DB level yet (043 CHECK +
+      // trigger accept only images/json). Reject it at creation so a task can't
+      // get stuck at completion. The inspector instructions video is separate.
+      if (payload.evidence_type === "video") {
+        throw {
+          code: 422,
+          error_code: "EVIDENCE_TYPE_VIDEO_NOT_SUPPORTED",
+          message: "La evidencia en video aun no esta disponible; la evidencia del contratista debe ser foto",
+          category: "VALIDATION",
+        };
+      }
 
       // Guard the instructions video path so a task can't be pointed at an
       // arbitrary storage object; it must come from request_instructions_upload.
@@ -1060,12 +1073,24 @@ serve(async (req: Request) => {
 
       const { data: task, error: taskError } = await clientUser
         .from("operational_tasks")
-        .select("id, restaurant_id, assigned_employee_id, task_scope, requires_evidence, evidence_type")
+        .select("id, restaurant_id, assigned_employee_id, task_scope, requires_evidence, evidence_type, status")
         .eq("id", payload.task_id)
         .single();
 
       if (taskError || !task) {
         throw { code: 404, message: "Tarea operativa no encontrada", category: "BUSINESS", details: taskError };
+      }
+
+      // Don't let a cancelled/completed task be (re)completed (audit M2): other
+      // actions already guard this, complete did not.
+      if (task.status === "completed" || task.status === "cancelled") {
+        throw {
+          code: 409,
+          error_code: task.status === "completed" ? "TASK_ALREADY_COMPLETED" : "TASK_CANCELLED",
+          message: task.status === "completed" ? "La tarea ya fue completada" : "La tarea fue cancelada",
+          category: "BUSINESS",
+          details: { current_status: task.status },
+        };
       }
 
       if (user.role === "empleado") {
