@@ -177,41 +177,50 @@ serve(async (req: Request) => {
       const errors: Array<Record<string, unknown>> = [];
       const created_items: Array<Record<string, unknown>> = [];
 
-      for (let i = 0; i < entries.length; i += 1) {
-        const entry = entries[i];
-        const index = i + 1;
-        try {
-          const { data, error } = await clientUser.rpc("assign_scheduled_shift", {
-            p_employee_id: entry.employee_id,
-            p_restaurant_id: entry.restaurant_id,
-            p_scheduled_start: entry.scheduled_start,
-            p_scheduled_end: entry.scheduled_end,
-            p_notes: entry.notes ?? null,
-          });
+      // Each assign_scheduled_shift RPC is its own transaction, so process in
+      // bounded-concurrency chunks instead of 200 sequential round-trips (audit ALTO-3).
+      const CHUNK = 10;
+      const results: Array<{ index: number; ok: boolean; data?: unknown; error?: string; entry: (typeof entries)[number] }> = [];
+      for (let start = 0; start < entries.length; start += CHUNK) {
+        const chunk = entries.slice(start, start + CHUNK);
+        const chunkResults = await Promise.all(
+          chunk.map(async (entry, j) => {
+            const index = start + j + 1;
+            try {
+              const { data, error } = await clientUser.rpc("assign_scheduled_shift", {
+                p_employee_id: entry.employee_id,
+                p_restaurant_id: entry.restaurant_id,
+                p_scheduled_start: entry.scheduled_start,
+                p_scheduled_end: entry.scheduled_end,
+                p_notes: entry.notes ?? null,
+              });
+              if (error || !data) throw error ?? { message: "No se pudo asignar servicio" };
+              return { index, ok: true, data, entry };
+            } catch (err) {
+              return { index, ok: false, error: String((err as { message?: string })?.message ?? err ?? "Error"), entry };
+            }
+          })
+        );
+        results.push(...chunkResults);
+      }
 
-          if (error || !data) {
-            throw error ?? { message: "No se pudo asignar servicio" };
-          }
-
+      results.sort((a, b) => a.index - b.index);
+      for (const r of results) {
+        if (r.ok) {
           created += 1;
-          created_ids.push(Number(data));
+          created_ids.push(Number(r.data));
           created_items.push({
-            index,
-            scheduled_shift_id: data,
-            employee_id: entry.employee_id,
-            restaurant_id: entry.restaurant_id,
-            scheduled_start: entry.scheduled_start,
-            scheduled_end: entry.scheduled_end,
-            notes: entry.notes ?? null,
+            index: r.index,
+            scheduled_shift_id: r.data,
+            employee_id: r.entry.employee_id,
+            restaurant_id: r.entry.restaurant_id,
+            scheduled_start: r.entry.scheduled_start,
+            scheduled_end: r.entry.scheduled_end,
+            notes: r.entry.notes ?? null,
           });
-        } catch (err) {
+        } else {
           failed += 1;
-          const errorMessage = String((err as { message?: string })?.message ?? err ?? "Error");
-          errors.push({
-            index,
-            error: errorMessage,
-            payload: entry,
-          });
+          errors.push({ index: r.index, error: r.error, payload: r.entry });
         }
       }
 

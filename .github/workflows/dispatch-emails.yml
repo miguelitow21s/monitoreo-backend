@@ -1,0 +1,43 @@
+name: Dispatch email notifications
+
+# Scheduled dispatcher for the email queue (audit ALTO-2). Without this, queued
+# emails only go out on the best-effort inline waitUntil, and the
+# "shift not started" overdue alerts never fire automatically. Runs every 5 min,
+# logs in as the health admin (super_admin) and calls email_notifications_dispatch,
+# which enqueues overdue alerts and flushes pending emails.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: dispatch-emails
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch pending emails + overdue alerts
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          HEALTH_ADMIN_EMAIL: ${{ secrets.HEALTH_ADMIN_EMAIL }}
+          HEALTH_ADMIN_PASSWORD: ${{ secrets.HEALTH_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          BASE="${SUPABASE_URL%/}"
+          TOKEN=$(curl -sS -X POST "$BASE/auth/v1/token?grant_type=password" \
+            -H "apikey: $SUPABASE_ANON_KEY" -H "Content-Type: application/json" \
+            -d "{\"email\":\"$HEALTH_ADMIN_EMAIL\",\"password\":\"$HEALTH_ADMIN_PASSWORD\"}" \
+            | python3 -c "import sys,json;print(json.load(sys.stdin).get('access_token',''))")
+          if [ -z "$TOKEN" ]; then echo "admin login failed"; exit 1; fi
+          IK=$(python3 -c "import uuid;print(uuid.uuid4())")
+          HTTP=$(curl -sS -o /tmp/resp -w "%{http_code}" -X POST "$BASE/functions/v1/email_notifications_dispatch" \
+            -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" -H "Idempotency-Key: $IK" \
+            -d '{"enqueue_shift_not_started":true,"dispatch_limit":100,"max_attempts":5}')
+          echo "HTTP $HTTP"; cat /tmp/resp
+          [ "$HTTP" = "200" ]

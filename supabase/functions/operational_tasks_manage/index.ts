@@ -340,15 +340,21 @@ serve(async (req: Request) => {
       }
 
       // Guard the instructions video path so a task can't be pointed at an
-      // arbitrary storage object; it must come from request_instructions_upload.
-      if (payload.instructions_video_path && !payload.instructions_video_path.startsWith("task-instructions/")) {
-        throw {
-          code: 422,
-          error_code: "INSTRUCTIONS_VIDEO_PATH_INVALID",
-          message: "Ruta de video de instrucciones invalida",
-          category: "VALIDATION",
-          details: { instructions_video_path: payload.instructions_video_path },
-        };
+      // arbitrary storage object; it must have the exact shape produced by
+      // request_instructions_upload and (for restaurant scope) match the
+      // restaurant it's being attached to (audit B2).
+      if (payload.instructions_video_path) {
+        const ivp = payload.instructions_video_path;
+        const m = /^task-instructions\/(\d+)\/[0-9a-fA-F-]{36}\.(mp4|mov|webm)$/.exec(ivp);
+        if (!m || (payload.restaurant_id && Number(m[1]) !== Number(payload.restaurant_id))) {
+          throw {
+            code: 422,
+            error_code: "INSTRUCTIONS_VIDEO_PATH_INVALID",
+            message: "Ruta de video de instrucciones invalida",
+            category: "VALIDATION",
+            details: { instructions_video_path: ivp },
+          };
+        }
       }
 
       const isRestaurantScope = payload.task_scope === "restaurant" || payload.scope === "restaurant";

@@ -81,7 +81,17 @@ async function loadUserById(userId: string): Promise<Recipient | null> {
   };
 }
 
+// Short-TTL cache: admins/supervisors are the same recipients across every row
+// of a dispatch run and every notify event, so this collapses the N+1 in the
+// overdue-notification loop (audit ALTO-1) without changing its structure.
+const activeUsersByRoleCache = new Map<number, { value: Recipient[]; expiresAt: number }>();
+const ACTIVE_USERS_TTL_MS = 30_000;
+
 async function loadActiveUsersByRoleId(roleId: number): Promise<Recipient[]> {
+  const now = Date.now();
+  const cached = activeUsersByRoleCache.get(roleId);
+  if (cached && cached.expiresAt > now) return cached.value;
+
   const { data, error } = await clientAdmin
     .from("users")
     .select("id, email")
@@ -93,9 +103,12 @@ async function loadActiveUsersByRoleId(roleId: number): Promise<Recipient[]> {
     throw { code: 500, message: "No se pudieron cargar usuarios por rol", category: "SYSTEM", details: error };
   }
 
-  return ((data ?? []) as { id: string; email: string }[])
+  const value = ((data ?? []) as { id: string; email: string }[])
     .filter((row) => Boolean(row.email))
     .map((row) => ({ id: row.id, email: normalizeEmail(row.email) }));
+
+  activeUsersByRoleCache.set(roleId, { value, expiresAt: now + ACTIVE_USERS_TTL_MS });
+  return value;
 }
 
 async function loadSupervisorsForRestaurant(_restaurantId: number): Promise<Recipient[]> {

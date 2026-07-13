@@ -9,7 +9,17 @@ type ActiveLegalTerm = {
   content: string;
 };
 
+// The active legal term is near-immutable config; cache it briefly so it isn't
+// re-queried on every authenticated request (audit ALTO-4), like systemSettings.
+let cachedActiveTerm: { value: ActiveLegalTerm; expiresAt: number } | null = null;
+const LEGAL_TERM_TTL_MS = 60_000;
+
 export async function getActiveLegalTerm(): Promise<ActiveLegalTerm> {
+  const now = Date.now();
+  if (cachedActiveTerm && cachedActiveTerm.expiresAt > now) {
+    return cachedActiveTerm.value;
+  }
+
   const { data, error } = await clientAdmin
     .from("legal_terms_versions")
     .select("id, code, title, version, content")
@@ -22,7 +32,8 @@ export async function getActiveLegalTerm(): Promise<ActiveLegalTerm> {
     throw { code: 503, error_code: "LEGAL_TERM_NOT_CONFIGURED", message: "No hay version legal activa configurada", category: "SYSTEM", details: error };
   }
 
-  return data as ActiveLegalTerm;
+  cachedActiveTerm = { value: data as ActiveLegalTerm, expiresAt: now + LEGAL_TERM_TTL_MS };
+  return cachedActiveTerm.value;
 }
 
 export async function hasAcceptedActiveLegalTerm(userId: string): Promise<{ accepted: boolean; accepted_at: string | null; legal_terms_id: number | null }> {

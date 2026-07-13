@@ -58,7 +58,9 @@ $functions = @(
   'admin_supervisors_manage',
   'admin_dashboard_metrics',
   'restaurant_staff_manage',
-  'supervisor_presence_manage'
+  'supervisor_presence_manage',
+  'system_settings_manage',
+  'admin_user_phone_remove'
 )
 
 foreach ($fn in $functions) {

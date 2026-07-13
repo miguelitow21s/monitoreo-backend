@@ -90,8 +90,12 @@ serve(async (req: Request) => {
 
     const searchRaw = payload.search?.trim();
     if (searchRaw) {
-      const term = searchRaw.replace(/,/g, " ");
-      query = query.or(`action.ilike.%${term}%,context.ilike.%${term}%`);
+      // Allowlist-sanitize like the other search endpoints so input can't break
+      // the PostgREST or() parser (audit B3).
+      const term = searchRaw.replace(/[^\p{L}\p{N}\s._-]/gu, " ").trim();
+      if (term) {
+        query = query.or(`action.ilike.%${term}%,context.ilike.%${term}%`);
+      }
     }
 
     const { data: logs, error: logsError } = await query;

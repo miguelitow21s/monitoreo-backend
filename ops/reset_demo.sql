@@ -1,4 +1,14 @@
+-- DANGER: wipes ALL public data + every auth.users row. NEVER run against prod.
+-- Requires an explicit opt-in in the session before it will run:
+--   set app.allow_reset = 'yes';
 begin;
+
+do $$
+begin
+  if coalesce(current_setting('app.allow_reset', true), '') <> 'yes' then
+    raise exception 'reset_demo bloqueado. Solo en entornos NO productivos: ejecuta  set app.allow_reset = ''yes'';  antes de correr este script.';
+  end if;
+end $$;
 
 do $$
 declare r record;
