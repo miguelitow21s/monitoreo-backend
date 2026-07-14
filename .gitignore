@@ -7,5 +7,6 @@ supabase/.temp/
 ops/.env.*
 ops/.tmp/
 
-# Internal ops doc with plaintext production credentials — never publish (repo is public)
+# Internal ops docs — never publish (repo is public)
 ops/ESTADO_PROYECTO.md
+ops/INFORME_PRELANZAMIENTO.md
