@@ -18,6 +18,7 @@ concurrency:
 jobs:
   dispatch:
     runs-on: ubuntu-latest
+    environment: prod
     steps:
       - name: Dispatch pending emails + overdue alerts
         shell: bash
