@@ -6,9 +6,12 @@ name: Dispatch email notifications
 # logs in as the health admin (super_admin) and calls email_notifications_dispatch,
 # which enqueues overdue alerts and flushes pending emails.
 
+# NOTE: schedule disabled until the dispatcher has valid auth. The HEALTH_ADMIN_*
+# secrets in the repo don't log in (same reason the deploy health-check fails).
+# Re-enable the cron once auth works (working admin creds, or a cron-secret bypass
+# on email_notifications_dispatch). Meanwhile the inline waitUntil still sends
+# queued emails on shift events.
 on:
-  schedule:
-    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
 concurrency:
