@@ -392,15 +392,30 @@ serve(async (req: Request) => {
         throw { code: 422, message: "Rango de fechas invalido", category: "VALIDATION" };
       }
 
-      const fromIso = `${periodStart}T00:00:00.000Z`;
-      const toIso = `${periodEnd}T23:59:59.999Z`;
+      // Query a UTC window widened by +/-1 day so we don't miss shifts that fall
+      // inside the requested LOCAL-date range but outside the UTC window; each
+      // shift is then attributed to the calendar day of ITS restaurant's
+      // timezone (audit M3). Hour totals are unchanged — only the day changes.
+      const windowFrom = addUtcDays(new Date(`${periodStart}T00:00:00.000Z`), -1).toISOString();
+      const windowTo = addUtcDays(new Date(`${periodEnd}T23:59:59.999Z`), 1).toISOString();
+
+      const localDateInTz = (iso: string | null | undefined, tz: string): string | null => {
+        if (!iso) return null;
+        const d = new Date(iso);
+        if (Number.isNaN(d.getTime())) return null;
+        try {
+          return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(d);
+        } catch {
+          return d.toISOString().slice(0, 10);
+        }
+      };
 
       const { data: shifts, error: shiftsError } = await clientAdmin
         .from("shifts")
         .select("id, restaurant_id, start_time, end_time, state")
         .eq("employee_id", user.id)
-        .gte("start_time", fromIso)
-        .lte("start_time", toIso)
+        .gte("start_time", windowFrom)
+        .lte("start_time", windowTo)
         .order("start_time", { ascending: false })
         .limit(payload.limit);
 
@@ -434,7 +449,7 @@ serve(async (req: Request) => {
       const restaurantsRes = restaurantIds.length
         ? await clientAdmin
             .from("restaurants")
-            .select("id, name, city, state")
+            .select("id, name, city, state, timezone")
             .in("id", restaurantIds)
         : { data: [], error: null };
 
@@ -443,7 +458,9 @@ serve(async (req: Request) => {
       }
 
       const restaurantsById = new Map((restaurantsRes.data ?? []).map((r) => [Number(r.id), r]));
-      const items = (shifts ?? []).map((row) => {
+      const allItems = (shifts ?? []).map((row) => {
+        const restaurant = restaurantsById.get(Number(row.restaurant_id)) ?? null;
+        const tz = (restaurant as { timezone?: string | null } | null)?.timezone || "America/Los_Angeles";
         const scheduled = scheduledByShiftId.get(Number(row.id));
         const scheduled_hours = diffHours(String(scheduled?.scheduled_start ?? null), String(scheduled?.scheduled_end ?? null));
         const hours_worked = diffHours(String(row.start_time ?? null), String(row.end_time ?? null));
@@ -457,9 +474,17 @@ serve(async (req: Request) => {
           scheduled_start: scheduled?.scheduled_start ?? null,
           scheduled_end: scheduled?.scheduled_end ?? null,
           scheduled_hours,
-          restaurant: restaurantsById.get(Number(row.restaurant_id)) ?? null,
+          restaurant,
+          restaurant_timezone: tz,
+          // Calendar day in the restaurant's local time — use this to bucket by day.
+          local_date: localDateInTz(row.start_time, tz),
         };
       });
+
+      // Keep only shifts whose local (restaurant-timezone) day is in the range.
+      const items = allItems.filter(
+        (it) => it.local_date != null && it.local_date >= periodStart && it.local_date <= periodEnd
+      );
 
       const totalHours = items.reduce((acc, row) => acc + (row.hours_worked ?? 0), 0);
       const totalScheduledHours = items.reduce((acc, row) => acc + (row.scheduled_hours ?? 0), 0);
