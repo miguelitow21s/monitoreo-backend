@@ -37,6 +37,8 @@ const payloadSchema = z.object({
   grace_minutes: z.number().int().min(1).max(240).optional(),
   dispatch_limit: z.number().int().min(1).max(200).optional(),
   max_attempts: z.number().int().min(1).max(20).optional(),
+  /** Daily ceiling for queue mail, so the login OTP always has quota left. */
+  daily_cap: z.number().int().min(1).max(2000).optional(),
 });
 
 serve(async (req) => {
@@ -97,6 +99,7 @@ serve(async (req) => {
     const dispatch = await dispatchPendingEmailNotifications({
       limit: payload.dispatch_limit,
       maxAttempts: payload.max_attempts,
+      dailyCap: payload.daily_cap,
     });
 
     const result = {

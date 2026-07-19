@@ -207,7 +207,7 @@ async function sendEmailViaResend(params: {
   subject: string;
   text: string;
   html?: string | null;
-}): Promise<{ ok: true; provider_ref: string | null } | { ok: false; error: string }> {
+}): Promise<{ ok: true; provider_ref: string | null } | { ok: false; error: string; status?: number }> {
   const apiKey = Deno.env.get("RESEND_API_KEY")?.trim();
   const from = Deno.env.get("EMAIL_FROM")?.trim();
 
@@ -235,6 +235,7 @@ async function sendEmailViaResend(params: {
     return {
       ok: false,
       error: payload?.message ?? `email_send_failed_${res.status}`,
+      status: res.status,
     };
   }
 
@@ -247,10 +248,33 @@ async function sendEmailViaResend(params: {
 export async function dispatchPendingEmailNotifications(params?: {
   limit?: number;
   maxAttempts?: number;
+  /** Max emails this queue may send per day, leaving quota for the login OTP. */
+  dailyCap?: number;
 }): Promise<DispatchSummary> {
   const limit = Math.min(Math.max(params?.limit ?? 50, 1), 200);
   const maxAttempts = Math.min(Math.max(params?.maxAttempts ?? 5, 1), 20);
   const nowIso = new Date().toISOString();
+
+  // The login OTP goes out through the SAME provider account, so the bulk queue
+  // must never eat the whole daily quota — a backlog of stale alerts once did
+  // exactly that and blocked every login. Reserve headroom for transactional mail.
+  const dailyCap = Math.min(Math.max(params?.dailyCap ?? 200, 1), 2000);
+  const startOfDayIso = `${nowIso.slice(0, 10)}T00:00:00.000Z`;
+  const { count: sentToday } = await clientAdmin
+    .from("email_notifications")
+    .select("id", { count: "exact", head: true })
+    .eq("status", "sent")
+    .gte("sent_at", startOfDayIso);
+
+  const alreadySent = sentToday ?? 0;
+  if (alreadySent >= dailyCap) {
+    console.warn(
+      JSON.stringify({ email_dispatch_daily_cap_reached: true, sent_today: alreadySent, daily_cap: dailyCap, ts: nowIso })
+    );
+    return { queued_shift_not_started: 0, attempted: 0, sent: 0, failed: 0, skipped: 0 };
+  }
+
+  const effectiveLimit = Math.max(1, Math.min(limit, dailyCap - alreadySent));
 
   const { data, error } = await clientAdmin
     .from("email_notifications")
@@ -259,7 +283,7 @@ export async function dispatchPendingEmailNotifications(params?: {
     .lt("attempts", maxAttempts)
     .lte("scheduled_for", nowIso)
     .order("created_at", { ascending: true })
-    .limit(limit);
+    .limit(effectiveLimit);
 
   if (error) {
     throw { code: 500, message: "No se pudo consultar cola de emails", category: "SYSTEM", details: error };
@@ -334,6 +358,34 @@ export async function dispatchPendingEmailNotifications(params?: {
         summary.sent += 1;
       }
       continue;
+    }
+
+    // A provider-side limit (quota / rate limit) is not this message's fault:
+    // put it back as pending WITHOUT burning a retry attempt, and stop the run —
+    // every further send would fail too and waste what's left of the quota.
+    const providerLimited = sent.status === 429 || /quota|rate limit|too many/i.test(sent.error ?? "");
+    if (providerLimited) {
+      await clientAdmin
+        .from("email_notifications")
+        .update({
+          status: "pending",
+          attempts: row.attempts ?? 0,
+          last_error: sent.error,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", row.id);
+
+      summary.attempted -= 1;
+      summary.skipped += 1;
+      console.warn(
+        JSON.stringify({
+          email_dispatch_circuit_open: true,
+          reason: sent.error,
+          status: sent.status ?? null,
+          ts: new Date().toISOString(),
+        })
+      );
+      break;
     }
 
     const { error: failedUpdateError } = await clientAdmin
