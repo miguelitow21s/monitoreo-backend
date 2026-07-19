@@ -118,22 +118,10 @@ serve(async (req) => {
       };
     }
 
-    if (scheduledShift.scheduled_start && scheduledShift.scheduled_end) {
-      const scheduledStart = new Date(scheduledShift.scheduled_start);
-      const scheduledEnd = new Date(scheduledShift.scheduled_end);
-      const earlyToleranceMs = Math.max(0, settings.shifts.early_start_tolerance_minutes) * 60 * 1000;
-      const earliest = new Date(scheduledStart.getTime() - earlyToleranceMs);
-      const latest = scheduledEnd;
-      if (now < earliest || now > latest) {
-        throw {
-          code: 422,
-          error_code: "SHIFT_START_OUTSIDE_WINDOW",
-          message: "Estas fuera de la ventana horaria permitida para iniciar este servicio",
-          category: "VALIDATION",
-          details: { earliest: earliest.toISOString(), latest: latest.toISOString(), server_now: now.toISOString() },
-        };
-      }
-    }
+    // Business rule: the contractor may start whenever they want; the ONLY limit
+    // is the end of the service window. Starting "too early" is no longer an
+    // error — `now > scheduled_end` is already rejected above as
+    // SCHEDULE_WINDOW_EXPIRED, so there is no additional window check here.
 
     if (Number(scheduledShift.restaurant_id) !== Number(restaurant_id)) {
       throw {

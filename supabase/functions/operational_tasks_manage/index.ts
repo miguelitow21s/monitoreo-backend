@@ -32,11 +32,11 @@ function isImageMime(mime: string): boolean {
   return (allowedImageMimeValues as readonly string[]).includes(mime);
 }
 // Which mimes are acceptable as CONTRACTOR EVIDENCE for a task.
-// Contractor evidence is photo-only: the DB CHECK + guard trigger (migration 043)
-// reject video mimes on operational_tasks.evidence_mime_type, so video evidence
-// can't be completed. (The inspector's instructions video is a separate column.)
+// Since #9 the contractor may answer with photos AND/OR videos, so both are
+// accepted regardless of the task's evidence_type hint (migration 057 enabled
+// video mimes on the CHECK constraint and the guard trigger).
 function allowedMimesForEvidenceType(_evidenceType: string): string[] {
-  return [...allowedImageMimeValues];
+  return [...allowedEvidenceMimeValues];
 }
 
 const createAction = z.object({
@@ -95,6 +95,9 @@ const requestEvidenceUploadAction = z.object({
   action: z.literal("request_evidence_upload"),
   task_id: z.number().int().positive(),
   mime_type: evidenceMimeSchema.default("image/jpeg"),
+  // Hint from the app for the file being uploaded (#9). Photos and videos are
+  // both accepted; this is informational and echoed back in the response.
+  evidence_type: z.enum(["photo", "video"]).optional(),
 });
 
 // Inspector uploads an instructions video BEFORE the task exists (no task_id).
@@ -108,7 +111,10 @@ const requestInstructionsUploadAction = z.object({
 const completeAction = z.object({
   action: z.literal("complete"),
   task_id: z.number().int().positive(),
-  evidence_path: z.string().min(20).max(500),
+  // evidence_paths[] is the source of truth (#9: multiple photos/videos);
+  // evidence_path stays accepted for older builds.
+  evidence_path: z.string().min(20).max(500).optional(),
+  evidence_paths: z.array(z.string().min(20).max(500)).min(1).max(20).optional(),
   notes: z.string().trim().min(3).max(5000).optional(),
 });
 
@@ -326,18 +332,6 @@ serve(async (req: Request) => {
 
     if (payload.action === "create") {
       roleGuard(user, ["supervisora", "super_admin"]);
-
-      // Contractor video evidence isn't supported at the DB level yet (043 CHECK +
-      // trigger accept only images/json). Reject it at creation so a task can't
-      // get stuck at completion. The inspector instructions video is separate.
-      if (payload.evidence_type === "video") {
-        throw {
-          code: 422,
-          error_code: "EVIDENCE_TYPE_VIDEO_NOT_SUPPORTED",
-          message: "La evidencia en video aun no esta disponible; la evidencia del contratista debe ser foto",
-          category: "VALIDATION",
-        };
-      }
 
       // Guard the instructions video path so a task can't be pointed at an
       // arbitrary storage object; it must have the exact shape produced by
@@ -1121,57 +1115,61 @@ serve(async (req: Request) => {
       const actorId = task.task_scope === "restaurant" ? user.id : (task.assigned_employee_id as string);
       const expectedManifestPrefix = `users/${actorId}/task-manifest/${payload.task_id}/`;
       const expectedEvidencePrefix = `users/${actorId}/task-evidence/${payload.task_id}/`;
-      if (!payload.evidence_path.startsWith(expectedManifestPrefix) && !payload.evidence_path.startsWith(expectedEvidencePrefix)) {
-        throw { code: 403, message: "Ruta de evidencia invalida para la tarea", category: "PERMISSION" };
+      // #9: the contractor can attach several photos and/or videos.
+      // evidence_paths[] is the source of truth; evidence_path is the legacy single.
+      const evidencePaths = payload.evidence_paths?.length
+        ? payload.evidence_paths
+        : payload.evidence_path
+          ? [payload.evidence_path]
+          : [];
+
+      if (evidencePaths.length === 0) {
+        throw {
+          code: 422,
+          error_code: "EVIDENCE_REQUIRED",
+          message: "Debes adjuntar al menos una evidencia",
+          category: "VALIDATION",
+        };
       }
 
-      const { data: fileBlob, error: downloadError } = await clientAdmin.storage.from(evidenceBucket).download(payload.evidence_path);
-      if (downloadError || !fileBlob) {
-        throw { code: 422, message: "Evidencia no disponible en storage", category: "VALIDATION", details: downloadError };
-      }
-
-      const evidenceMimeType = inferMimeType(payload.evidence_path, fileBlob.type);
       const allowedMime = ["application/json", ...allowedEvidenceMimeValues];
-      if (!allowedMime.includes(evidenceMimeType)) {
-        throw { code: 422, message: "Mime de evidencia no permitido", category: "VALIDATION", details: { mime_type: evidenceMimeType } };
-      }
+      const evidenceItems: Array<{ path: string; hash: string; mime_type: string; size_bytes: number }> = [];
 
-      // Size cap depends on media kind (videos are allowed to be larger).
-      const maxBytes = isVideoMime(evidenceMimeType) ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
-      if (fileBlob.size <= 0 || fileBlob.size > maxBytes) {
-        throw { code: 422, message: "Tamano de evidencia invalido", category: "VALIDATION", details: { size: fileBlob.size, max_bytes: maxBytes } };
-      }
-
-      // Real media (not the JSON manifest) must match the task's required evidence_type.
-      const taskEvidenceType = String(task.evidence_type ?? "photo");
-      if (evidenceMimeType !== "application/json") {
-        const allowedForTask = allowedMimesForEvidenceType(taskEvidenceType);
-        if (!allowedForTask.includes(evidenceMimeType)) {
-          throw {
-            code: 422,
-            error_code: "EVIDENCE_TYPE_MISMATCH",
-            message: taskEvidenceType === "video"
-              ? "Esta tarea requiere un video como evidencia"
-              : taskEvidenceType === "photo"
-                ? "Esta tarea requiere una foto como evidencia"
-                : "Tipo de evidencia no permitido para esta tarea",
-            category: "VALIDATION",
-            details: { evidence_type: taskEvidenceType, provided_mime: evidenceMimeType, allowed_mime: allowedForTask },
-          };
+      for (const path of evidencePaths) {
+        if (!path.startsWith(expectedManifestPrefix) && !path.startsWith(expectedEvidencePrefix)) {
+          throw { code: 403, error_code: "EVIDENCE_PATH_INVALID", message: "Ruta de evidencia invalida para la tarea", category: "PERMISSION", details: { path } };
         }
-      }
 
-      if (evidenceMimeType === "application/json") {
-        const text = await fileBlob.text();
-        try {
-          JSON.parse(text);
-        } catch {
-          throw { code: 422, message: "Manifest JSON invalido", category: "VALIDATION" };
+        const { data: fileBlob, error: downloadError } = await clientAdmin.storage.from(evidenceBucket).download(path);
+        if (downloadError || !fileBlob) {
+          throw { code: 422, error_code: "EVIDENCE_NOT_FOUND", message: "Evidencia no disponible en storage", category: "VALIDATION", details: { path, error: downloadError } };
         }
+
+        const mimeType = inferMimeType(path, fileBlob.type);
+        if (!allowedMime.includes(mimeType)) {
+          throw { code: 422, error_code: "EVIDENCE_MIME_NOT_ALLOWED", message: "Mime de evidencia no permitido", category: "VALIDATION", details: { path, mime_type: mimeType } };
+        }
+
+        // Videos are allowed to be larger than photos.
+        const maxBytes = isVideoMime(mimeType) ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+        if (fileBlob.size <= 0 || fileBlob.size > maxBytes) {
+          throw { code: 422, error_code: "EVIDENCE_SIZE_INVALID", message: "Tamano de evidencia invalido", category: "VALIDATION", details: { path, size: fileBlob.size, max_bytes: maxBytes } };
+        }
+
+        if (mimeType === "application/json") {
+          const text = await fileBlob.text();
+          try {
+            JSON.parse(text);
+          } catch {
+            throw { code: 422, error_code: "MANIFEST_INVALID", message: "Manifest JSON invalido", category: "VALIDATION", details: { path } };
+          }
+        }
+
+        evidenceItems.push({ path, hash: await sha256Hex(fileBlob), mime_type: mimeType, size_bytes: fileBlob.size });
       }
 
-      const evidenceHash = await sha256Hex(fileBlob);
-
+      // Legacy single columns mirror the first item (the guard trigger requires them).
+      const primaryEvidence = evidenceItems[0];
       const nowIso = new Date().toISOString();
       const { error } = await clientUser
         .from("operational_tasks")
@@ -1179,10 +1177,11 @@ serve(async (req: Request) => {
           status: "completed",
           resolved_at: nowIso,
           resolved_by: user.id,
-          evidence_path: payload.evidence_path,
-          evidence_hash: evidenceHash,
-          evidence_mime_type: evidenceMimeType,
-          evidence_size_bytes: fileBlob.size,
+          evidence_path: primaryEvidence.path,
+          evidence_hash: primaryEvidence.hash,
+          evidence_mime_type: primaryEvidence.mime_type,
+          evidence_size_bytes: primaryEvidence.size_bytes,
+          evidence_items: evidenceItems,
           resolution_notes: payload.notes ?? null,
           updated_at: nowIso,
         })
@@ -1197,9 +1196,10 @@ serve(async (req: Request) => {
         action: "OPERATIONAL_TASK_COMPLETE",
         context: {
           task_id: payload.task_id,
-          evidence_path: payload.evidence_path,
-          evidence_hash: evidenceHash,
-          evidence_size_bytes: fileBlob.size,
+          evidence_count: evidenceItems.length,
+          evidence_paths: evidenceItems.map((e) => e.path),
+          evidence_hashes: evidenceItems.map((e) => e.hash),
+          evidence_total_bytes: evidenceItems.reduce((acc, e) => acc + e.size_bytes, 0),
         },
         request_id,
       });
@@ -1242,7 +1242,7 @@ serve(async (req: Request) => {
 
       let query = clientUser
         .from("operational_tasks")
-        .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, evidence_type, instructions_video_path, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
+        .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, evidence_type, instructions_video_path, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, evidence_items, created_at, updated_at")
         .in("status", ["pending", "in_progress"])
         .order("updated_at", { ascending: false })
         .limit(payload.limit);
@@ -1262,23 +1262,47 @@ serve(async (req: Request) => {
         throw { code: 409, message: "No se pudo listar tareas abiertas", category: "BUSINESS", details: error };
       }
 
-      // Sign instructions videos (inspector -> contractor, download-only) in one batch.
+      // Sign the instructions video AND every evidence file in a single batch:
+      // one instructions video per task (inspector -> contractor) plus the
+      // contractor's photos/videos (#9).
       const rows = data ?? [];
-      const instructionPaths = [...new Set(rows.map((r) => r.instructions_video_path).filter((p) => typeof p === "string" && p.length > 0))];
+      const collectEvidencePaths = (row: Record<string, unknown>): string[] => {
+        const items = Array.isArray(row.evidence_items) ? row.evidence_items : null;
+        if (items && items.length > 0) {
+          return items
+            .map((it) => (it as { path?: string } | null)?.path)
+            .filter((p): p is string => typeof p === "string" && p.length > 0);
+        }
+        return typeof row.evidence_path === "string" && row.evidence_path.length > 0 ? [row.evidence_path] : [];
+      };
+
+      const allPaths = [
+        ...new Set([
+          ...rows.map((r) => r.instructions_video_path).filter((p) => typeof p === "string" && p.length > 0),
+          ...rows.flatMap((r) => collectEvidencePaths(r as Record<string, unknown>)),
+        ]),
+      ] as string[];
+
       const signedByPath = new Map<string, string>();
-      if (instructionPaths.length > 0) {
-        const { data: signed } = await clientAdmin.storage.from(evidenceBucket).createSignedUrls(instructionPaths, 7200);
+      if (allPaths.length > 0) {
+        const { data: signed } = await clientAdmin.storage.from(evidenceBucket).createSignedUrls(allPaths, 7200);
         (signed ?? []).forEach((s, i) => {
-          if (s && s.signedUrl && !s.error) signedByPath.set(instructionPaths[i], s.signedUrl);
+          if (s && s.signedUrl && !s.error) signedByPath.set(allPaths[i], s.signedUrl);
         });
       }
 
-      const items = rows.map((row) => ({
-        ...row,
-        task_id: row.id,
-        instructions_video_url: row.instructions_video_path ? (signedByPath.get(row.instructions_video_path) ?? null) : null,
-        notes_required: settings.tasks.require_special_task_notes === true,
-      }));
+      const items = rows.map((row) => {
+        const evidencePathList = collectEvidencePaths(row as Record<string, unknown>);
+        return {
+          ...row,
+          task_id: row.id,
+          instructions_video_url: row.instructions_video_path ? (signedByPath.get(row.instructions_video_path) ?? null) : null,
+          evidence_urls: evidencePathList
+            .map((p) => signedByPath.get(p))
+            .filter((u): u is string => typeof u === "string"),
+          notes_required: settings.tasks.require_special_task_notes === true,
+        };
+      });
 
       const successPayload = { success: true, data: { items }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
@@ -1289,7 +1313,7 @@ serve(async (req: Request) => {
 
     let query = clientUser
       .from("operational_tasks")
-      .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, evidence_type, instructions_video_path, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, created_at, updated_at")
+      .select("id, shift_id, scheduled_shift_id, restaurant_id, task_scope, assigned_employee_id, created_by, title, description, priority, status, due_at, resolved_at, resolved_by, requires_evidence, evidence_type, instructions_video_path, resolution_notes, evidence_path, evidence_hash, evidence_mime_type, evidence_size_bytes, evidence_items, created_at, updated_at")
       .order("updated_at", { ascending: false })
       .limit(payload.limit);
 

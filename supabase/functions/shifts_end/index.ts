@@ -28,7 +28,10 @@ const payloadSchema = z.object({
   lng: commonSchemas.lng,
   fit_for_work: z.boolean(),
   declaration: z.string().trim().max(500).optional().nullable(),
-  early_end_reason: z.string().trim().min(3).max(200).optional().nullable(),
+  // "Observaciones" in the UI. `early_end_reason` is the legacy field name kept
+  // for older builds; either one is accepted and they mean the same thing (#4).
+  early_end_reason: z.string().trim().min(3).max(2000).optional().nullable(),
+  observations: z.string().trim().min(3).max(2000).optional().nullable(),
 });
 
 serve(async (req) => {
@@ -67,7 +70,9 @@ serve(async (req) => {
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 20, window_seconds: 60 });
 
-    const { shift_id, lat, lng, fit_for_work, declaration, early_end_reason } = payload;
+    const { shift_id, lat, lng, fit_for_work, declaration } = payload;
+    // Accept either field name; "observations" is the current one (#4).
+    const early_end_reason = payload.observations ?? payload.early_end_reason ?? null;
     const settings = await getSystemSettings(clientAdmin);
 
     const shift = await getOwnedShift(clientUser, user.id, shift_id);

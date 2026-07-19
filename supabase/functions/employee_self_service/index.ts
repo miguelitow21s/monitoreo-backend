@@ -15,6 +15,7 @@ import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { notifyIncidentCreated, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
 import { runInBackground } from "../_shared/background.ts";
+import { autoCloseOverdueShifts } from "../_shared/shiftAutoClose.ts";
 import { getSystemSettings, resolveCleaningAreas } from "../_shared/systemSettings.ts";
 
 const endpoint = "employee_self_service";
@@ -89,10 +90,11 @@ function buildStartWindow(
     };
   }
 
-  const earlyToleranceMs = Math.max(0, Number(settings.shifts.early_start_tolerance_minutes ?? 0)) * 60 * 1000;
-  const earliest = new Date(start.getTime() - earlyToleranceMs);
+  // Business rule: the contractor may start whenever they want; the only limit is
+  // the end of the service window. `earliest` is kept for display only.
+  const earliest = start;
   const latest = end;
-  const canStartNow = canStartShift && now >= earliest && now <= latest;
+  const canStartNow = canStartShift && now <= latest;
 
   return {
     earliest: earliest.toISOString(),
@@ -212,6 +214,10 @@ serve(async (req: Request) => {
       const monthAgoIso = addUtcDays(new Date(), -30).toISOString();
       const settings = await getSystemSettings(clientAdmin);
 
+      // Close any service whose scheduled window already ended, before reading
+      // state, so the dashboard never shows a stale "active" shift (#1).
+      await autoCloseOverdueShifts({ employeeId: user.id });
+
       const [activeShiftRes, linksRes, scheduleRes, tasksRes, shiftsRes] = await Promise.all([
         clientAdmin
           .from("shifts")
@@ -273,7 +279,7 @@ serve(async (req: Request) => {
         restaurantIds.length
           ? clientAdmin
               .from("restaurants")
-              .select("id, name, is_active, city, state, address_line, timezone, cleaning_areas")
+              .select("id, name, is_active, city, state, address_line, timezone, lat, lng, radius, geofence_radius_m, cleaning_areas")
               .in("id", restaurantIds)
           : Promise.resolve({ data: [], error: null }),
         assignedRestaurantIds.length > 0
@@ -360,6 +366,54 @@ serve(async (req: Request) => {
         start_window: buildStartWindow(row.scheduled_start, row.scheduled_end, settings, now, canStartShift),
       }));
 
+      // All of today's startable/active services in one array, each with the
+      // geofence data the app needs to pick the right one by GPS when several
+      // overlap in time at different sites (#1).
+      const toGeoRestaurant = (restaurant: Record<string, unknown> | null | undefined) => {
+        if (!restaurant) return null;
+        const radius = Number(restaurant.geofence_radius_m ?? restaurant.radius ?? 0);
+        return {
+          id: restaurant.id ?? null,
+          name: restaurant.name ?? null,
+          city: restaurant.city ?? null,
+          state: restaurant.state ?? null,
+          address_line: restaurant.address_line ?? null,
+          timezone: restaurant.timezone ?? null,
+          lat: restaurant.lat ?? null,
+          lng: restaurant.lng ?? null,
+          radius_meters: Number.isFinite(radius) && radius > 0 ? radius : null,
+        };
+      };
+
+      const today_shifts = [
+        ...(active_shift
+          ? [
+              {
+                shift_id: active_shift.id,
+                scheduled_shift_id: null,
+                restaurant_id: active_shift.restaurant_id,
+                scheduled_start: active_shift.scheduled_start ?? null,
+                scheduled_end: active_shift.scheduled_end ?? null,
+                state: "activo",
+                started_at: active_shift.start_time ?? null,
+                restaurant: toGeoRestaurant(restaurantsById.get(Number(active_shift.restaurant_id)) as Record<string, unknown> | undefined),
+                start_window: null,
+              },
+            ]
+          : []),
+        ...scheduled_shifts.map((row) => ({
+          shift_id: null,
+          scheduled_shift_id: row.id,
+          restaurant_id: row.restaurant_id,
+          scheduled_start: row.scheduled_start,
+          scheduled_end: row.scheduled_end,
+          state: row.status,
+          started_at: null,
+          restaurant: toGeoRestaurant(restaurantsById.get(Number(row.restaurant_id)) as Record<string, unknown> | undefined),
+          start_window: row.start_window,
+        })),
+      ];
+
       const workedHoursLast30d = (shiftsRes.data ?? []).reduce((acc, row) => acc + (diffHours(String(row.start_time ?? null), String(row.end_time ?? null)) ?? 0), 0);
 
       // Merge assigned tasks + restaurant-scoped tasks, deduplicate by id, limit to pending_tasks_limit
@@ -372,6 +426,7 @@ serve(async (req: Request) => {
         can_start_shift: canStartShift,
         assigned_restaurants,
         scheduled_shifts,
+        today_shifts,
         pending_tasks_count: allPendingTasks.length,
         pending_tasks_preview: allPendingTasks,
         worked_hours_last_30d: Number(workedHoursLast30d.toFixed(2)),
