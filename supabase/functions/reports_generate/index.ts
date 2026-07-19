@@ -297,6 +297,22 @@ function buildXlsxWorkbook(
     restaurant_name: string;
     employee_name: string;
     watermark_text: string;
+  }>,
+  taskRows?: Array<{
+    shift_id: number;
+    restaurant_name: string;
+    task_id: number;
+    task_title: string;
+    task_description: string;
+    task_status: string;
+    requires_evidence: string;
+    created_at: string;
+    created_by: string;
+    completed_at: string;
+    completed_by: string;
+    notes: string;
+    evidence_count: number;
+    evidence_urls: string;
   }>
 ) {
   const dataRows = rows.map((r) => columns.map((col) => formatValue(r, col, "xlsx")));
@@ -388,12 +404,70 @@ function buildXlsxWorkbook(
     XLSX.utils.book_append_sheet(workbook, evidenceSheet, "Evidencias");
   }
 
+  if (taskRows && taskRows.length > 0) {
+    const taskHeader = [
+      "Turno",
+      "Restaurante",
+      "Tarea",
+      "Titulo",
+      "Descripcion",
+      "Estado",
+      "Requiere evidencia",
+      "Creada",
+      "Creada por (inspector)",
+      "Completada",
+      "Completada por (contratista)",
+      "Notas",
+      "N evidencias",
+      "URLs evidencia",
+    ];
+    const taskData: Array<Array<string | number>> = [taskHeader];
+    for (const row of taskRows) {
+      taskData.push([
+        row.shift_id,
+        row.restaurant_name,
+        row.task_id,
+        row.task_title,
+        row.task_description,
+        row.task_status,
+        row.requires_evidence,
+        row.created_at,
+        row.created_by,
+        row.completed_at,
+        row.completed_by,
+        row.notes,
+        row.evidence_count,
+        row.evidence_urls,
+      ]);
+    }
+
+    const taskSheet = XLSX.utils.aoa_to_sheet(taskData as unknown[][]);
+    taskSheet["!cols"] = [
+      { wch: 10 },
+      { wch: 26 },
+      { wch: 10 },
+      { wch: 32 },
+      { wch: 48 },
+      { wch: 14 },
+      { wch: 16 },
+      { wch: 18 },
+      { wch: 26 },
+      { wch: 18 },
+      { wch: 26 },
+      { wch: 40 },
+      { wch: 12 },
+      { wch: 80 },
+    ];
+    XLSX.utils.book_append_sheet(workbook, taskSheet, "Tareas del sitio");
+  }
+
   return XLSX.write(workbook, { type: "array", bookType: "xlsx", compression: true });
 }
 
 type EvidenceForExport = {
   shift_id: number;
-  phase: "Antes" | "Despues";
+  // "Tarea" documents evidence the contractor attached when closing a site task.
+  phase: "Antes" | "Despues" | "Tarea";
   index: number;
   path: string;
   signed_url: string;
@@ -974,7 +1048,18 @@ serve(async (req: Request) => {
     const restaurantIds = [...new Set((shifts ?? []).map((s) => Number(s.restaurant_id)).filter((id) => Number.isFinite(id)))];
     const shiftIds = (shifts ?? []).map((s) => s.id);
 
-    const [usersRes, restaurantsRes, photosRes, incidentsRes, scheduledRes] = await Promise.all([
+    // Site tasks are attached to a shift when they were COMPLETED during it
+    // (same restaurant), or linked to it directly. Bound the query by the span of
+    // the shifts in this report so we don't scan the whole table.
+    const shiftInstants = (shifts ?? [])
+      .flatMap((s) => [s.start_time, s.end_time])
+      .filter((t) => !!t)
+      .map((t) => String(t))
+      .sort();
+    const tasksFrom = shiftInstants[0] ?? null;
+    const tasksTo = shiftInstants[shiftInstants.length - 1] ?? null;
+
+    const [usersRes, restaurantsRes, photosRes, incidentsRes, scheduledRes, tasksRes] = await Promise.all([
       employeeIds.length || supervisorIds.length
         ? clientAdmin.from("users").select("id, full_name").in("id", [...new Set([...employeeIds, ...supervisorIds])])
         : Promise.resolve({ data: [], error: null }),
@@ -1001,6 +1086,18 @@ serve(async (req: Request) => {
             .select("started_shift_id, scheduled_start, scheduled_end")
             .in("started_shift_id", shiftIds)
         : Promise.resolve({ data: [], error: null }),
+      restaurantIds.length && tasksFrom && tasksTo
+        ? clientAdmin
+            .from("operational_tasks")
+            .select(
+              "id, shift_id, restaurant_id, title, description, status, requires_evidence, created_at, created_by, resolved_at, resolved_by, resolution_notes, evidence_path, evidence_mime_type, evidence_items"
+            )
+            .in("restaurant_id", restaurantIds)
+            .not("resolved_at", "is", null)
+            .gte("resolved_at", tasksFrom)
+            .lte("resolved_at", tasksTo)
+            .order("resolved_at", { ascending: true })
+        : Promise.resolve({ data: [], error: null }),
     ]);
 
     if ((usersRes as { error?: unknown }).error) {
@@ -1014,6 +1111,9 @@ serve(async (req: Request) => {
     }
     if ((incidentsRes as { error?: unknown }).error) {
       throw { code: 409, message: "No se pudieron cargar incidentes", category: "BUSINESS", details: (incidentsRes as { error?: unknown }).error };
+    }
+    if ((tasksRes as { error?: unknown }).error) {
+      throw { code: 409, message: "No se pudieron cargar tareas del sitio", category: "BUSINESS", details: (tasksRes as { error?: unknown }).error };
     }
     if ((scheduledRes as { error?: unknown }).error) {
       throw { code: 409, message: "No se pudieron cargar turnos programados", category: "BUSINESS", details: (scheduledRes as { error?: unknown }).error };
@@ -1130,6 +1230,101 @@ serve(async (req: Request) => {
       }
     }
 
+    // ---- Site tasks: attach each completed task to the shift it was done in.
+    const taskRowsRaw = ((tasksRes as { data?: Array<Record<string, unknown>> }).data ?? []);
+
+    // Inspectors/contractors on tasks may not be in userNameMap yet.
+    const missingTaskUserIds = [
+      ...new Set(
+        taskRowsRaw
+          .flatMap((t) => [t.created_by, t.resolved_by])
+          .filter((v): v is string => typeof v === "string" && v.length > 0)
+      ),
+    ].filter((id) => !userNameMap.has(id));
+
+    if (missingTaskUserIds.length > 0) {
+      const { data: extraUsers } = await clientAdmin.from("users").select("id, full_name").in("id", missingTaskUserIds);
+      for (const u of ((extraUsers ?? []) as Array<{ id: string; full_name: string | null }>)) {
+        userNameMap.set(u.id, u.full_name ?? "Sin nombre");
+      }
+    }
+
+    const taskEvidenceEntries = (t: Record<string, unknown>): Array<{ path: string; mime_type: string | null }> => {
+      const items = Array.isArray(t.evidence_items) ? t.evidence_items : null;
+      if (items && items.length > 0) {
+        return items
+          .map((it) => it as { path?: string; mime_type?: string } | null)
+          .filter((it): it is { path: string; mime_type?: string } => typeof it?.path === "string" && it.path.length > 0)
+          .map((it) => ({ path: it.path, mime_type: it.mime_type ?? null }));
+      }
+      return typeof t.evidence_path === "string" && t.evidence_path.length > 0
+        ? [{ path: t.evidence_path, mime_type: (t.evidence_mime_type as string | null) ?? null }]
+        : [];
+    };
+
+    const allTaskEvidencePaths = [...new Set(taskRowsRaw.flatMap((t) => taskEvidenceEntries(t).map((e) => e.path)))];
+    const taskSignedMap = new Map<string, string>();
+    if (allTaskEvidencePaths.length > 0) {
+      const { data: signedTaskUrls } = await clientAdmin.storage
+        .from("shift-evidence")
+        .createSignedUrls(allTaskEvidencePaths, 60 * 60 * 24 * 7);
+      ((signedTaskUrls ?? []) as Array<{ signedUrl?: string | null }>).forEach((s, i) => {
+        if (s?.signedUrl) taskSignedMap.set(allTaskEvidencePaths[i], s.signedUrl);
+      });
+    }
+
+    const looksLikeVideo = (path: string, mime: string | null) => {
+      if ((mime ?? "").toLowerCase().startsWith("video/")) return true;
+      const p = path.toLowerCase();
+      return p.endsWith(".mp4") || p.endsWith(".mov") || p.endsWith(".webm");
+    };
+
+    const siteTasksByShift = new Map<number, Array<Record<string, unknown>>>();
+    for (const shift of (shifts ?? [])) {
+      const sid = Number(shift.id);
+      const startedAt = shift.start_time ? new Date(String(shift.start_time)).getTime() : null;
+      const endedAt = shift.end_time ? new Date(String(shift.end_time)).getTime() : null;
+
+      const matched = taskRowsRaw.filter((t) => {
+        if (Number(t.shift_id) === sid) return true; // linked directly at shift start
+        if (Number(t.restaurant_id) !== Number(shift.restaurant_id)) return false;
+        if (!t.resolved_at || startedAt == null) return false;
+        const doneAt = new Date(String(t.resolved_at)).getTime();
+        return doneAt >= startedAt && (endedAt == null || doneAt <= endedAt);
+      });
+
+      if (matched.length === 0) continue;
+
+      siteTasksByShift.set(
+        sid,
+        matched.map((t) => {
+          const evidences = taskEvidenceEntries(t).map((e) => ({
+            path: e.path,
+            mime_type: e.mime_type,
+            is_video: looksLikeVideo(e.path, e.mime_type),
+            signed_url: taskSignedMap.get(e.path) ?? "",
+          }));
+          return {
+            task_id: t.id,
+            title: t.title ?? null,
+            description: t.description ?? null,
+            status: t.status ?? null,
+            requires_evidence: t.requires_evidence === true,
+            created_at: t.created_at ?? null,
+            created_by: t.created_by ?? null,
+            created_by_name: t.created_by ? (userNameMap.get(String(t.created_by)) ?? null) : null,
+            completed_at: t.resolved_at ?? null,
+            completed_by: t.resolved_by ?? null,
+            completed_by_name: t.resolved_by ? (userNameMap.get(String(t.resolved_by)) ?? null) : null,
+            notes: t.resolution_notes ?? null,
+            evidence_count: evidences.length,
+            evidences,
+            evidence_urls: evidences.map((e) => e.signed_url).filter((u) => !!u),
+          };
+        })
+      );
+    }
+
     const incidentsCount = new Map<number, number>();
     for (const incident of ((incidentsRes as { data?: Array<{ shift_id: number }> }).data ?? [])) {
       const key = Number(incident.shift_id);
@@ -1188,6 +1383,9 @@ serve(async (req: Request) => {
         observation_evidences: evidenceEntry?.observations ?? [],
         observation_evidence_urls: evidenceEntry?.observationsUrls ?? [],
         observation_evidence_count: evidenceEntry?.observations.length ?? 0,
+        // Site tasks completed during this shift, with their evidence (#9 / AB-5).
+        site_tasks: siteTasksByShift.get(Number(s.id)) ?? [],
+        site_tasks_count: (siteTasksByShift.get(Number(s.id)) ?? []).length,
         incidents_count: incidentsCount.get(Number(s.id)) ?? 0,
       };
     });
@@ -1420,6 +1618,64 @@ serve(async (req: Request) => {
       );
     }
 
+    // Each task evidence file gets its own documented page in the single-day PDF,
+    // using the same layout as shift photos. Videos can't be embedded, so the
+    // renderer falls back to printing the signed URL (label marks them as video).
+    if (includeEvidenceUrls) {
+      for (const row of rows as Array<Record<string, unknown>>) {
+        const tasks = (row.site_tasks as Array<Record<string, unknown>> | undefined) ?? [];
+        for (const t of tasks) {
+          const evidences = (t.evidences as Array<Record<string, unknown>> | undefined) ?? [];
+          evidences.forEach((ev, idx) => {
+            const url = String(ev.signed_url ?? "");
+            if (!url) return;
+            const label = `Tarea: ${String(t.title ?? "")}${ev.is_video ? " (video)" : ""}`.trim();
+            const completedAt = (t.completed_at as string | null) ?? null;
+            const restaurantName = String(row.restaurant_name ?? "");
+            const doneBy = String(t.completed_by_name ?? "");
+            evidenceRowsForExport.push({
+              shift_id: Number(row.shift_id),
+              phase: "Tarea",
+              index: idx + 1,
+              path: String(ev.path ?? ""),
+              signed_url: url,
+              captured_at: completedAt,
+              zone: label,
+              restaurant_name: restaurantName,
+              employee_name: doneBy,
+              watermark_text: buildEvidenceWatermarkText({
+                captured_at: completedAt,
+                zone: label,
+                restaurant_name: restaurantName,
+                employee_name: doneBy,
+              }),
+            });
+          });
+        }
+      }
+    }
+
+    // One flat row per site task for the "Tareas del sitio" sheet.
+    const taskRowsForExport = (rows as Array<Record<string, unknown>>).flatMap((row) => {
+      const tasks = (row.site_tasks as Array<Record<string, unknown>> | undefined) ?? [];
+      return tasks.map((t) => ({
+        shift_id: Number(row.shift_id),
+        restaurant_name: String(row.restaurant_name ?? ""),
+        task_id: Number(t.task_id),
+        task_title: String(t.title ?? ""),
+        task_description: String(t.description ?? ""),
+        task_status: String(t.status ?? ""),
+        requires_evidence: t.requires_evidence ? "SI" : "NO",
+        created_at: formatDateTime((t.created_at as string | null) ?? null),
+        created_by: String(t.created_by_name ?? ""),
+        completed_at: formatDateTime((t.completed_at as string | null) ?? null),
+        completed_by: String(t.completed_by_name ?? ""),
+        notes: String(t.notes ?? ""),
+        evidence_count: Number(t.evidence_count ?? 0),
+        evidence_urls: ((t.evidence_urls as string[] | undefined) ?? []).join(" | "),
+      }));
+    });
+
     if (includeXlsx) {
       const xlsxBinary = buildXlsxWorkbook(rows as Array<Record<string, unknown>>, selectedColumns, csvHeaderLabels, {
         restaurantLabel,
@@ -1439,7 +1695,7 @@ serve(async (req: Request) => {
         restaurant_name: ev.restaurant_name,
         employee_name: ev.employee_name,
         watermark_text: ev.watermark_text,
-      })));
+      })), taskRowsForExport);
       uploadOperations.push(
         clientAdmin.storage.from("reports").upload(
           xlsxPath,
