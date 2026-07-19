@@ -551,16 +551,25 @@ export async function notifyContractorCreated(params: {
 export async function enqueueOverdueShiftNotStartedNotifications(params?: {
   limit?: number;
   graceMinutes?: number;
+  /** How far back to look for overdue services (default 24h, max 7 days). */
+  lookbackHours?: number;
 }): Promise<number> {
   const limit = Math.min(Math.max(params?.limit ?? 100, 1), 500);
   const graceMinutes = Math.min(Math.max(params?.graceMinutes ?? 15, 1), 240);
   const thresholdIso = new Date(Date.now() - graceMinutes * 60 * 1000).toISOString();
+
+  // Only alert about services that went overdue RECENTLY. Without a lower bound
+  // this resurrects every never-started service ever scheduled (months of them)
+  // and floods stakeholders with stale alerts the first time it runs.
+  const lookbackHours = Math.min(Math.max(params?.lookbackHours ?? 24, 1), 168);
+  const lookbackIso = new Date(Date.now() - lookbackHours * 60 * 60 * 1000).toISOString();
 
   const { data, error } = await clientAdmin
     .from("scheduled_shifts")
     .select("id, restaurant_id, employee_id, scheduled_start, scheduled_end")
     .eq("status", "scheduled")
     .lte("scheduled_start", thresholdIso)
+    .gte("scheduled_start", lookbackIso)
     .order("scheduled_start", { ascending: true })
     .limit(limit);
 
