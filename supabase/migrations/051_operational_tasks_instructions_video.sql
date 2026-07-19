@@ -11,4 +11,3 @@ alter table public.operational_tasks
   add column if not exists instructions_video_path text;
 
 commit;
-s
