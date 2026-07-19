@@ -94,7 +94,7 @@ const columnLabel: Record<string, string> = {
   scheduled_end: "Fin programado",
   scheduled_hours: "Horas programadas",
   ended_early: "Salida anticipada",
-  early_end_reason: "Motivo salida anticipada",
+  early_end_reason: "Observaciones",
   incidents_count: "Novedades",
   state: "Estado",
   status: "Status",
@@ -1024,9 +1024,19 @@ serve(async (req: Request) => {
 
     const startEvidence = new Map<number, string>();
     const endEvidence = new Map<number, string>();
+    // "observations" holds the attachments the contractor adds next to the
+    // Observaciones text (uploaded as type='fin' with meta.source='observations').
+    // They are reported in their own block, apart from the regular end photos (#4).
     const evidenceByShift = new Map<
       number,
-      { start: Array<Record<string, unknown>>; end: Array<Record<string, unknown>>; startUrls: string[]; endUrls: string[] }
+      {
+        start: Array<Record<string, unknown>>;
+        end: Array<Record<string, unknown>>;
+        observations: Array<Record<string, unknown>>;
+        startUrls: string[];
+        endUrls: string[];
+        observationsUrls: string[];
+      }
     >();
     const includeEvidenceUrls = period_start === period_end;
     const signedMap = new Map<string, string>();
@@ -1058,14 +1068,17 @@ serve(async (req: Request) => {
     for (const photo of photosList) {
       if (!photo.storage_path) continue;
 
+      const meta = (photo.meta && typeof photo.meta === "object") ? (photo.meta as Record<string, unknown>) : {};
+      // Attachments tied to the Observaciones field are reported separately (#4).
+      const isObservation = meta.source === "observations";
+
       if (photo.type === "inicio" && !startEvidence.has(photo.shift_id)) {
         startEvidence.set(photo.shift_id, photo.storage_path);
       }
-      if (photo.type === "fin" && !endEvidence.has(photo.shift_id)) {
+      if (photo.type === "fin" && !isObservation && !endEvidence.has(photo.shift_id)) {
         endEvidence.set(photo.shift_id, photo.storage_path);
       }
 
-      const meta = (photo.meta && typeof photo.meta === "object") ? (photo.meta as Record<string, unknown>) : {};
       const areaLabel = typeof meta.area_label === "string" ? meta.area_label : null;
       const subareaLabel = typeof meta.subarea_label === "string" ? meta.subarea_label : null;
       const photoLabel = typeof meta.photo_label === "string" ? meta.photo_label : null;
@@ -1077,7 +1090,7 @@ serve(async (req: Request) => {
       const employeeIdForShift = shiftEmployeeMap.get(Number(photo.shift_id)) ?? "";
       const employeeName = userNameMap.get(employeeIdForShift) ?? "Sin nombre";
 
-      const entry = evidenceByShift.get(photo.shift_id) ?? { start: [], end: [], startUrls: [], endUrls: [] };
+      const entry = evidenceByShift.get(photo.shift_id) ?? { start: [], end: [], observations: [], startUrls: [], endUrls: [], observationsUrls: [] };
       const signedUrl = signedMap.get(photo.storage_path) ?? "";
       const payload = {
         path: photo.storage_path,
@@ -1092,14 +1105,16 @@ serve(async (req: Request) => {
         watermark_text: buildEvidenceWatermarkText({ captured_at: photo.captured_at ?? null, zone, restaurant_name: restaurantName, employee_name: employeeName }),
       };
 
-      if (photo.type === "inicio") {
+      const url = signedMap.get(photo.storage_path);
+      if (isObservation) {
+        // Observaciones attachments (photo or video) go in their own block.
+        entry.observations.push(payload);
+        if (url) entry.observationsUrls.push(url);
+      } else if (photo.type === "inicio") {
         entry.start.push(payload);
-        const url = signedMap.get(photo.storage_path);
         if (url) entry.startUrls.push(url);
-      }
-      if (photo.type === "fin") {
+      } else if (photo.type === "fin") {
         entry.end.push(payload);
-        const url = signedMap.get(photo.storage_path);
         if (url) entry.endUrls.push(url);
       }
       evidenceByShift.set(photo.shift_id, entry);
@@ -1168,6 +1183,11 @@ serve(async (req: Request) => {
         end_evidence_urls: endUrls,
         start_evidence_count: evidenceEntry?.start.length ?? 0,
         end_evidence_count: evidenceEntry?.end.length ?? 0,
+        // Observaciones: text + its own attachments, apart from the end photos (#4).
+        observations: (s as { early_end_reason?: string | null }).early_end_reason ?? null,
+        observation_evidences: evidenceEntry?.observations ?? [],
+        observation_evidence_urls: evidenceEntry?.observationsUrls ?? [],
+        observation_evidence_count: evidenceEntry?.observations.length ?? 0,
         incidents_count: incidentsCount.get(Number(s.id)) ?? 0,
       };
     });
