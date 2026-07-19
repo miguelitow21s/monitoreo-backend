@@ -14,6 +14,23 @@ import { dispatchPendingEmailNotifications, enqueueOverdueShiftNotStartedNotific
 
 const endpoint = "email_notifications_dispatch";
 
+// Scheduler access: a cron job has no user session, so it authenticates with a
+// shared secret instead of a JWT. Disabled entirely (fail closed) when
+// CRON_DISPATCH_SECRET isn't configured, and it only ever unlocks THIS endpoint.
+const CRON_DISPATCH_SECRET = (Deno.env.get("CRON_DISPATCH_SECRET") ?? "").trim();
+
+function isAuthorizedCronRequest(req: Request): boolean {
+  if (CRON_DISPATCH_SECRET.length < 16) return false;
+  const provided = (req.headers.get("x-cron-secret") ?? "").trim();
+  if (provided.length !== CRON_DISPATCH_SECRET.length) return false;
+  // Constant-time comparison so the secret can't be probed byte by byte.
+  let diff = 0;
+  for (let i = 0; i < CRON_DISPATCH_SECRET.length; i += 1) {
+    diff |= CRON_DISPATCH_SECRET.charCodeAt(i) ^ provided.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
 const payloadSchema = z.object({
   enqueue_shift_not_started: z.boolean().optional(),
   overdue_limit: z.number().int().min(1).max(500).optional(),
@@ -38,22 +55,34 @@ serve(async (req) => {
 
   try {
     requireMethod(req, ["POST"]);
-    const { user } = await authGuard(req);
-    userId = user.id;
-    userRole = user.role;
-    roleGuard(user, ["super_admin"]);
 
-    const payload = await parseBody(req, payloadSchema);
-    idempotencyKey = requireIdempotencyKey(req);
+    // Two ways in: a super_admin session (manual run) or the scheduler's shared
+    // secret. The cron path skips idempotency because every run is a fresh sweep.
+    const cronRun = isAuthorizedCronRequest(req);
 
-    const payloadHash = await hashCanonicalJson(payload);
-    const claim = await claimIdempotency({ userId: user.id, endpoint, key: idempotencyKey, payloadHash });
-    if (claim.type === "replay") {
-      status = claim.stored.status_code;
-      return replayIdempotentResponse(claim.stored, request_id);
+    if (!cronRun) {
+      const { user } = await authGuard(req);
+      userId = user.id;
+      userRole = user.role;
+      roleGuard(user, ["super_admin"]);
     }
 
-    await rateLimiter({ user_id: user.id, ip, endpoint, limit: 15, window_seconds: 60 });
+    const payload = await parseBody(req, payloadSchema);
+
+    if (cronRun) {
+      await rateLimiter({ user_id: "cron-dispatch", ip, endpoint, limit: 30, window_seconds: 60 });
+    } else {
+      idempotencyKey = requireIdempotencyKey(req);
+
+      const payloadHash = await hashCanonicalJson(payload);
+      const claim = await claimIdempotency({ userId: userId as string, endpoint, key: idempotencyKey, payloadHash });
+      if (claim.type === "replay") {
+        status = claim.stored.status_code;
+        return replayIdempotentResponse(claim.stored, request_id);
+      }
+
+      await rateLimiter({ user_id: userId as string, ip, endpoint, limit: 15, window_seconds: 60 });
+    }
 
     const shouldEnqueue = payload.enqueue_shift_not_started ?? true;
 
@@ -78,15 +107,20 @@ serve(async (req) => {
       skipped: dispatch.skipped,
     };
 
-    await safeWriteAudit({
-      user_id: user.id,
-      action: "EMAIL_NOTIFICATIONS_DISPATCH",
-      context: result,
-      request_id,
-    });
+    // Cron runs have no acting user; they're traced through the function logs.
+    if (!cronRun && userId) {
+      await safeWriteAudit({
+        user_id: userId,
+        action: "EMAIL_NOTIFICATIONS_DISPATCH",
+        context: result,
+        request_id,
+      });
+    }
 
     const successPayload = { success: true, data: result, error: null, request_id };
-    await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+    if (!cronRun && userId && idempotencyKey) {
+      await safeFinalizeIdempotency({ userId, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+    }
 
     return response(true, result, null, request_id);
   } catch (err) {

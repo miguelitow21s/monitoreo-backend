@@ -1,17 +1,14 @@
 name: Dispatch email notifications
 
-# Scheduled dispatcher for the email queue (audit ALTO-2). Without this, queued
-# emails only go out on the best-effort inline waitUntil, and the
-# "shift not started" overdue alerts never fire automatically. Runs every 5 min,
-# logs in as the health admin (super_admin) and calls email_notifications_dispatch,
-# which enqueues overdue alerts and flushes pending emails.
+# Scheduled dispatcher for the email queue. Without it, queued mails only go out
+# on the best-effort inline waitUntil and the "shift not started" overdue alerts
+# never fire. Authenticates with CRON_DISPATCH_SECRET (no user session), which
+# email_notifications_dispatch validates in constant time and only honours when
+# the secret is configured on the Supabase side.
 
-# NOTE: schedule disabled until the dispatcher has valid auth. The HEALTH_ADMIN_*
-# secrets in the repo don't log in (same reason the deploy health-check fails).
-# Re-enable the cron once auth works (working admin creds, or a cron-secret bypass
-# on email_notifications_dispatch). Meanwhile the inline waitUntil still sends
-# queued emails on shift events.
 on:
+  schedule:
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
 concurrency:
@@ -28,20 +25,17 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
-          HEALTH_ADMIN_EMAIL: ${{ secrets.HEALTH_ADMIN_EMAIL }}
-          HEALTH_ADMIN_PASSWORD: ${{ secrets.HEALTH_ADMIN_PASSWORD }}
+          CRON_DISPATCH_SECRET: ${{ secrets.CRON_DISPATCH_SECRET }}
         run: |
           set -euo pipefail
           BASE="${SUPABASE_URL%/}"
-          TOKEN=$(curl -sS -X POST "$BASE/auth/v1/token?grant_type=password" \
-            -H "apikey: $SUPABASE_ANON_KEY" -H "Content-Type: application/json" \
-            -d "{\"email\":\"$HEALTH_ADMIN_EMAIL\",\"password\":\"$HEALTH_ADMIN_PASSWORD\"}" \
-            | python3 -c "import sys,json;print(json.load(sys.stdin).get('access_token',''))")
-          if [ -z "$TOKEN" ]; then echo "admin login failed"; exit 1; fi
-          IK=$(python3 -c "import uuid;print(uuid.uuid4())")
+          if [ -z "${CRON_DISPATCH_SECRET:-}" ]; then
+            echo "CRON_DISPATCH_SECRET is not set in the prod environment"; exit 1
+          fi
           HTTP=$(curl -sS -o /tmp/resp -w "%{http_code}" -X POST "$BASE/functions/v1/email_notifications_dispatch" \
-            -H "apikey: $SUPABASE_ANON_KEY" -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" -H "Idempotency-Key: $IK" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "x-cron-secret: $CRON_DISPATCH_SECRET" \
+            -H "Content-Type: application/json" \
             -d '{"enqueue_shift_not_started":true,"dispatch_limit":100,"max_attempts":5}')
           echo "HTTP $HTTP"; cat /tmp/resp
           [ "$HTTP" = "200" ]
