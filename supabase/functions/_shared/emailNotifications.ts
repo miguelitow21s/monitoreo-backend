@@ -1,4 +1,5 @@
 import { clientAdmin } from "./supabaseClient.ts";
+import { formatAtSite, safeTimezone } from "./timezone.ts";
 
 type NotificationEventType =
   | "shift_scheduled"
@@ -116,10 +117,58 @@ async function loadSupervisorsForRestaurant(_restaurantId: number): Promise<Reci
   return await loadActiveUsersByRoleId(supervisoraRoleId);
 }
 
-async function loadShiftContext(shiftId: number): Promise<{ shift_id: number; restaurant_id: number; employee_id: string }> {
+/**
+ * How a person should read in an email: their name, never their UUID.
+ *
+ * Falls back to the email, and only as a last resort to a short id — a
+ * notification that says "Actor: eda1d05c-1690-420c-..." is unreadable to the
+ * supervisor who receives it, and the id is already carried in the payload for
+ * traceability.
+ */
+async function describeUser(userId: string | null | undefined): Promise<string> {
+  const id = String(userId ?? "").trim();
+  if (!id) return "desconocido";
+
+  const { data } = await clientAdmin
+    .from("users")
+    .select("full_name, email")
+    .eq("id", id)
+    .maybeSingle();
+
+  const fullName = String((data as { full_name?: string | null } | null)?.full_name ?? "").trim();
+  if (fullName) return fullName;
+
+  const email = String((data as { email?: string | null } | null)?.email ?? "").trim();
+  if (email) return email;
+
+  return `usuario ${id.slice(0, 8)}`;
+}
+
+/** Name and zone of a site, for notifications that only have its id. */
+async function loadRestaurantDisplay(restaurantId: number): Promise<{ name: string; timezone: string }> {
+  const { data } = await clientAdmin
+    .from("restaurants")
+    .select("name, timezone")
+    .eq("id", restaurantId)
+    .maybeSingle();
+
+  const name = String((data as { name?: string | null } | null)?.name ?? "").trim();
+  return {
+    name: name || `sitio ${restaurantId}`,
+    timezone: safeTimezone((data as { timezone?: string | null } | null)?.timezone),
+  };
+}
+
+async function loadShiftContext(shiftId: number): Promise<{
+  shift_id: number;
+  restaurant_id: number;
+  employee_id: string;
+  restaurant_name: string;
+  restaurant_timezone: string;
+}> {
   const { data, error } = await clientAdmin
     .from("shifts")
-    .select("id, restaurant_id, employee_id")
+    .select("id, restaurant_id, employee_id, restaurants(name, timezone)")
     .eq("id", shiftId)
     .single();
 
@@ -127,10 +176,15 @@ async function loadShiftContext(shiftId: number): Promise<{ shift_id: number; re
     throw { code: 404, message: "Turno no encontrado para notificacion", category: "BUSINESS", details: error };
   }
 
+  const restaurantId = (data as { restaurant_id: number }).restaurant_id;
+  const joined = (data as { restaurants?: { name?: string | null; timezone?: string | null } | null }).restaurants ?? null;
+
   return {
     shift_id: (data as { id: number }).id,
-    restaurant_id: (data as { restaurant_id: number }).restaurant_id,
+    restaurant_id: restaurantId,
     employee_id: (data as { employee_id: string }).employee_id,
+    restaurant_name: String(joined?.name ?? "").trim() || `sitio ${restaurantId}`,
+    restaurant_timezone: safeTimezone(joined?.timezone),
   };
 }
 
@@ -445,8 +499,26 @@ export async function notifyShiftEvent(params: {
       ? "aprobado"
       : "rechazado";
 
+  const actorName = await describeUser(params.actorUserId);
+
+  // Who the actor IS depends on the event: the contractor starts and ends a
+  // service, but a supervisor is the one who approves or rejects it. Calling a
+  // supervisor "Contratista" would misattribute the action in the record.
+  const isReview = params.eventType === "shift_approved" || params.eventType === "shift_rejected";
+  const actorLabel = isReview ? "Revisado por" : "Contratista";
+  const employeeName = isReview ? await describeUser(context.employee_id) : null;
+
   const subject = `Servicio ${actionLabel} | #${context.shift_id}`;
-  const bodyText = `El servicio #${context.shift_id} fue ${actionLabel}. Actor: ${params.actorUserId}. Sitio: ${context.restaurant_id}.`;
+  // Names first: whoever reads this is a supervisor, not a database. The raw ids
+  // stay in `payload` for traceability.
+  const bodyText = [
+    `El servicio #${context.shift_id} fue ${actionLabel}.`,
+    employeeName ? `Contratista: ${employeeName}.` : null,
+    `${actorLabel}: ${actorName}.`,
+    `Sitio: ${context.restaurant_name}.`,
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   await enqueueForRecipients({
     eventType: params.eventType,
@@ -477,12 +549,18 @@ export async function notifyIncidentCreated(params: {
     includeEmployee: true,
   });
 
+  const actorName = await describeUser(params.actorUserId);
+
   await enqueueForRecipients({
     eventType: "incident_created",
     dedupePrefix: `incident_created:${params.incidentId}`,
     recipients,
     subject: `Incidente reportado | #${params.incidentId}`,
-    bodyText: `Se reporto la incidencia #${params.incidentId} en el servicio #${params.shiftId}. Actor: ${params.actorUserId}.`,
+    bodyText: [
+      `Se reporto la incidencia #${params.incidentId} en el servicio #${params.shiftId}.`,
+      `Reportado por: ${actorName}.`,
+      `Sitio: ${context.restaurant_name}.`,
+    ].join(" "),
     payload: {
       incident_id: params.incidentId,
       shift_id: params.shiftId,
@@ -509,8 +587,23 @@ async function enqueueShiftNotStartedNotificationForSchedule(params: {
     includeEmployee: true,
   });
 
+  // The site's own clock, not UTC: a supervisor reading "2026-07-19T03:00:00.000Z"
+  // has to convert in their head, and would read the wrong hour if they didn't.
+  const [site, employeeName] = await Promise.all([
+    loadRestaurantDisplay(params.restaurantId),
+    describeUser(params.employeeId),
+  ]);
+
+  const startLocal = formatAtSite(params.scheduledStart, site.timezone);
+  const endLocal = formatAtSite(params.scheduledEnd, site.timezone);
+
   const subject = `Servicio no iniciado | Asignacion #${params.scheduledShiftId}`;
-  const bodyText = `El servicio asignado #${params.scheduledShiftId} no se inicio en la ventana de servicio. Ventana inicio: ${params.scheduledStart}. Ventana fin: ${params.scheduledEnd}.`;
+  const bodyText = [
+    `El servicio asignado #${params.scheduledShiftId} no se inicio en la ventana de servicio.`,
+    `Contratista: ${employeeName}.`,
+    `Sitio: ${site.name}.`,
+    `Ventana (hora del sitio): ${startLocal?.local_text ?? params.scheduledStart} a ${endLocal?.local_time ?? params.scheduledEnd}.`,
+  ].join(" ");
 
   await enqueueForRecipients({
     eventType: "shift_not_started",
