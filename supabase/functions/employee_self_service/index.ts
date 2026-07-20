@@ -15,8 +15,9 @@ import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { notifyIncidentCreated, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
 import { runInBackground } from "../_shared/background.ts";
-import { autoCloseOverdueShifts } from "../_shared/shiftAutoClose.ts";
+import { autoCloseOverdueShifts, expireOverdueScheduledShifts } from "../_shared/shiftAutoClose.ts";
 import { getSystemSettings, resolveCleaningAreas } from "../_shared/systemSettings.ts";
+import { endOfLocalDay, formatAtSite, safeTimezone } from "../_shared/timezone.ts";
 
 const endpoint = "employee_self_service";
 
@@ -215,8 +216,10 @@ serve(async (req: Request) => {
       const settings = await getSystemSettings(clientAdmin);
 
       // Close any service whose scheduled window already ended, before reading
-      // state, so the dashboard never shows a stale "active" shift (#1).
+      // state, so the dashboard never shows a stale "active" shift (#1), and mark
+      // the ones that were never started as expired so they stop being invisible.
       await autoCloseOverdueShifts({ employeeId: user.id });
+      await expireOverdueScheduledShifts({ employeeId: user.id });
 
       const [activeShiftRes, linksRes, scheduleRes, tasksRes, shiftsRes] = await Promise.all([
         clientAdmin
@@ -353,18 +356,29 @@ serve(async (req: Request) => {
         restaurant: restaurantsById.get(restaurantId) ?? null,
       }));
 
-      const scheduled_shifts = (scheduleRes.data ?? []).map((row) => ({
-        id: row.id,
-        restaurant_id: row.restaurant_id,
-        scheduled_start: row.scheduled_start,
-        scheduled_end: row.scheduled_end,
-        status: row.status,
-        notes: row.notes,
-        restaurant: restaurantsById.get(Number(row.restaurant_id)) ?? null,
-        restaurant_timezone:
-          (restaurantsById.get(Number(row.restaurant_id)) as { timezone?: string | null } | undefined)?.timezone ?? null,
-        start_window: buildStartWindow(row.scheduled_start, row.scheduled_end, settings, now, canStartShift),
-      }));
+      const scheduled_shifts = (scheduleRes.data ?? []).map((row) => {
+        const restaurantTz = safeTimezone(
+          (restaurantsById.get(Number(row.restaurant_id)) as { timezone?: string | null } | undefined)?.timezone
+        );
+        return {
+          id: row.id,
+          restaurant_id: row.restaurant_id,
+          scheduled_start: row.scheduled_start,
+          scheduled_end: row.scheduled_end,
+          status: row.status,
+          notes: row.notes,
+          restaurant: restaurantsById.get(Number(row.restaurant_id)) ?? null,
+          restaurant_timezone:
+            (restaurantsById.get(Number(row.restaurant_id)) as { timezone?: string | null } | undefined)?.timezone ?? null,
+          start_window: buildStartWindow(row.scheduled_start, row.scheduled_end, settings, now, canStartShift),
+          // Preformatted in the site's own clock so no client does tz math.
+          local: {
+            timezone: restaurantTz,
+            start: formatAtSite(row.scheduled_start, restaurantTz),
+            end: formatAtSite(row.scheduled_end, restaurantTz),
+          },
+        };
+      });
 
       // All of today's startable/active services in one array, each with the
       // geofence data the app needs to pick the right one by GPS when several
@@ -385,6 +399,26 @@ serve(async (req: Request) => {
         };
       };
 
+      // "In play today" at the SITE's clock, not the contractor's and not UTC.
+      //
+      // A service qualifies when it hasn't ended yet (the query already filters
+      // `scheduled_end >= now`) and it starts before the site's local midnight
+      // rolls over. That keeps an overnight service (Sat 20:00 -> Sun 05:00 PDT)
+      // visible on both calendar days until it actually ends, and drops
+      // tomorrow's services so the app never GPS-matches against a shift that
+      // isn't in play. The full agenda still travels in `scheduled_shifts`.
+      const isInPlayToday = (row: { restaurant_id: unknown; scheduled_start: string | null }) => {
+        if (!row.scheduled_start) return false;
+        const restaurant = restaurantsById.get(Number(row.restaurant_id)) as { timezone?: string | null } | undefined;
+        const tz = safeTimezone(restaurant?.timezone);
+        const start = new Date(String(row.scheduled_start));
+        if (Number.isNaN(start.getTime())) return false;
+        return start < endOfLocalDay(now, tz);
+      };
+
+      const siteTimezoneOf = (restaurantId: unknown) =>
+        safeTimezone((restaurantsById.get(Number(restaurantId)) as { timezone?: string | null } | undefined)?.timezone);
+
       const today_shifts = [
         ...(active_shift
           ? [
@@ -398,10 +432,15 @@ serve(async (req: Request) => {
                 started_at: active_shift.start_time ?? null,
                 restaurant: toGeoRestaurant(restaurantsById.get(Number(active_shift.restaurant_id)) as Record<string, unknown> | undefined),
                 start_window: null,
+                local: {
+                  timezone: siteTimezoneOf(active_shift.restaurant_id),
+                  start: formatAtSite(active_shift.scheduled_start ?? null, siteTimezoneOf(active_shift.restaurant_id)),
+                  end: formatAtSite(active_shift.scheduled_end ?? null, siteTimezoneOf(active_shift.restaurant_id)),
+                },
               },
             ]
           : []),
-        ...scheduled_shifts.map((row) => ({
+        ...scheduled_shifts.filter(isInPlayToday).map((row) => ({
           shift_id: null,
           scheduled_shift_id: row.id,
           restaurant_id: row.restaurant_id,
@@ -411,6 +450,11 @@ serve(async (req: Request) => {
           started_at: null,
           restaurant: toGeoRestaurant(restaurantsById.get(Number(row.restaurant_id)) as Record<string, unknown> | undefined),
           start_window: row.start_window,
+          local: {
+            timezone: siteTimezoneOf(row.restaurant_id),
+            start: formatAtSite(row.scheduled_start, siteTimezoneOf(row.restaurant_id)),
+            end: formatAtSite(row.scheduled_end, siteTimezoneOf(row.restaurant_id)),
+          },
         })),
       ];
 

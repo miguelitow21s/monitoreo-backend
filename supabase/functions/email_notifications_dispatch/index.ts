@@ -11,6 +11,7 @@ import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { dispatchPendingEmailNotifications, enqueueOverdueShiftNotStartedNotifications } from "../_shared/emailNotifications.ts";
+import { expireOverdueScheduledShifts } from "../_shared/shiftAutoClose.ts";
 
 const endpoint = "email_notifications_dispatch";
 
@@ -39,6 +40,8 @@ const payloadSchema = z.object({
   max_attempts: z.number().int().min(1).max(20).optional(),
   /** Daily ceiling for queue mail, so the login OTP always has quota left. */
   daily_cap: z.number().int().min(1).max(2000).optional(),
+  /** How many never-started services to retire per run. */
+  expire_limit: z.number().int().min(1).max(500).optional(),
 });
 
 serve(async (req) => {
@@ -96,6 +99,12 @@ serve(async (req) => {
       });
     }
 
+    // After enqueueing, never before: expiring first could retire a service in the
+    // same pass that should still have raised its "not started" alert. Global
+    // sweep (no employee filter) so services belonging to contractors who never
+    // open the app also stop piling up in the alert pool.
+    const expired = await expireOverdueScheduledShifts({ limit: payload.expire_limit });
+
     const dispatch = await dispatchPendingEmailNotifications({
       limit: payload.dispatch_limit,
       maxAttempts: payload.max_attempts,
@@ -104,6 +113,7 @@ serve(async (req) => {
 
     const result = {
       queued_shift_not_started: queuedShiftNotStarted,
+      expired_scheduled_shifts: expired.expired,
       attempted: dispatch.attempted,
       sent: dispatch.sent,
       failed: dispatch.failed,

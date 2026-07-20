@@ -11,6 +11,56 @@ import { notifyShiftEvent } from "./emailNotifications.ts";
 //
 // Called opportunistically on employee reads (dashboard), so the app sees the
 // state flip on its next poll without needing a cron.
+/**
+ * Mark scheduled services whose window closed without ever being started.
+ *
+ * Without this they stay 'scheduled' forever: they disappear from the app with no
+ * trace (the contractor and the auditor lose the fact that a service was assigned
+ * and missed) and they stay in the pool the overdue-alert queue reads from, which
+ * is how a cron once resurrected three months of stale shifts.
+ *
+ * The one-hour grace after `scheduled_end` leaves room for the "not started"
+ * alert to have fired first, so expiring never suppresses a legitimate warning.
+ */
+export async function expireOverdueScheduledShifts(params?: {
+  employeeId?: string;
+  limit?: number;
+  graceMinutes?: number;
+}): Promise<{ expired: number }> {
+  const limit = Math.min(Math.max(params?.limit ?? 50, 1), 500);
+  const graceMinutes = Math.min(Math.max(params?.graceMinutes ?? 60, 0), 24 * 60);
+  const cutoffIso = new Date(Date.now() - graceMinutes * 60_000).toISOString();
+
+  let query = clientAdmin
+    .from("scheduled_shifts")
+    .select("id")
+    .eq("status", "scheduled")
+    .is("started_shift_id", null)
+    .lt("scheduled_end", cutoffIso)
+    .limit(limit);
+
+  if (params?.employeeId) query = query.eq("employee_id", params.employeeId);
+
+  const { data: stale, error } = await query;
+  if (error || !stale || stale.length === 0) return { expired: 0 };
+
+  const ids = stale.map((row) => Number(row.id)).filter((n) => Number.isFinite(n));
+  if (ids.length === 0) return { expired: 0 };
+
+  // Re-check the status in the update so a service started between the read and
+  // the write is never stomped.
+  const { data: updated, error: updateError } = await clientAdmin
+    .from("scheduled_shifts")
+    .update({ status: "expired", updated_at: new Date().toISOString() })
+    .in("id", ids)
+    .eq("status", "scheduled")
+    .is("started_shift_id", null)
+    .select("id");
+
+  if (updateError) return { expired: 0 };
+  return { expired: updated?.length ?? 0 };
+}
+
 export async function autoCloseOverdueShifts(params: {
   employeeId?: string;
   limit?: number;

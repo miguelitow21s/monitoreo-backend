@@ -14,16 +14,42 @@ import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { getSystemSettings } from "../_shared/systemSettings.ts";
+import { parseWallClock, wallClockToUtc, formatAtSite, safeTimezone } from "../_shared/timezone.ts";
 
 const endpoint = "scheduled_shifts_manage";
 
+// Wall-clock scheduling.
+//
+// A service happens at a site, so the hour someone types when scheduling IS the
+// hour at that site. Whoever schedules it may sit in another country; their clock
+// is an accident of geography. Clients used to compute the absolute instant
+// themselves, which meant every screen was a fresh chance to apply the browser's
+// timezone instead of the restaurant's — and some of them did exactly that.
+//
+// Sending date + times lets the backend do the conversion from
+// `restaurants.timezone`, so a client that never computes an instant can never
+// compute a wrong one. The instant form stays accepted for compatibility.
+const calendarDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Fecha invalida (use YYYY-MM-DD)");
+const timeOfDay = z.string().regex(/^([01]?\d|2[0-3]):[0-5]\d$/, "Hora invalida (use HH:MM)");
+
+const serviceWindowShape = {
+  // Preferred: wall clock at the site.
+  scheduled_date: calendarDate.optional(),
+  start_time: timeOfDay.optional(),
+  end_time: timeOfDay.optional(),
+  // Legacy: an absolute instant the client computed.
+  scheduled_start: z.string().datetime().optional(),
+  scheduled_end: z.string().datetime().optional(),
+};
+
+// Kept as plain objects: z.discriminatedUnion only accepts ZodObject members, so
+// the "exactly one window form" rule is enforced in resolveServiceWindow instead.
 const assignAction = z.object({
   action: z.literal("assign"),
   employee_id: z.string().uuid(),
   restaurant_id: commonSchemas.restaurantId,
-  scheduled_start: z.string().datetime(),
-  scheduled_end: z.string().datetime(),
   notes: z.string().trim().max(1000).optional().nullable(),
+  ...serviceWindowShape,
 });
 
 const bulkAssignAction = z.object({
@@ -33,9 +59,8 @@ const bulkAssignAction = z.object({
       z.object({
         employee_id: z.string().uuid(),
         restaurant_id: commonSchemas.restaurantId,
-        scheduled_start: z.string().datetime(),
-        scheduled_end: z.string().datetime(),
         notes: z.string().trim().max(1000).optional().nullable(),
+        ...serviceWindowShape,
       })
     )
     .min(1)
@@ -45,9 +70,8 @@ const bulkAssignAction = z.object({
 const rescheduleAction = z.object({
   action: z.literal("reschedule"),
   scheduled_shift_id: z.number().int().positive(),
-  scheduled_start: z.string().datetime(),
-  scheduled_end: z.string().datetime(),
   notes: z.string().trim().max(1000).optional().nullable(),
+  ...serviceWindowShape,
 });
 
 const cancelAction = z.object({
@@ -60,13 +84,97 @@ const listAction = z.object({
   action: z.literal("list"),
   employee_id: z.string().uuid().optional(),
   restaurant_id: commonSchemas.restaurantId.optional(),
-  status: z.enum(["scheduled", "started", "completed", "cancelled"]).optional(),
+  status: z.enum(["scheduled", "started", "completed", "cancelled", "expired"]).optional(),
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),
   limit: z.number().int().min(1).max(500).default(100),
 });
 
 const payloadSchema = z.discriminatedUnion("action", [assignAction, bulkAssignAction, rescheduleAction, cancelAction, listAction]);
+
+type ServiceWindowInput = {
+  scheduled_date?: string;
+  start_time?: string;
+  end_time?: string;
+  scheduled_start?: string;
+  scheduled_end?: string;
+};
+
+/** IANA zone per restaurant id, so a whole bulk payload costs one round-trip. */
+async function loadTimezonesByRestaurantId(restaurantIds: number[]): Promise<Map<number, string>> {
+  const unique = [...new Set(restaurantIds.filter((id) => Number.isFinite(id)))];
+  if (unique.length === 0) return new Map();
+
+  const { data, error } = await clientAdmin.from("restaurants").select("id, timezone").in("id", unique);
+  if (error) {
+    throw {
+      code: 409,
+      error_code: "SCHEDULE_TIMEZONE_LOOKUP_FAILED",
+      message: "No se pudo resolver la zona horaria del sitio",
+      category: "BUSINESS",
+      details: error,
+    };
+  }
+
+  return new Map((data ?? []).map((row) => [Number(row.id), safeTimezone(row.timezone)]));
+}
+
+/**
+ * Turns either window form into the absolute instants we store.
+ *
+ * Wall-clock input is read in the SITE's zone. An end time at or before the start
+ * means the service runs past midnight (20:00 -> 05:00), so the end belongs to the
+ * next local day — resolved in local time, not by adding 24h, so it stays correct
+ * across a DST change.
+ */
+function resolveServiceWindow(
+  input: ServiceWindowInput,
+  timezone: string
+): { scheduled_start: string; scheduled_end: string; timezone: string } {
+  const wallClock = Boolean(input.scheduled_date && input.start_time && input.end_time);
+  const instants = Boolean(input.scheduled_start && input.scheduled_end);
+
+  if (wallClock === instants) {
+    throw {
+      code: 422,
+      error_code: "SCHEDULE_WINDOW_FORM_INVALID",
+      message:
+        "Envie scheduled_date + start_time + end_time (hora local del sitio) o scheduled_start + scheduled_end (instantes ISO), pero no ambos",
+      category: "VALIDATION",
+    };
+  }
+
+  if (instants) {
+    return {
+      scheduled_start: String(input.scheduled_start),
+      scheduled_end: String(input.scheduled_end),
+      timezone,
+    };
+  }
+
+  const start = parseWallClock(input.scheduled_date, input.start_time, timezone);
+  let end = parseWallClock(input.scheduled_date, input.end_time, timezone);
+  if (!start || !end) {
+    throw {
+      code: 422,
+      error_code: "SCHEDULE_WALL_CLOCK_INVALID",
+      message: "Fecha u hora local invalida",
+      category: "VALIDATION",
+    };
+  }
+
+  if (end <= start) {
+    const [year, month, day] = String(input.scheduled_date).split("-").map(Number);
+    const [hour, minute] = String(input.end_time).split(":").map(Number);
+    end = wallClockToUtc(year, month, day + 1, hour, minute, timezone);
+  }
+
+  return {
+    scheduled_start: start.toISOString(),
+    scheduled_end: end.toISOString(),
+    timezone,
+  };
+}
 
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
@@ -126,13 +234,17 @@ serve(async (req: Request) => {
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 40, window_seconds: 60 });
 
     if (payload.action === "assign") {
-      assertDurationWindow(payload.scheduled_start, payload.scheduled_end);
+      const timezones = await loadTimezonesByRestaurantId([Number(payload.restaurant_id)]);
+      const siteTimezone = timezones.get(Number(payload.restaurant_id)) ?? safeTimezone(null);
+      const window = resolveServiceWindow(payload, siteTimezone);
+
+      assertDurationWindow(window.scheduled_start, window.scheduled_end);
 
       const { data, error } = await clientUser.rpc("assign_scheduled_shift", {
         p_employee_id: payload.employee_id,
         p_restaurant_id: payload.restaurant_id,
-        p_scheduled_start: payload.scheduled_start,
-        p_scheduled_end: payload.scheduled_end,
+        p_scheduled_start: window.scheduled_start,
+        p_scheduled_end: window.scheduled_end,
         p_notes: payload.notes ?? null,
       });
 
@@ -147,25 +259,57 @@ serve(async (req: Request) => {
           scheduled_shift_id: data,
           employee_id: payload.employee_id,
           restaurant_id: payload.restaurant_id,
-          scheduled_start: payload.scheduled_start,
-          scheduled_end: payload.scheduled_end,
+          scheduled_start: window.scheduled_start,
+          scheduled_end: window.scheduled_end,
+          site_timezone: siteTimezone,
         },
         request_id,
       });
 
-      const successPayload = { success: true, data: { scheduled_shift_id: data }, error: null, request_id };
+      // Echo the stored window back in the site's own clock: the caller can show
+      // exactly what was saved without converting anything.
+      const successPayload = {
+        success: true,
+        data: {
+          scheduled_shift_id: data,
+          scheduled_start: window.scheduled_start,
+          scheduled_end: window.scheduled_end,
+          timezone: siteTimezone,
+          local: {
+            start: formatAtSite(window.scheduled_start, siteTimezone),
+            end: formatAtSite(window.scheduled_end, siteTimezone),
+          },
+        },
+        error: null,
+        request_id,
+      };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
 
     if (payload.action === "bulk_assign") {
-      const entries = payload.entries as Array<{
+      const rawEntries = payload.entries as Array<ServiceWindowInput & {
         employee_id: string;
         restaurant_id: number;
-        scheduled_start: string;
-        scheduled_end: string;
         notes?: string | null;
       }>;
+
+      // One lookup for the whole batch: every entry resolves against its own
+      // site's zone, so a plan spanning several timezones stays correct.
+      const batchTimezones = await loadTimezonesByRestaurantId(rawEntries.map((e) => Number(e.restaurant_id)));
+
+      const entries = rawEntries.map((entry) => {
+        const siteTimezone = batchTimezones.get(Number(entry.restaurant_id)) ?? safeTimezone(null);
+        const window = resolveServiceWindow(entry, siteTimezone);
+        return {
+          employee_id: entry.employee_id,
+          restaurant_id: entry.restaurant_id,
+          notes: entry.notes,
+          scheduled_start: window.scheduled_start,
+          scheduled_end: window.scheduled_end,
+          site_timezone: siteTimezone,
+        };
+      });
 
       for (const entry of entries) {
         assertDurationWindow(entry.scheduled_start, entry.scheduled_end);
@@ -216,6 +360,11 @@ serve(async (req: Request) => {
             restaurant_id: r.entry.restaurant_id,
             scheduled_start: r.entry.scheduled_start,
             scheduled_end: r.entry.scheduled_end,
+            timezone: r.entry.site_timezone,
+            local: {
+              start: formatAtSite(r.entry.scheduled_start, r.entry.site_timezone),
+              end: formatAtSite(r.entry.scheduled_end, r.entry.site_timezone),
+            },
             notes: r.entry.notes ?? null,
           });
         } else {
@@ -254,6 +403,9 @@ serve(async (req: Request) => {
     }
 
     if (payload.action === "reschedule") {
+      // Set inside both branches once the service's site (and so its zone) is known.
+      let resolvedWindow: { scheduled_start: string; scheduled_end: string; timezone: string } | null = null;
+
       if (user.role === "supervisora") {
         const { data: row, error: rowError } = await clientAdmin
           .from("scheduled_shifts")
@@ -265,10 +417,17 @@ serve(async (req: Request) => {
           throw { code: 404, error_code: "SCHEDULE_NOT_FOUND", message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
         }
 
-        assertDurationWindow(payload.scheduled_start, payload.scheduled_end);
+        const timezones = await loadTimezonesByRestaurantId([Number(row.restaurant_id)]);
+        const siteTimezone = timezones.get(Number(row.restaurant_id)) ?? safeTimezone(null);
+        const window = resolveServiceWindow(payload, siteTimezone);
+        resolvedWindow = window;
 
-        if (row.status !== "scheduled") {
-          throw { code: 409, message: "Solo se puede reprogramar un servicio en estado programado", category: "BUSINESS" };
+        assertDurationWindow(window.scheduled_start, window.scheduled_end);
+
+        // 'expired' is rebookable: a service whose window closed unused is exactly
+        // the one an inspector wants to move to a new date.
+        if (row.status !== "scheduled" && row.status !== "expired") {
+          throw { code: 409, message: "Solo se puede reprogramar un servicio programado o vencido", category: "BUSINESS" };
         }
 
         const newNotes = payload.notes ? payload.notes.trim() : null;
@@ -289,8 +448,10 @@ serve(async (req: Request) => {
         const { error: updateError } = await clientAdmin
           .from("scheduled_shifts")
           .update({
-            scheduled_start: payload.scheduled_start,
-            scheduled_end: payload.scheduled_end,
+            scheduled_start: window.scheduled_start,
+            scheduled_end: window.scheduled_end,
+            // Rebooking puts an expired service back in play.
+            status: "scheduled",
             notes: newNotes || row.notes || null,
             updated_at: new Date().toISOString(),
           })
@@ -310,12 +471,17 @@ serve(async (req: Request) => {
           throw { code: 404, error_code: "SCHEDULE_NOT_FOUND", message: "Servicio asignado no encontrado", category: "BUSINESS", details: rowError };
         }
 
-        assertDurationWindow(payload.scheduled_start, payload.scheduled_end);
+        const timezones = await loadTimezonesByRestaurantId([Number(row.restaurant_id)]);
+        const siteTimezone = timezones.get(Number(row.restaurant_id)) ?? safeTimezone(null);
+        const window = resolveServiceWindow(payload, siteTimezone);
+        resolvedWindow = window;
+
+        assertDurationWindow(window.scheduled_start, window.scheduled_end);
 
         const { error } = await clientUser.rpc("reschedule_scheduled_shift", {
           p_scheduled_shift_id: payload.scheduled_shift_id,
-          p_scheduled_start: payload.scheduled_start,
-          p_scheduled_end: payload.scheduled_end,
+          p_scheduled_start: window.scheduled_start,
+          p_scheduled_end: window.scheduled_end,
           p_notes: payload.notes ?? null,
         });
 
@@ -329,13 +495,30 @@ serve(async (req: Request) => {
         action: "SCHEDULED_SHIFT_RESCHEDULE",
         context: {
           scheduled_shift_id: payload.scheduled_shift_id,
-          scheduled_start: payload.scheduled_start,
-          scheduled_end: payload.scheduled_end,
+          scheduled_start: resolvedWindow?.scheduled_start ?? null,
+          scheduled_end: resolvedWindow?.scheduled_end ?? null,
+          site_timezone: resolvedWindow?.timezone ?? null,
         },
         request_id,
       });
 
-      const successPayload = { success: true, data: { scheduled_shift_id: payload.scheduled_shift_id }, error: null, request_id };
+      const successPayload = {
+        success: true,
+        data: {
+          scheduled_shift_id: payload.scheduled_shift_id,
+          scheduled_start: resolvedWindow?.scheduled_start ?? null,
+          scheduled_end: resolvedWindow?.scheduled_end ?? null,
+          timezone: resolvedWindow?.timezone ?? null,
+          local: resolvedWindow
+            ? {
+                start: formatAtSite(resolvedWindow.scheduled_start, resolvedWindow.timezone),
+                end: formatAtSite(resolvedWindow.scheduled_end, resolvedWindow.timezone),
+              }
+            : null,
+        },
+        error: null,
+        request_id,
+      };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
