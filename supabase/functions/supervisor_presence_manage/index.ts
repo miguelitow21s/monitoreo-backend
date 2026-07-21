@@ -19,6 +19,9 @@ import { geoValidatorByRestaurant } from "../_shared/geoValidator.ts";
 const endpoint = "supervisor_presence_manage";
 const evidenceBucket = "shift-evidence";
 const evidenceMaxBytes = 8 * 1024 * 1024;
+// Signed-URL lifetime for reads, matched to the rest of the API (2h). The admin
+// opens these on demand when expanding an audit card.
+const evidenceUrlTtlSeconds = 7200;
 const allowedMimeValues = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"] as const;
 const allowedMime = new Set<string>(allowedMimeValues);
 const imageMimeSchema = z.enum(allowedMimeValues);
@@ -360,6 +363,66 @@ serve(async (req: Request) => {
       return map;
     };
 
+    // Turn presence rows into what a client can actually render: each evidence
+    // carries a signed URL, not just its private storage path (the bucket is
+    // private, so a raw path shows as "no photos"). Old audits kept a single photo
+    // on the log row itself; fold that in so they aren't left blank either. Emits
+    // both `evidences[]` (with signed_url) and `evidence_urls[]` + `evidence_count`
+    // so either client convention works.
+    const attachSignedEvidence = async (rows: Array<Record<string, unknown>>) => {
+      if (!rows.length) return rows;
+      const evidenceMap = await fetchEvidences(clientAdmin, rows.map((row) => row.id as number | string));
+
+      const allPaths = new Set<string>();
+      for (const list of evidenceMap.values()) {
+        for (const item of list) if (item.path) allPaths.add(String(item.path));
+      }
+      for (const row of rows) if (row.evidence_path) allPaths.add(String(row.evidence_path));
+
+      const signedByPath = new Map<string, string>();
+      const paths = [...allPaths];
+      if (paths.length > 0) {
+        const { data: signed } = await clientAdmin.storage
+          .from(evidenceBucket)
+          .createSignedUrls(paths, evidenceUrlTtlSeconds);
+        (signed ?? []).forEach((entry, i) => {
+          if (entry && entry.signedUrl && !entry.error) signedByPath.set(paths[i], entry.signedUrl);
+        });
+      }
+
+      const isVideo = (mime: unknown) => typeof mime === "string" && mime.toLowerCase().startsWith("video/");
+
+      return rows.map((row) => {
+        const list = (evidenceMap.get(String(row.id)) ?? []).map((item) => ({
+          ...item,
+          signed_url: item.path ? signedByPath.get(String(item.path)) ?? null : null,
+          is_video: isVideo(item.mime_type),
+        }));
+
+        // Legacy single photo stored directly on the presence log.
+        if (row.evidence_path && !list.some((item) => item.path === row.evidence_path)) {
+          list.push({
+            id: null,
+            path: row.evidence_path,
+            sha256: row.evidence_hash ?? null,
+            mime_type: row.evidence_mime_type ?? null,
+            size_bytes: row.evidence_size_bytes ?? null,
+            label: null,
+            created_at: row.recorded_at ?? null,
+            signed_url: signedByPath.get(String(row.evidence_path)) ?? null,
+            is_video: isVideo(row.evidence_mime_type),
+          });
+        }
+
+        return {
+          ...row,
+          evidences: list,
+          evidence_urls: list.map((item) => item.signed_url).filter(Boolean),
+          evidence_count: list.length,
+        };
+      });
+    };
+
     const assertSupervisorPath = (path: string, phase?: "start" | "end") => {
       const lower = path.toLowerCase();
       const expectedStart = `users/${user.id}/supervisor-start/`;
@@ -459,11 +522,7 @@ serve(async (req: Request) => {
       }
 
       const items = data ?? [];
-      const evidenceMap = await fetchEvidences(listClient, items.map((row) => row.id));
-      const withEvidence = items.map((row) => ({
-        ...row,
-        evidences: evidenceMap.get(String(row.id)) ?? [],
-      }));
+      const withEvidence = await attachSignedEvidence(items);
       const successPayload = { success: true, data: { items: withEvidence }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
@@ -508,11 +567,7 @@ serve(async (req: Request) => {
       }
 
       const items = data ?? [];
-      const evidenceMap = await fetchEvidences(listClient, items.map((row) => row.id));
-      const withEvidence = items.map((row) => ({
-        ...row,
-        evidences: evidenceMap.get(String(row.id)) ?? [],
-      }));
+      const withEvidence = await attachSignedEvidence(items);
       const successPayload = { success: true, data: { items: withEvidence }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
@@ -570,11 +625,7 @@ serve(async (req: Request) => {
         };
       });
 
-      const evidenceMap = await fetchEvidences(clientAdmin, baseItems.map((row) => row.id));
-      const items = baseItems.map((row) => ({
-        ...row,
-        evidences: evidenceMap.get(String(row.id)) ?? [],
-      }));
+      const items = await attachSignedEvidence(baseItems);
 
       const successPayload = { success: true, data: { items }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
