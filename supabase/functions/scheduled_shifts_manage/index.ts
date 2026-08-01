@@ -13,7 +13,6 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
-import { getSystemSettings } from "../_shared/systemSettings.ts";
 import { parseWallClock, wallClockToUtc, formatAtSite, safeTimezone } from "../_shared/timezone.ts";
 
 const endpoint = "scheduled_shifts_manage";
@@ -202,9 +201,19 @@ serve(async (req: Request) => {
     const payload = parsedPayload as z.infer<typeof payloadSchema>;
     idempotencyKey = requireIdempotencyKey(req);
 
-    const settings = await getSystemSettings(clientAdmin);
-    const minHours = Math.max(0, settings.shifts.min_hours ?? 0);
-    const maxHours = Math.max(minHours, settings.shifts.max_hours ?? minHours);
+    // Business rule (client-confirmed): the scheduled window is only the span the
+    // site is closed to the public and can be cleaned. Most run overnight and cross
+    // midnight (10PM->6AM, 9PM->8AM); deep-clean nights reach 12-14h. There is no
+    // operational reason to cap the duration -- worked time is measured by
+    // shifts_start/shifts_end, not by this window. The only real invariant is
+    // end > start (already guaranteed by resolveServiceWindow and the DB CHECK).
+    //
+    // One hard sanity ceiling stays, and it never rejects a real schedule: wall-clock
+    // input can't exceed ~24h anyway (cross-midnight only bumps the end by one local
+    // day). A window past 24h can only come from a wrong end DATE typed into the
+    // legacy explicit-instant form, which would otherwise mark a shift "in play" for
+    // weeks and jam auto-close/expiry.
+    const SANITY_MAX_HOURS = 24;
 
     const assertDurationWindow = (startIso: string, endIso: string) => {
       const start = new Date(startIso);
@@ -213,13 +222,16 @@ serve(async (req: Request) => {
         throw { code: 422, error_code: "SCHEDULE_TIME_RANGE_INVALID", message: "Rango horario invalido", category: "VALIDATION" };
       }
       const hours = (end.getTime() - start.getTime()) / 3600000;
-      if (hours < minHours || hours > maxHours) {
+      if (hours <= 0) {
+        throw { code: 422, error_code: "SCHEDULE_TIME_RANGE_INVALID", message: "La hora de fin debe ser posterior a la de inicio", category: "VALIDATION" };
+      }
+      if (hours > SANITY_MAX_HOURS) {
         throw {
           code: 422,
           error_code: "SCHEDULE_DURATION_OUT_OF_RANGE",
-          message: "La duracion de la ventana de servicio esta fuera del rango permitido",
+          message: "La ventana supera 24 horas; revisa la fecha de fin del servicio",
           category: "VALIDATION",
-          details: { min_hours: minHours, max_hours: maxHours, hours },
+          details: { max_hours: SANITY_MAX_HOURS, hours },
         };
       }
     };
