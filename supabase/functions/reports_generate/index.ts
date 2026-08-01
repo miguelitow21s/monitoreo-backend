@@ -15,6 +15,7 @@ import { response, handleCorsPreflight } from "../_shared/response.ts";
 import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
+import { formatAtSite, safeTimezone } from "../_shared/timezone.ts";
 import { WORKTRACE_LOGO_PNG_BASE64 } from "./worktraceLogo.ts";
 import { WORKTRACE_LOGO_NEW_PNG_BASE64 } from "./worktraceLogoNew.ts";
 import { VERIFIK_LOGO_PNG_BASE64 } from "./verifikLogo.ts";
@@ -22,13 +23,19 @@ import { R3_LOGO_PNG_BASE64 } from "./r3Logo.ts";
 
 const endpoint = "reports_generate";
 const payloadSchema = z.object({
+  // Which dataset the report covers. "shifts" (default) keeps the historic
+  // contractor report untouched; "audits" reports quality inspections
+  // (supervisor_presence) with the same request/response contract.
+  report_type: z.enum(["shifts", "audits"]).optional(),
   restaurant_id: z.union([commonSchemas.restaurantId, z.literal("all"), z.null()]).optional(),
   employee_id: z.union([z.string().uuid(), z.literal("all"), z.null()]).optional(),
+  // Only used by the audits report: which inspector to filter by ("all"/null = every one).
+  supervisor_id: z.union([z.string().uuid(), z.literal("all"), z.null()]).optional(),
   period_start: commonSchemas.dateYmd,
   period_end: commonSchemas.dateYmd,
   filtros_json: z.record(z.any()).optional(),
   columns: z.array(z.string().min(1).max(64)).max(100).optional(),
-  export_format: z.enum(["csv", "pdf", "both", "xlsx"]).optional(),
+  export_format: z.enum(["csv", "pdf", "both", "xlsx", "excel"]).optional(),
 });
 
 const allowedColumns = [
@@ -939,6 +946,210 @@ function buildPagedPdf(
   return new TextEncoder().encode(body);
 }
 
+// ---------------------------------------------------------------------------
+// Audits report (supervisor_presence). Kept fully self-contained so it never
+// touches the contractor-shift pipeline: same request/response contract, its
+// own data query and its own XLSX/PDF builders.
+// ---------------------------------------------------------------------------
+
+type AuditReportRow = {
+  audit_id: number;
+  restaurant_id: number;
+  restaurant_name: string;
+  supervisor_name: string;
+  phase: string | null;
+  recorded_at: string;
+  local_date: string;
+  local_time: string;
+  timezone: string;
+  observations: string;
+  evidence_count: number;
+  evidences: Array<{ path: string; signed_url: string | null; mime_type: string | null; is_video: boolean }>;
+};
+
+function auditPhaseLabel(phase: string | null): string {
+  if (phase === "start") return "Inicio";
+  if (phase === "end") return "Cierre";
+  return phase ? String(phase) : "—";
+}
+
+function buildAuditsXlsx(
+  meta: { restaurantLabel: string; supervisorLabel: string; periodStart: string; periodEnd: string; generatedAt: string },
+  rows: AuditReportRow[]
+): Uint8Array {
+  const header = [
+    "Fecha (sitio)",
+    "Hora (sitio)",
+    "Zona horaria",
+    "Sitio",
+    "Supervisor",
+    "Fase",
+    "Observaciones",
+    "N.º evidencias",
+    "URLs de evidencias",
+  ];
+
+  const dataRows = rows.map((r) => [
+    r.local_date,
+    r.local_time,
+    r.timezone,
+    r.restaurant_name,
+    r.supervisor_name,
+    auditPhaseLabel(r.phase),
+    r.observations,
+    r.evidence_count,
+    r.evidences.map((e) => e.signed_url).filter(Boolean).join("\n"),
+  ]);
+
+  const aoa: Array<Array<string | number>> = [
+    ["Reporte de auditorías de calidad"],
+    [`Sitio: ${meta.restaurantLabel}`],
+    [`Supervisor: ${meta.supervisorLabel}`],
+    [`Periodo: ${meta.periodStart} a ${meta.periodEnd}`],
+    [`Generado: ${formatDateTime(meta.generatedAt)}`],
+    [`Total auditorías: ${rows.length}`],
+    [],
+    header,
+    ...dataRows,
+  ];
+
+  const sheet = XLSX.utils.aoa_to_sheet(aoa);
+  sheet["!cols"] = [
+    { wch: 14 }, { wch: 12 }, { wch: 20 }, { wch: 24 }, { wch: 24 },
+    { wch: 10 }, { wch: 50 }, { wch: 12 }, { wch: 60 },
+  ];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, sheet, "Auditorías");
+  return new Uint8Array(XLSX.write(wb, { type: "array", bookType: "xlsx" }));
+}
+
+async function buildAuditsPdf(
+  meta: { restaurantLabel: string; supervisorLabel: string; periodStart: string; periodEnd: string; generatedAt: string },
+  rows: AuditReportRow[]
+): Promise<Uint8Array> {
+  const pdfDoc = await PDFDocument.create();
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const pageW = 595;
+  const pageH = 842;
+  const marginX = 40;
+
+  const fit = (text: string, size: number, f = font, maxW = pageW - 2 * marginX) => {
+    let t = String(text ?? "");
+    while (t.length > 0 && f.widthOfTextAtSize(t, size) > maxW) t = t.slice(0, -1);
+    return t;
+  };
+
+  // --- Summary + table pages ---
+  const totalEvidence = rows.reduce((acc, r) => acc + r.evidence_count, 0);
+  let page = pdfDoc.addPage([pageW, pageH]);
+  let y = pageH - 50;
+
+  page.drawRectangle({ x: marginX, y: y - 6, width: pageW - 2 * marginX, height: 30, color: rgb(0.05, 0.05, 0.05) });
+  page.drawText("REPORTE DE AUDITORIAS DE CALIDAD", { x: marginX + 10, y: y + 3, size: 13, font: bold, color: rgb(1, 1, 1) });
+  y -= 40;
+
+  for (const line of [
+    `Sitio: ${meta.restaurantLabel}`,
+    `Supervisor: ${meta.supervisorLabel}`,
+    `Periodo: ${meta.periodStart} a ${meta.periodEnd}`,
+    `Generado: ${formatDateTime(meta.generatedAt)}`,
+    `Total auditorias: ${rows.length}   |   Total evidencias: ${totalEvidence}`,
+  ]) {
+    page.drawText(fit(line, 10), { x: marginX, y, size: 10, font, color: rgb(0.2, 0.2, 0.2) });
+    y -= 16;
+  }
+  y -= 8;
+
+  // Table header
+  const cols = [
+    { label: "Fecha", x: marginX, w: 62 },
+    { label: "Hora", x: marginX + 62, w: 42 },
+    { label: "Sitio", x: marginX + 104, w: 96 },
+    { label: "Supervisor", x: marginX + 200, w: 104 },
+    { label: "Fase", x: marginX + 304, w: 44 },
+    { label: "Obs.", x: marginX + 348, w: 130 },
+    { label: "Fotos", x: marginX + 478, w: 36 },
+  ];
+  const drawTableHeader = () => {
+    page.drawRectangle({ x: marginX, y: y - 4, width: pageW - 2 * marginX, height: 18, color: rgb(0.9, 0.9, 0.9) });
+    for (const c of cols) page.drawText(c.label, { x: c.x + 3, y, size: 8.5, font: bold, color: rgb(0.15, 0.15, 0.15) });
+    y -= 20;
+  };
+  drawTableHeader();
+
+  for (const r of rows) {
+    if (y < 60) {
+      page = pdfDoc.addPage([pageW, pageH]);
+      y = pageH - 50;
+      drawTableHeader();
+    }
+    const cells = [
+      r.local_date,
+      r.local_time,
+      fit(r.restaurant_name, 8, font, cols[2].w - 6),
+      fit(r.supervisor_name, 8, font, cols[3].w - 6),
+      auditPhaseLabel(r.phase),
+      fit(r.observations || "—", 8, font, cols[5].w - 6),
+      String(r.evidence_count),
+    ];
+    cells.forEach((val, i) => page.drawText(String(val), { x: cols[i].x + 3, y, size: 8, font, color: rgb(0.2, 0.2, 0.2) }));
+    y -= 14;
+  }
+
+  // --- One documented page per photo, embedding the image with a metadata caption.
+  // Bounded so a wide date range can't blow the edge-function memory/time budget.
+  const MAX_EMBEDDED_PHOTOS = 60;
+  let embedded = 0;
+  for (const r of rows) {
+    for (const ev of r.evidences) {
+      if (embedded >= MAX_EMBEDDED_PHOTOS) break;
+      if (!ev.signed_url || ev.is_video) continue;
+      try {
+        const resp = await fetch(ev.signed_url);
+        if (!resp.ok) continue;
+        const bytes = new Uint8Array(await resp.arrayBuffer());
+        const mime = (ev.mime_type ?? "").toLowerCase();
+        let img: any = null;
+        if (mime.includes("png")) img = await pdfDoc.embedPng(bytes);
+        else {
+          try { img = await pdfDoc.embedJpg(bytes); } catch { img = await pdfDoc.embedPng(bytes); }
+        }
+        if (!img) continue;
+
+        const p = pdfDoc.addPage([pageW, pageH]);
+        p.drawText("EVIDENCIA DE AUDITORIA", { x: marginX, y: pageH - 45, size: 12, font: bold, color: rgb(0.1, 0.1, 0.1) });
+
+        const maxW = pageW - 2 * marginX;
+        const maxH = 520;
+        const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+        const w = img.width * scale;
+        const h = img.height * scale;
+        p.drawImage(img, { x: (pageW - w) / 2, y: pageH - 70 - h, width: w, height: h });
+
+        let capY = pageH - 70 - h - 24;
+        for (const line of [
+          `Sitio: ${r.restaurant_name}`,
+          `Supervisor: ${r.supervisor_name}`,
+          `Fecha/Hora (sitio): ${r.local_date} ${r.local_time} (${r.timezone})`,
+          `Fase: ${auditPhaseLabel(r.phase)}`,
+          r.observations ? `Observaciones: ${r.observations}` : "",
+        ]) {
+          if (!line) continue;
+          p.drawText(fit(line, 9), { x: marginX, y: capY, size: 9, font, color: rgb(0.2, 0.2, 0.2) });
+          capY -= 14;
+        }
+        embedded += 1;
+      } catch {
+        // Skip an unreadable photo rather than fail the whole report.
+      }
+    }
+    if (embedded >= MAX_EMBEDDED_PHOTOS) break;
+  }
+
+  return await pdfDoc.save();
+}
+
 serve(async (req: Request) => {
   const preflight = handleCorsPreflight(req);
   if (preflight) return preflight;
@@ -981,6 +1192,240 @@ serve(async (req: Request) => {
 
     const requestedRestaurantId = typeof restaurant_id === "number" ? restaurant_id : null;
     const requestedEmployeeId = typeof employee_id === "string" && employee_id !== "all" ? employee_id : null;
+
+    // --- Audits report: self-contained branch, returns before any shift logic. ---
+    if ((payload.report_type ?? "shifts") === "audits") {
+      const requestedSupervisorId =
+        typeof payload.supervisor_id === "string" && payload.supervisor_id !== "all" ? payload.supervisor_id : null;
+      const generatedAtAudits = new Date().toISOString();
+
+      // Whole calendar days at UTC bounds; the front already sends a ±1 day buffer
+      // for the Pacific/Bogota offset, and the end day is included in full.
+      const startIso = `${period_start}T00:00:00.000Z`;
+      const endIso = `${period_end}T23:59:59.999Z`;
+
+      let auditQuery = clientAdmin
+        .from("supervisor_presence_logs")
+        .select("id, supervisor_id, restaurant_id, phase, recorded_at, notes, evidence_path, evidence_mime_type")
+        .gte("recorded_at", startIso)
+        .lte("recorded_at", endIso)
+        .order("recorded_at", { ascending: false })
+        .limit(2000);
+      if (requestedRestaurantId != null) auditQuery = auditQuery.eq("restaurant_id", requestedRestaurantId);
+      if (requestedSupervisorId != null) auditQuery = auditQuery.eq("supervisor_id", requestedSupervisorId);
+
+      const { data: auditLogs, error: auditErr } = await auditQuery;
+      if (auditErr) {
+        throw { code: 409, message: "No se pudieron consultar auditorias", category: "BUSINESS", details: auditErr };
+      }
+      const logs = auditLogs ?? [];
+
+      const rIds = [...new Set(logs.map((l) => Number(l.restaurant_id)).filter((n) => Number.isFinite(n)))];
+      const sIds = [...new Set(logs.map((l) => String(l.supervisor_id)).filter(Boolean))];
+
+      const [restRes, supRes, evRes] = await Promise.all([
+        rIds.length ? clientAdmin.from("restaurants").select("id, name, timezone").in("id", rIds) : Promise.resolve({ data: [] }),
+        sIds.length ? clientAdmin.from("users").select("id, full_name, email").in("id", sIds) : Promise.resolve({ data: [] }),
+        logs.length
+          ? clientAdmin
+              .from("supervisor_presence_evidences")
+              .select("id, presence_id, storage_path, mime_type")
+              .in("presence_id", logs.map((l) => l.id))
+          : Promise.resolve({ data: [] }),
+      ]);
+
+      const restMap = new Map((restRes.data ?? []).map((r) => [Number(r.id), r]));
+      const supMap = new Map((supRes.data ?? []).map((u) => [String(u.id), u]));
+      const evByPresence = new Map<string, Array<Record<string, unknown>>>();
+      for (const e of evRes.data ?? []) {
+        const key = String(e.presence_id);
+        const arr = evByPresence.get(key) ?? [];
+        arr.push(e);
+        evByPresence.set(key, arr);
+      }
+
+      // Sign every evidence path once (multi-evidence table + legacy single photo).
+      const allPaths = new Set<string>();
+      for (const arr of evByPresence.values()) for (const e of arr) if (e.storage_path) allPaths.add(String(e.storage_path));
+      for (const l of logs) if (l.evidence_path) allPaths.add(String(l.evidence_path));
+      const signedByPath = new Map<string, string>();
+      const paths = [...allPaths];
+      if (paths.length > 0) {
+        const { data: signed } = await clientAdmin.storage.from("shift-evidence").createSignedUrls(paths, 7200);
+        (signed ?? []).forEach((s, i) => {
+          if (s && s.signedUrl && !s.error) signedByPath.set(paths[i], s.signedUrl);
+        });
+      }
+
+      const isVideo = (mime: unknown) => typeof mime === "string" && mime.toLowerCase().startsWith("video/");
+
+      const auditRows: AuditReportRow[] = logs.map((l) => {
+        const rest = restMap.get(Number(l.restaurant_id)) as { name?: string; timezone?: string } | undefined;
+        const tz = safeTimezone(rest?.timezone);
+        const sup = supMap.get(String(l.supervisor_id)) as { full_name?: string; email?: string } | undefined;
+        const local = formatAtSite(l.recorded_at, tz);
+
+        const evs = (evByPresence.get(String(l.id)) ?? []).map((e) => ({
+          path: String(e.storage_path ?? ""),
+          signed_url: e.storage_path ? signedByPath.get(String(e.storage_path)) ?? null : null,
+          mime_type: (e.mime_type as string | null) ?? null,
+          is_video: isVideo(e.mime_type),
+        }));
+        if (l.evidence_path && !evs.some((e) => e.path === l.evidence_path)) {
+          evs.push({
+            path: String(l.evidence_path),
+            signed_url: signedByPath.get(String(l.evidence_path)) ?? null,
+            mime_type: (l.evidence_mime_type as string | null) ?? null,
+            is_video: isVideo(l.evidence_mime_type),
+          });
+        }
+
+        return {
+          audit_id: Number(l.id),
+          restaurant_id: Number(l.restaurant_id),
+          restaurant_name: String(rest?.name ?? `#${l.restaurant_id}`),
+          supervisor_name: String(sup?.full_name ?? sup?.email ?? "—"),
+          phase: (l.phase as string | null) ?? null,
+          recorded_at: String(l.recorded_at),
+          local_date: local?.local_date ?? period_start,
+          local_time: local?.local_time ?? "",
+          timezone: tz,
+          observations: String(l.notes ?? ""),
+          evidence_count: evs.length,
+          evidences: evs,
+        };
+      });
+
+      const restaurantLabel =
+        requestedRestaurantId != null
+          ? String((restMap.get(requestedRestaurantId) as { name?: string } | undefined)?.name ?? `#${requestedRestaurantId}`)
+          : "TODOS";
+      const supervisorLabel =
+        requestedSupervisorId != null
+          ? String((supMap.get(requestedSupervisorId) as { full_name?: string; email?: string } | undefined)?.full_name ??
+              (supMap.get(requestedSupervisorId) as { email?: string } | undefined)?.email ??
+              requestedSupervisorId)
+          : "TODOS";
+
+      const auditsMeta = {
+        restaurantLabel,
+        supervisorLabel,
+        periodStart: period_start,
+        periodEnd: period_end,
+        generatedAt: generatedAtAudits,
+      };
+
+      const filtrosAudits = {
+        report_type: "audits",
+        period_start,
+        period_end,
+        restaurant_scope: requestedRestaurantId == null ? "all" : requestedRestaurantId,
+        supervisor_scope: requestedSupervisorId == null ? "all" : requestedSupervisorId,
+        total_audits: auditRows.length,
+      };
+      const hashAudits = await hashCanonicalJson(filtrosAudits);
+
+      const xlsxBytes = buildAuditsXlsx(auditsMeta, auditRows);
+      const pdfBytes = await buildAuditsPdf(auditsMeta, auditRows);
+
+      const scopeR = requestedRestaurantId == null ? "all" : String(requestedRestaurantId);
+      const scopeS = requestedSupervisorId == null ? "all" : requestedSupervisorId;
+      const basePathA = `reports/audits/${scopeR}/${scopeS}/${period_start}_${period_end}/${request_id}`;
+      const xlsxPathA = `${basePathA}.xlsx`;
+      const pdfPathA = `${basePathA}.pdf`;
+
+      // Both files always produced: the reports row requires url_pdf and url_excel
+      // NOT NULL, and the front picks which to download per export_format.
+      await Promise.all([
+        clientAdmin.storage.from("reports").upload(
+          xlsxPathA,
+          new Blob([xlsxBytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+          { contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", upsert: true }
+        ),
+        clientAdmin.storage.from("reports").upload(
+          pdfPathA,
+          new Blob([pdfBytes], { type: "application/pdf" }),
+          { contentType: "application/pdf", upsert: true }
+        ),
+      ]);
+
+      const weekSeconds = 60 * 60 * 24 * 7;
+      const [{ data: xlsxSigned }, { data: pdfSigned }] = await Promise.all([
+        clientAdmin.storage.from("reports").createSignedUrl(xlsxPathA, weekSeconds),
+        clientAdmin.storage.from("reports").createSignedUrl(pdfPathA, weekSeconds),
+      ]);
+
+      // reports.restaurant_id is NOT NULL; for an all-sites report fall back to the
+      // first site in the result, or any active site if the range was empty.
+      let persistRestaurantIdA = requestedRestaurantId;
+      if (persistRestaurantIdA == null) {
+        persistRestaurantIdA = rIds.length > 0 ? Number(rIds[0]) : null;
+      }
+      if (persistRestaurantIdA == null) {
+        const { data: anyRest } = await clientAdmin.from("restaurants").select("id").eq("is_active", true).limit(1).maybeSingle();
+        persistRestaurantIdA = anyRest?.id ? Number(anyRest.id) : null;
+      }
+      if (persistRestaurantIdA == null) {
+        throw { code: 409, message: "No hay sitios para asociar el reporte de auditorias", category: "BUSINESS" };
+      }
+
+      const insertClientA = user.role === "supervisora" ? clientAdmin : clientUser;
+      const { data: reportRowA, error: reportErrA } = await insertClientA
+        .from("reports")
+        .insert({
+          restaurant_id: persistRestaurantIdA,
+          period_start,
+          period_end,
+          generated_by: user.id,
+          generado_por: user.id,
+          generated_at: generatedAtAudits,
+          filtros_json: filtrosAudits,
+          file_path: `${basePathA}.pdf`,
+          hash_documento: hashAudits,
+          url_pdf: pdfSigned?.signedUrl ?? "",
+          url_excel: xlsxSigned?.signedUrl ?? "",
+        })
+        .select("id, generated_at, file_path, hash_documento, url_pdf, url_excel")
+        .single();
+
+      if (reportErrA || !reportRowA) {
+        throw { code: 409, message: "No se pudo generar reporte de auditorias", category: "BUSINESS", details: reportErrA };
+      }
+
+      await safeWriteAudit({
+        user_id: user.id,
+        action: "REPORT_GENERATE",
+        context: {
+          report_id: reportRowA.id,
+          report_type: "audits",
+          restaurant_scope: filtrosAudits.restaurant_scope,
+          supervisor_scope: filtrosAudits.supervisor_scope,
+          period_start,
+          period_end,
+          total_audits: auditRows.length,
+        },
+        request_id,
+      });
+
+      const successPayloadA = {
+        success: true,
+        data: {
+          report_id: reportRowA.id,
+          report_type: "audits",
+          generated_at: reportRowA.generated_at ?? generatedAtAudits,
+          file_path: reportRowA.file_path ?? `${basePathA}.pdf`,
+          hash_documento: reportRowA.hash_documento ?? hashAudits,
+          url_pdf: reportRowA.url_pdf ?? pdfSigned?.signedUrl ?? "",
+          url_excel: reportRowA.url_excel ?? xlsxSigned?.signedUrl ?? "",
+          totals: { audits: auditRows.length, evidences: auditRows.reduce((a, r) => a + r.evidence_count, 0) },
+          rows: auditRows,
+        },
+        error: null,
+        request_id,
+      };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayloadA });
+      return response(true, successPayloadA.data, null, request_id);
+    }
 
     // Supervisora can operate on any active restaurant; scope enforced at UI level.
 
@@ -1604,7 +2049,7 @@ serve(async (req: Request) => {
     const xlsxPath = `${basePath}.xlsx`;
     const pdfPath = `${basePath}.pdf`;
 
-    const exportFormat = payload.export_format ?? "both";
+    const exportFormat = (payload.export_format === "excel" ? "xlsx" : payload.export_format) ?? "both";
     const includeCsv = exportFormat === "csv";
     const includeXlsx = exportFormat === "xlsx" || exportFormat === "both";
     const includePdf = exportFormat === "pdf" || exportFormat === "both";
