@@ -31,8 +31,11 @@ const payloadSchema = z.object({
   employee_id: z.union([z.string().uuid(), z.literal("all"), z.null()]).optional(),
   // Only used by the audits report: which inspector to filter by ("all"/null = every one).
   supervisor_id: z.union([z.string().uuid(), z.literal("all"), z.null()]).optional(),
-  period_start: commonSchemas.dateYmd,
-  period_end: commonSchemas.dateYmd,
+  // Single-shift report: when present the other filters are ignored and the report
+  // covers just this shift. period_start/period_end become optional in that case.
+  shift_id: commonSchemas.shiftId.optional(),
+  period_start: commonSchemas.dateYmd.optional(),
+  period_end: commonSchemas.dateYmd.optional(),
   filtros_json: z.record(z.any()).optional(),
   columns: z.array(z.string().min(1).max(64)).max(100).optional(),
   export_format: z.enum(["csv", "pdf", "both", "xlsx", "excel"]).optional(),
@@ -1185,9 +1188,20 @@ serve(async (req: Request) => {
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 10, window_seconds: 60 });
 
-    const { restaurant_id, employee_id, period_start, period_end } = payload;
-    if (period_start > period_end) {
-      throw { code: 422, message: "Rango de fechas invalido", category: "VALIDATION" };
+    const { restaurant_id, employee_id } = payload;
+    const singleShiftId = typeof payload.shift_id === "number" ? payload.shift_id : null;
+    // Mutable because a single-shift report derives its period from the shift itself.
+    let period_start = payload.period_start ?? "";
+    let period_end = payload.period_end ?? "";
+
+    // A single-shift report supplies its own period; otherwise the range is required.
+    if (singleShiftId == null) {
+      if (!period_start || !period_end) {
+        throw { code: 422, message: "period_start y period_end son requeridos", category: "VALIDATION" };
+      }
+      if (period_start > period_end) {
+        throw { code: 422, message: "Rango de fechas invalido", category: "VALIDATION" };
+      }
     }
 
     const requestedRestaurantId = typeof restaurant_id === "number" ? restaurant_id : null;
@@ -1195,6 +1209,9 @@ serve(async (req: Request) => {
 
     // --- Audits report: self-contained branch, returns before any shift logic. ---
     if ((payload.report_type ?? "shifts") === "audits") {
+      if (!period_start || !period_end) {
+        throw { code: 422, message: "period_start y period_end son requeridos para el reporte de auditorias", category: "VALIDATION" };
+      }
       const requestedSupervisorId =
         typeof payload.supervisor_id === "string" && payload.supervisor_id !== "all" ? payload.supervisor_id : null;
       const generatedAtAudits = new Date().toISOString();
@@ -1429,6 +1446,35 @@ serve(async (req: Request) => {
 
     // Supervisora can operate on any active restaurant; scope enforced at UI level.
 
+    // Single-shift report: load the shift up front to derive its period. Setting
+    // period_start === period_end makes the pipeline use the single-day evidence
+    // PDF (photos embedded with traceability), which is exactly what one shift
+    // wants. The date is taken in the SITE's clock so a cross-midnight shift lands
+    // on the day it started, not the UTC day.
+    if (singleShiftId != null) {
+      const preClient = user.role === "supervisora" ? clientAdmin : clientUser;
+      const { data: oneShift, error: oneShiftError } = await preClient
+        .from("shifts")
+        .select("id, restaurant_id, start_time")
+        .eq("id", singleShiftId)
+        .maybeSingle();
+      if (oneShiftError) {
+        throw { code: 409, message: "No se pudo consultar el turno", category: "BUSINESS", details: oneShiftError };
+      }
+      if (!oneShift) {
+        throw { code: 404, error_code: "SHIFT_NOT_FOUND", message: "Turno no encontrado", category: "BUSINESS" };
+      }
+      const { data: siteRow } = await clientAdmin
+        .from("restaurants")
+        .select("timezone")
+        .eq("id", Number(oneShift.restaurant_id))
+        .maybeSingle();
+      const siteTz = safeTimezone((siteRow as { timezone?: string | null } | null)?.timezone);
+      const dayKey = formatAtSite(oneShift.start_time, siteTz)?.local_date ?? String(oneShift.start_time).slice(0, 10);
+      period_start = dayKey;
+      period_end = dayKey;
+    }
+
     const generatedAt = new Date().toISOString();
     const rawColumns = payload.columns && payload.columns.length > 0
       ? payload.columns
@@ -1452,8 +1498,9 @@ serve(async (req: Request) => {
     const filtros_json = {
       period_start,
       period_end,
-      restaurant_scope: requestedRestaurantId == null ? "all" : requestedRestaurantId,
-      employee_scope: requestedEmployeeId == null ? "all" : requestedEmployeeId,
+      shift_id: singleShiftId,
+      restaurant_scope: singleShiftId != null ? "single_shift" : requestedRestaurantId == null ? "all" : requestedRestaurantId,
+      employee_scope: singleShiftId != null ? "single_shift" : requestedEmployeeId == null ? "all" : requestedEmployeeId,
       filters: payload.filtros_json ?? {},
       columns: selectedColumns,
       export_format: payload.export_format ?? "both",
@@ -1471,15 +1518,19 @@ serve(async (req: Request) => {
     let shiftsQuery = shiftsClient
       .from("shifts")
       .select("id, employee_id, restaurant_id, start_time, end_time, state, status, approved_by, rejected_by, early_end_reason")
-      .gte("start_time", fromIso)
-      .lte("start_time", toIso)
       .order("start_time", { ascending: true });
 
-    if (requestedRestaurantId != null) {
-      shiftsQuery = shiftsQuery.eq("restaurant_id", requestedRestaurantId);
-    }
-    if (requestedEmployeeId != null) {
-      shiftsQuery = shiftsQuery.eq("employee_id", requestedEmployeeId);
+    if (singleShiftId != null) {
+      // The other filters are ignored on purpose: the report covers exactly this shift.
+      shiftsQuery = shiftsQuery.eq("id", singleShiftId);
+    } else {
+      shiftsQuery = shiftsQuery.gte("start_time", fromIso).lte("start_time", toIso);
+      if (requestedRestaurantId != null) {
+        shiftsQuery = shiftsQuery.eq("restaurant_id", requestedRestaurantId);
+      }
+      if (requestedEmployeeId != null) {
+        shiftsQuery = shiftsQuery.eq("employee_id", requestedEmployeeId);
+      }
     }
 
     const { data: shifts, error: shiftsError } = await shiftsQuery;
