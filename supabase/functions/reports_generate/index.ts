@@ -597,7 +597,8 @@ async function buildSingleDayPdfWithEvidence(params: {
     r3Logo = null;
   }
 
-  const fitTextByWidth = (txt: string, maxWidth: number, fontSize: number) => {
+  const fitTextByWidth = (rawTxt: string, maxWidth: number, fontSize: number) => {
+    const txt = pdfSafeText(rawTxt); // WinAnsi-safe before measuring/drawing
     if (maxWidth <= 0) return txt;
     if (bold.widthOfTextAtSize(txt, fontSize) <= maxWidth) return txt;
     let base = txt.trim();
@@ -702,7 +703,7 @@ async function buildSingleDayPdfWithEvidence(params: {
   const cellH = 32;
   const colW = tableW / 4;
   const tblRows: [string, string, string, string][] = [
-    ["Restaurante", params.restaurantLabel, "Periodo", `${params.periodStart} a ${params.periodEnd}`],
+    ["Restaurante", pdfSafeText(params.restaurantLabel), "Periodo", `${params.periodStart} a ${params.periodEnd}`],
     ["Generado", formatDateTime(params.generatedAt), "Total de Turnos", String(params.totalShifts)],
     ["Horas Trabajadas", formatDuration(params.totalHours), "Horas Programadas", formatDuration(params.totalScheduledHours)],
   ];
@@ -807,7 +808,7 @@ async function buildSingleDayPdfWithEvidence(params: {
       frameH = fallbackPageH - frameY - headerBlockHeight - pageMargin;
       page.drawRectangle({ x: frameX, y: frameY, width: frameW, height: frameH, borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 1 });
       page.drawText("No se pudo incrustar la imagen. URL firmada:", { x: frameX + 10, y: frameY + frameH - 30, size: 10, font });
-      page.drawText(ev.signed_url.slice(0, 95), { x: frameX + 10, y: frameY + frameH - 48, size: 8, font, color: rgb(0.2, 0.2, 0.2) });
+      page.drawText(pdfSafeText(ev.signed_url).slice(0, 95), { x: frameX + 10, y: frameY + frameH - 48, size: 8, font, color: rgb(0.2, 0.2, 0.2) });
     }
 
     if (!imageDrawn) {
@@ -820,7 +821,10 @@ async function buildSingleDayPdfWithEvidence(params: {
     const overlayX = frameX + overlayPadding;
     const overlayW = Math.max(120, frameW - overlayPadding * 2);
     const overlayY = frameY + overlayPadding;
-    const fit = (txt: string, max = 88) => (txt.length > max ? `${txt.slice(0, max - 3)}...` : txt);
+    const fit = (rawTxt: string, max = 88) => {
+      const txt = pdfSafeText(rawTxt); // WinAnsi-safe before drawing
+      return txt.length > max ? `${txt.slice(0, max - 3)}...` : txt;
+    };
 
     page.drawRectangle({ x: overlayX, y: overlayY, width: overlayW, height: overlayH, color: rgb(1, 1, 1), opacity: 0.6 });
     page.drawText(fit(`Fecha/Hora: ${ev.captured_at ? formatDateTime(ev.captured_at) : "No disponible"}`), {
@@ -973,9 +977,28 @@ type AuditReportRow = {
 function auditPhaseLabel(phase: string | null): string {
   if (phase === "start") return "Inicio";
   if (phase === "end") return "Cierre";
-  return phase ? String(phase) : "—";
+  return phase ? String(phase) : "-";
 }
 
+// pdf-lib's built-in Helvetica is WinAnsi (cp1252) and throws on any character it
+// can't encode. Intl.DateTimeFormat emits U+202F (narrow no-break space) between
+// the time and AM/PM even in en-US, and user-typed names/observations can carry
+// curly quotes, dashes or emoji from phone keyboards -- all of which crash the PDF
+// before it returns. Normalise the common ones to ASCII, then replace anything
+// still outside Latin-1 printable with '?'. Everything drawn into a PDF goes
+// through here.
+function pdfSafeText(input: unknown): string {
+  return String(input ?? "")
+    // Every whitespace variant (incl. U+202F narrow no-break from Intl) -> normal space; keep tab/newline/CR.
+    .replace(/\s/g, (ch) => (ch === "\t" || ch === "\n" || ch === "\r" ? ch : " "))
+    // Typographic punctuation -> ASCII.
+    .replace(/[\u2018\u2019\u201A\u201B]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u201F]/g, '"')
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\u2026/g, "...")
+    // Keep tab/newline/CR, ASCII printable and Latin-1 printable; drop the rest (WinAnsi-safe).
+    .replace(/[^\x09\x0A\x0D\x20-\x7E\xA0-\xFF]/g, "?");
+}
 function buildAuditsXlsx(
   meta: { restaurantLabel: string; supervisorLabel: string; periodStart: string; periodEnd: string; generatedAt: string },
   rows: AuditReportRow[]
@@ -1037,8 +1060,9 @@ async function buildAuditsPdf(
   const pageH = 842;
   const marginX = 40;
 
+  // Sanitize here so every string that reaches drawText is WinAnsi-safe.
   const fit = (text: string, size: number, f = font, maxW = pageW - 2 * marginX) => {
-    let t = String(text ?? "");
+    let t = pdfSafeText(text);
     while (t.length > 0 && f.widthOfTextAtSize(t, size) > maxW) t = t.slice(0, -1);
     return t;
   };
@@ -1093,10 +1117,11 @@ async function buildAuditsPdf(
       fit(r.restaurant_name, 8, font, cols[2].w - 6),
       fit(r.supervisor_name, 8, font, cols[3].w - 6),
       auditPhaseLabel(r.phase),
-      fit(r.observations || "—", 8, font, cols[5].w - 6),
+      fit(r.observations || "-", 8, font, cols[5].w - 6),
       String(r.evidence_count),
     ];
-    cells.forEach((val, i) => page.drawText(String(val), { x: cols[i].x + 3, y, size: 8, font, color: rgb(0.2, 0.2, 0.2) }));
+    // pdfSafeText again on the raw cells (local_time carries the U+202F from Intl).
+    cells.forEach((val, i) => page.drawText(pdfSafeText(val), { x: cols[i].x + 3, y, size: 8, font, color: rgb(0.2, 0.2, 0.2) }));
     y -= 14;
   }
 
