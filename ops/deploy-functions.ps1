@@ -60,7 +60,9 @@ $functions = @(
   'restaurant_staff_manage',
   'supervisor_presence_manage',
   'system_settings_manage',
-  'admin_user_phone_remove'
+  'admin_user_phone_remove',
+  'profile_phone_change_request',
+  'profile_phone_change_confirm'
 )
 
 foreach ($fn in $functions) {

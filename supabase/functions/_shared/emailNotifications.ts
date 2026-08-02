@@ -636,6 +636,24 @@ export async function sendOtpEmail(params: {
   });
 }
 
+/** OTP emailed to authorize changing the account phone number. */
+export async function sendPhoneChangeOtpEmail(params: {
+  to: string;
+  code: string;
+  ttlSeconds: number;
+  newPhone: string;
+}): Promise<{ ok: true; provider_ref: string | null } | { ok: false; error: string }> {
+  const ttlMinutes = Math.max(1, Math.ceil(params.ttlSeconds / 60));
+  return sendEmailViaResend({
+    to: params.to,
+    subject: "Confirma el cambio de tu numero - WorkTrace",
+    text:
+      `Solicitaste cambiar el numero de tu cuenta a ${params.newPhone}.\n` +
+      `Tu codigo de confirmacion es: ${params.code}. Expira en ${ttlMinutes} minutos.\n` +
+      `Si no fuiste tu, ignora este correo y tu numero no cambiara.`,
+  });
+}
+
 export async function notifyContractorCreated(params: {
   recipientEmail: string;
   recipientUserId: string;
