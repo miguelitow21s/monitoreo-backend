@@ -8,7 +8,8 @@ type NotificationEventType =
   | "shift_not_started"
   | "incident_created"
   | "shift_approved"
-  | "shift_rejected";
+  | "shift_rejected"
+  | "operational_task_completed";
 
 type Recipient = {
   id: string;
@@ -571,6 +572,77 @@ export async function notifyIncidentCreated(params: {
     restaurantId: context.restaurant_id,
     shiftId: params.shiftId,
     incidentId: params.incidentId,
+  });
+}
+
+/**
+ * Tell the person who created a site task -- and the site's supervisors -- that a
+ * contractor completed it. Names, the site's own clock, the contractor's notes,
+ * and signed links to the evidence they uploaded. Best-effort: this runs off the
+ * completion path, so a notification failure never blocks closing the task.
+ */
+export async function notifyOperationalTaskCompleted(params: {
+  taskId: number;
+  restaurantId: number;
+  title: string | null;
+  createdBy: string;
+  resolvedBy: string;
+  notes?: string | null;
+  resolvedAt: string;
+  /** Viewable evidence (photos/videos); the caller drops JSON manifests. */
+  evidencePaths: string[];
+}) {
+  const recipientMap = new Map<string, Recipient>();
+  const creator = await loadUserById(params.createdBy);
+  if (creator) recipientMap.set(creator.id, creator);
+  for (const supervisor of await loadSupervisorsForRestaurant(params.restaurantId)) {
+    recipientMap.set(supervisor.id, supervisor);
+  }
+  // No point telling the contractor about their own completion.
+  recipientMap.delete(params.resolvedBy);
+  const recipients = [...recipientMap.values()];
+  if (recipients.length === 0) return;
+
+  const [site, doneByName] = await Promise.all([
+    loadRestaurantDisplay(params.restaurantId),
+    describeUser(params.resolvedBy),
+  ]);
+
+  // Sign the evidence so the recipient can open it (private bucket, 2h TTL).
+  const signedUrls: string[] = [];
+  const paths = (params.evidencePaths ?? []).filter(Boolean);
+  if (paths.length > 0) {
+    const { data: signed } = await clientAdmin.storage.from("shift-evidence").createSignedUrls(paths, 7200);
+    for (const s of signed ?? []) if (s && s.signedUrl && !s.error) signedUrls.push(s.signedUrl);
+  }
+
+  const localDone = formatAtSite(params.resolvedAt, site.timezone);
+  const taskLabel = String(params.title ?? "").trim() || `#${params.taskId}`;
+
+  const bodyText = [
+    `La tarea "${taskLabel}" fue completada.`,
+    `Contratista: ${doneByName}.`,
+    `Sitio: ${site.name}.`,
+    `Fecha/Hora (sitio): ${localDone?.local_text ?? params.resolvedAt}.`,
+    params.notes ? `Observaciones: ${params.notes}` : "Sin observaciones.",
+    signedUrls.length ? `Evidencias (${signedUrls.length}):\n${signedUrls.join("\n")}` : "Sin evidencias adjuntas.",
+  ].join("\n");
+
+  await enqueueForRecipients({
+    eventType: "operational_task_completed",
+    dedupePrefix: `operational_task_completed:${params.taskId}`,
+    recipients,
+    subject: `Tarea completada | ${taskLabel} - ${site.name}`,
+    bodyText,
+    payload: {
+      task_id: params.taskId,
+      restaurant_id: params.restaurantId,
+      created_by: params.createdBy,
+      resolved_by: params.resolvedBy,
+      resolved_at: params.resolvedAt,
+      evidence_count: signedUrls.length,
+    },
+    restaurantId: params.restaurantId,
   });
 }
 

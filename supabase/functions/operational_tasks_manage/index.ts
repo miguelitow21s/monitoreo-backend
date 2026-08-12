@@ -14,6 +14,8 @@ import { logRequest } from "../_shared/logger.ts";
 import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { getSystemSettings } from "../_shared/systemSettings.ts";
+import { notifyOperationalTaskCompleted, safeDispatchPendingEmailNotifications } from "../_shared/emailNotifications.ts";
+import { runInBackground } from "../_shared/background.ts";
 
 const endpoint = "operational_tasks_manage";
 const evidenceBucket = "shift-evidence";
@@ -1073,7 +1075,7 @@ serve(async (req: Request) => {
 
       const { data: task, error: taskError } = await clientUser
         .from("operational_tasks")
-        .select("id, restaurant_id, assigned_employee_id, task_scope, requires_evidence, evidence_type, status")
+        .select("id, restaurant_id, assigned_employee_id, task_scope, requires_evidence, evidence_type, status, created_by, title")
         .eq("id", payload.task_id)
         .single();
 
@@ -1203,6 +1205,25 @@ serve(async (req: Request) => {
         },
         request_id,
       });
+
+      // Tell the task's creator and the site's supervisors it's done -- off the
+      // critical path so a notification hiccup never blocks the completion. JSON
+      // manifests aren't viewable, so only photo/video evidence is linked.
+      runInBackground(
+        (async () => {
+          await notifyOperationalTaskCompleted({
+            taskId: Number(payload.task_id),
+            restaurantId: Number(task.restaurant_id),
+            title: (task.title as string | null) ?? null,
+            createdBy: String(task.created_by),
+            resolvedBy: user.id,
+            notes: payload.notes ?? null,
+            resolvedAt: nowIso,
+            evidencePaths: evidenceItems.filter((e) => e.mime_type !== "application/json").map((e) => e.path),
+          });
+          await safeDispatchPendingEmailNotifications({ limit: 25, maxAttempts: 5 });
+        })()
+      );
 
       const successPayload = { success: true, data: { task_id: payload.task_id }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
