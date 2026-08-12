@@ -71,6 +71,31 @@ serve(async (req) => {
     const settings = await getSystemSettings(clientAdmin);
 
     const now = new Date();
+
+    // Ad-hoc visit model (client rule): a contractor starts a visit at any ACTIVE
+    // restaurant on demand -- no pre-scheduled shift required. The site just has
+    // to exist and be active; the geofence below still proves they're physically
+    // there. Validated regardless of the GPS toggle so an inactive/nonexistent
+    // site is always rejected.
+    const { data: restaurantRow, error: restaurantErr } = await clientAdmin
+      .from("restaurants")
+      .select("id, is_active")
+      .eq("id", restaurant_id)
+      .maybeSingle();
+    if (restaurantErr) {
+      throw { code: 500, error_code: "RESTAURANT_LOOKUP_FAILED", message: "No se pudo validar el sitio", category: "SYSTEM", details: restaurantErr };
+    }
+    if (!restaurantRow) {
+      throw { code: 404, error_code: "RESTAURANT_NOT_FOUND", message: "El sitio no existe", category: "BUSINESS", details: { restaurant_id } };
+    }
+    if (restaurantRow.is_active === false) {
+      throw { code: 409, error_code: "RESTAURANT_INACTIVE", message: "El sitio no esta activo", category: "BUSINESS", details: { restaurant_id } };
+    }
+
+    // Optional scheduled-shift link, kept for backward compatibility during the
+    // transition: if a matching scheduled shift exists (or one is named
+    // explicitly) we link it; its ABSENCE is no longer an error -- that's the
+    // ad-hoc path. Only an explicit id pointing at a different site is rejected.
     const scheduledShiftQuery = clientAdmin
       .from("scheduled_shifts")
       .select("id, restaurant_id, scheduled_start, scheduled_end, status")
@@ -83,51 +108,16 @@ serve(async (req) => {
       scheduledShiftQuery.eq("restaurant_id", restaurant_id).gte("scheduled_end", now.toISOString());
     }
 
-    const { data: scheduledShift, error: scheduledShiftError } = await scheduledShiftQuery
+    const { data: scheduledShift } = await scheduledShiftQuery
       .order("scheduled_start", { ascending: true })
       .limit(1)
       .maybeSingle();
 
-    if (scheduledShiftError) {
-      throw {
-        code: 409,
-        error_code: "SCHEDULE_LOOKUP_FAILED",
-        message: "No se pudo validar el servicio asignado",
-        category: "BUSINESS",
-        details: scheduledShiftError,
-      };
-    }
-
-    if (!scheduledShift) {
-      throw {
-        code: 409,
-        error_code: "SCHEDULE_NOT_FOUND",
-        message: "No tienes un servicio asignado disponible en este sitio",
-        category: "BUSINESS",
-        details: { restaurant_id, scheduled_shift_id: payload.scheduled_shift_id ?? null },
-      };
-    }
-
-    if (scheduledShift.scheduled_end && new Date(scheduledShift.scheduled_end) < now) {
-      throw {
-        code: 409,
-        error_code: "SCHEDULE_WINDOW_EXPIRED",
-        message: "La ventana de este servicio ya vencio",
-        category: "BUSINESS",
-        details: { scheduled_end: scheduledShift.scheduled_end, server_now: now.toISOString() },
-      };
-    }
-
-    // Business rule: the contractor may start whenever they want; the ONLY limit
-    // is the end of the service window. Starting "too early" is no longer an
-    // error — `now > scheduled_end` is already rejected above as
-    // SCHEDULE_WINDOW_EXPIRED, so there is no additional window check here.
-
-    if (Number(scheduledShift.restaurant_id) !== Number(restaurant_id)) {
+    if (scheduledShift && Number(scheduledShift.restaurant_id) !== Number(restaurant_id)) {
       throw {
         code: 409,
         error_code: "SHIFT_SITE_MISMATCH",
-        message: "El sitio seleccionado no coincide con el de tu servicio asignado",
+        message: "El servicio asignado indicado es de otro sitio",
         category: "BUSINESS",
         details: { selected_restaurant_id: Number(restaurant_id), scheduled_restaurant_id: Number(scheduledShift.restaurant_id) },
       };
@@ -158,34 +148,43 @@ serve(async (req) => {
       throw { code: 409, error_code: "SHIFT_INSERT_FAILED", message: "No se pudo iniciar el servicio", category: "BUSINESS", details: error };
     }
 
-    // These three writes are independent of each other -> run in parallel (audit M2).
-    const [{ error: scheduleUpdateError }, { error: taskLinkError }, { error: healthError }] = await Promise.all([
-      clientAdmin
-        .from("scheduled_shifts")
-        .update({ status: "started", started_shift_id: data.id, updated_at: new Date().toISOString() })
-        .eq("id", scheduledShift.id),
-      clientAdmin
-        .from("operational_tasks")
-        .update({ shift_id: data.id, updated_at: new Date().toISOString() })
-        .eq("scheduled_shift_id", scheduledShift.id)
-        .is("shift_id", null),
-      clientUser
-        .from("shift_health_forms")
-        .upsert(
-          {
-            shift_id: data.id,
-            phase: "start",
-            fit_for_work,
-            declaration: declaration ?? null,
-            recorded_at: new Date().toISOString(),
-            recorded_by: user.id,
-          },
-          { onConflict: "shift_id,phase" }
-        ),
-    ]);
+    // The entry health form is always recorded. The scheduled-shift link and task
+    // hand-off only apply on the legacy scheduled path; an ad-hoc visit has no
+    // scheduled shift to update.
+    const { error: healthError } = await clientUser
+      .from("shift_health_forms")
+      .upsert(
+        {
+          shift_id: data.id,
+          phase: "start",
+          fit_for_work,
+          declaration: declaration ?? null,
+          recorded_at: new Date().toISOString(),
+          recorded_by: user.id,
+        },
+        { onConflict: "shift_id,phase" }
+      );
 
     if (healthError) {
       throw { code: 409, error_code: "HEALTH_FORM_FAILED", message: "No se pudo registrar el formulario de ingreso", category: "BUSINESS", details: healthError };
+    }
+
+    let scheduleLinked = false;
+    let tasksLinked = false;
+    if (scheduledShift) {
+      const [{ error: scheduleUpdateError }, { error: taskLinkError }] = await Promise.all([
+        clientAdmin
+          .from("scheduled_shifts")
+          .update({ status: "started", started_shift_id: data.id, updated_at: new Date().toISOString() })
+          .eq("id", scheduledShift.id),
+        clientAdmin
+          .from("operational_tasks")
+          .update({ shift_id: data.id, updated_at: new Date().toISOString() })
+          .eq("scheduled_shift_id", scheduledShift.id)
+          .is("shift_id", null),
+      ]);
+      scheduleLinked = !scheduleUpdateError;
+      tasksLinked = !taskLinkError;
     }
 
     await safeWriteAudit({
@@ -197,9 +196,10 @@ serve(async (req) => {
         lat,
         lng,
         fit_for_work,
-        scheduled_shift_id: scheduledShift.id,
-        schedule_linked: !scheduleUpdateError,
-        tasks_linked: !taskLinkError,
+        visit_type: scheduledShift ? "scheduled" : "ad_hoc",
+        scheduled_shift_id: scheduledShift?.id ?? null,
+        schedule_linked: scheduleLinked,
+        tasks_linked: tasksLinked,
       },
       request_id,
     });
