@@ -15,11 +15,11 @@ import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { parseWallClock, wallClockToUtc, formatAtSite, safeTimezone } from "../_shared/timezone.ts";
 
-// DEPRECATED (visit migration). The product moved to on-demand visits: a
-// contractor starts a visit at any active site without a pre-scheduled shift
-// (see shifts_start). This endpoint still works so nothing breaks while the app
-// retires its scheduling UI, but no new code should depend on it. Write actions
-// log a deprecation warning so we can confirm when the last caller goes away.
+// DISCONTINUED (visit migration, final cut). The product moved to on-demand
+// visits: a contractor starts a visit at any active site without a pre-scheduled
+// shift (see shifts_start). The frontend removed every caller, so this endpoint
+// now fails closed with 410 Gone. The action-handling code below is kept intact
+// but unreachable behind the 410 gate, for a clean revert if ever needed.
 const endpoint = "scheduled_shifts_manage";
 
 // Wall-clock scheduling.
@@ -200,6 +200,17 @@ serve(async (req: Request) => {
     userId = user.id;
     userRole = user.role;
     roleGuard(user, ["supervisora", "super_admin"]);
+
+    // Scheduling is gone (visit migration). Fail closed so any lingering caller
+    // learns the feature was discontinued; everything below is unreachable.
+    console.warn(JSON.stringify({ discontinued_endpoint: endpoint, actor: user.id, request_id }));
+    throw {
+      code: 410,
+      error_code: "SCHEDULING_DISCONTINUED",
+      message: "La programacion de turnos fue reemplazada por visitas ad-hoc y ya no esta disponible",
+      category: "BUSINESS",
+    };
+
     await requireAcceptedActiveLegalTerm(user.id);
 
     const parsedPayload = await parseBody(req, payloadSchema);
