@@ -89,7 +89,9 @@ serve(async (req) => {
       await rateLimiter({ user_id: userId as string, ip, endpoint, limit: 15, window_seconds: 60 });
     }
 
-    const shouldEnqueue = payload.enqueue_shift_not_started ?? true;
+    // Ad-hoc visit model: there is no schedule, so "service not started" alerts no
+    // longer have meaning. Off by default; a caller must opt in explicitly.
+    const shouldEnqueue = payload.enqueue_shift_not_started ?? false;
 
     let queuedShiftNotStarted = 0;
     if (shouldEnqueue) {

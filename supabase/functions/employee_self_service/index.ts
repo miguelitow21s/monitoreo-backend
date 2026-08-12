@@ -278,7 +278,7 @@ serve(async (req: Request) => {
       const scheduledRestaurantIds = [...new Set((scheduleRes.data ?? []).map((x) => Number(x.restaurant_id)).filter((n) => Number.isFinite(n)))];
       const restaurantIds = [...new Set([...assignedRestaurantIds, ...scheduledRestaurantIds])];
 
-      const [restaurantsRes, restaurantTasksRes] = await Promise.all([
+      const [restaurantsRes, restaurantTasksRes, visitableRes] = await Promise.all([
         restaurantIds.length
           ? clientAdmin
               .from("restaurants")
@@ -295,6 +295,13 @@ serve(async (req: Request) => {
               .order("updated_at", { ascending: false })
               .limit(payload.pending_tasks_limit)
           : Promise.resolve({ data: [], error: null }),
+        // Ad-hoc visit model: the contractor may start a visit at ANY active site,
+        // so the app needs every active restaurant (with geo) to GPS-match against.
+        clientAdmin
+          .from("restaurants")
+          .select("id, name, city, state, address_line, timezone, lat, lng, radius, geofence_radius_m")
+          .eq("is_active", true)
+          .order("name", { ascending: true }),
       ]);
 
       if (restaurantsRes.error) {
@@ -465,10 +472,19 @@ serve(async (req: Request) => {
       const restaurantOnlyTasks = (restaurantTasksRes.data ?? []).filter((t) => !assignedTaskIds.has(t.id));
       const allPendingTasks = [...(tasksRes.data ?? []), ...restaurantOnlyTasks].slice(0, payload.pending_tasks_limit);
 
+      // Every active site the contractor can walk into and start a visit, with the
+      // geofence data the app needs to pick the nearest one by GPS. Superset of
+      // `today_shifts`/`assigned_restaurants`, which stay for backward compatibility.
+      const visitable_restaurants = (visitableRes.data ?? []).map((r) => ({
+        ...(toGeoRestaurant(r as Record<string, unknown>) ?? {}),
+        address_line: (r as { address_line?: string | null }).address_line ?? null,
+      }));
+
       const successData = {
         active_shift,
         can_start_shift: canStartShift,
         assigned_restaurants,
+        visitable_restaurants,
         scheduled_shifts,
         today_shifts,
         pending_tasks_count: allPendingTasks.length,

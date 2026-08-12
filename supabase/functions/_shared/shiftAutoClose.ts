@@ -61,6 +61,13 @@ export async function expireOverdueScheduledShifts(params?: {
   return { expired: updated?.length ?? 0 };
 }
 
+/**
+ * Safety-net cap for a visit nobody closed. A scheduled shift closes at its
+ * planned end; an ad-hoc visit has no planned end, so it closes this many hours
+ * after it started. Long enough to never cut a real deep-clean night short.
+ */
+const MAX_AD_HOC_VISIT_HOURS = 16;
+
 export async function autoCloseOverdueShifts(params: {
   employeeId?: string;
   limit?: number;
@@ -69,7 +76,7 @@ export async function autoCloseOverdueShifts(params: {
 
   let activeQuery = clientAdmin
     .from("shifts")
-    .select("id, employee_id, restaurant_id")
+    .select("id, employee_id, restaurant_id, start_time")
     .eq("state", "activo")
     .limit(limit);
 
@@ -83,36 +90,57 @@ export async function autoCloseOverdueShifts(params: {
   const shiftIds = activeShifts.map((s) => Number(s.id)).filter((n) => Number.isFinite(n));
   if (shiftIds.length === 0) return { closed: 0, shift_ids: [] };
 
-  const { data: schedules, error: schedError } = await clientAdmin
+  // A shift may (legacy) be linked to a scheduled window; if so we close it at
+  // that planned end. Ad-hoc visits have no schedule and fall to the time cap.
+  const { data: schedules } = await clientAdmin
     .from("scheduled_shifts")
-    .select("id, started_shift_id, scheduled_end, status")
+    .select("id, started_shift_id, scheduled_end")
     .in("started_shift_id", shiftIds);
 
-  if (schedError || !schedules) return { closed: 0, shift_ids: [] };
+  const scheduleByShift = new Map<number, { id: number; scheduled_end: string | null }>();
+  for (const s of (schedules ?? []) as Array<{ id: number; started_shift_id: number | null; scheduled_end: string | null }>) {
+    const sid = Number(s.started_shift_id);
+    if (Number.isFinite(sid)) scheduleByShift.set(sid, { id: s.id, scheduled_end: s.scheduled_end });
+  }
 
-  const nowIso = new Date().toISOString();
+  const now = Date.now();
+  const nowIso = new Date(now).toISOString();
   const closedIds: number[] = [];
 
-  for (const sched of schedules as Array<{ id: number; started_shift_id: number | null; scheduled_end: string | null }>) {
-    const shiftId = Number(sched.started_shift_id);
-    if (!Number.isFinite(shiftId) || !sched.scheduled_end) continue;
-    if (sched.scheduled_end >= nowIso) continue; // window still open
+  for (const shift of activeShifts as Array<{ id: number; start_time: string | null }>) {
+    const shiftId = Number(shift.id);
+    if (!Number.isFinite(shiftId)) continue;
 
-    // Close at the scheduled end so recorded hours match the planned window.
+    const sched = scheduleByShift.get(shiftId);
+
+    // Pick the close time: the planned end for a scheduled shift, otherwise the
+    // ad-hoc cap measured from when the visit started. `endTimeIso` also keeps
+    // recorded hours honest (never "now", which would inflate a forgotten visit).
+    let endTimeIso: string | null = null;
+    if (sched?.scheduled_end) {
+      if (sched.scheduled_end < nowIso) endTimeIso = sched.scheduled_end;
+    } else if (shift.start_time) {
+      const cap = new Date(shift.start_time).getTime() + MAX_AD_HOC_VISIT_HOURS * 3600_000;
+      if (Number.isFinite(cap) && cap < now) endTimeIso = new Date(cap).toISOString();
+    }
+    if (!endTimeIso) continue; // still within its window / cap
+
     const { data: updated, error: closeError } = await clientAdmin
       .from("shifts")
-      .update({ state: "auto_ended", end_time: sched.scheduled_end, updated_at: nowIso })
+      .update({ state: "auto_ended", end_time: endTimeIso, updated_at: nowIso })
       .eq("id", shiftId)
       .eq("state", "activo")
       .select("id");
 
     if (closeError || !updated || updated.length === 0) continue;
 
-    await clientAdmin
-      .from("scheduled_shifts")
-      .update({ status: "completed", updated_at: nowIso })
-      .eq("id", sched.id)
-      .in("status", ["scheduled", "started"]);
+    if (sched) {
+      await clientAdmin
+        .from("scheduled_shifts")
+        .update({ status: "completed", updated_at: nowIso })
+        .eq("id", sched.id)
+        .in("status", ["scheduled", "started"]);
+    }
 
     closedIds.push(shiftId);
   }

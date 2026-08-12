@@ -15,6 +15,11 @@ import { safeWriteAudit } from "../_shared/auditWriter.ts";
 import { hashCanonicalJson } from "../_shared/crypto.ts";
 import { parseWallClock, wallClockToUtc, formatAtSite, safeTimezone } from "../_shared/timezone.ts";
 
+// DEPRECATED (visit migration). The product moved to on-demand visits: a
+// contractor starts a visit at any active site without a pre-scheduled shift
+// (see shifts_start). This endpoint still works so nothing breaks while the app
+// retires its scheduling UI, but no new code should depend on it. Write actions
+// log a deprecation warning so we can confirm when the last caller goes away.
 const endpoint = "scheduled_shifts_manage";
 
 // Wall-clock scheduling.
@@ -244,6 +249,12 @@ serve(async (req: Request) => {
     }
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 40, window_seconds: 60 });
+
+    // Deprecation signal: surfaces any lingering caller of the scheduling writes
+    // after the app moves to on-demand visits. Read actions stay quiet.
+    if (payload.action === "assign" || payload.action === "bulk_assign" || payload.action === "reschedule") {
+      console.warn(JSON.stringify({ deprecated_endpoint: endpoint, action: payload.action, actor: user.id, request_id }));
+    }
 
     if (payload.action === "assign") {
       const timezones = await loadTimezonesByRestaurantId([Number(payload.restaurant_id)]);

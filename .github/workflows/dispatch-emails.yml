@@ -36,6 +36,6 @@ jobs:
             -H "apikey: $SUPABASE_ANON_KEY" \
             -H "x-cron-secret: $CRON_DISPATCH_SECRET" \
             -H "Content-Type: application/json" \
-            -d '{"enqueue_shift_not_started":true,"dispatch_limit":30,"max_attempts":5,"daily_cap":200}')
+            -d '{"enqueue_shift_not_started":false,"dispatch_limit":30,"max_attempts":5,"daily_cap":200}')
           echo "HTTP $HTTP"; cat /tmp/resp
           [ "$HTTP" = "200" ]
