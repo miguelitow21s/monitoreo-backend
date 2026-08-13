@@ -1096,12 +1096,11 @@ serve(async (req: Request) => {
       }
 
       if (user.role === "empleado") {
-        if (task.task_scope === "restaurant") {
-          await ensureEmployeeRestaurantAccess(user.id, task.restaurant_id as number);
-          await ensureActiveShiftAtRestaurant(user.id, task.restaurant_id as number);
-        } else if (String(task.assigned_employee_id) !== user.id) {
-          throw { code: 403, message: "Tarea no asignada a este empleado", category: "PERMISSION" };
-        }
+        // Site-task model: any contractor physically on site (active visit) can
+        // close the task, regardless of who -- if anyone -- it was assigned to.
+        // The active visit is the presence proof; no restaurant_staff assignment
+        // is required anymore.
+        await ensureActiveShiftAtRestaurant(user.id, task.restaurant_id as number);
       }
 
       if (user.role === "supervisora") {
@@ -1233,29 +1232,20 @@ serve(async (req: Request) => {
     if (payload.action === "list_my_open") {
       roleGuard(user, ["empleado"]);
 
-      const nowIso = new Date().toISOString();
+      // Site-task model (visit migration): a "restaurant" task belongs to the SITE,
+      // not to a contractor. Anyone with an ACTIVE VISIT at that site sees it --
+      // that visit (geofence-backed) is the presence proof, so no restaurant_staff
+      // assignment is required. `assigned_employee_id` no longer gates visibility;
+      // it stays only so legacy per-employee tasks still reach their assignee.
+      const { data: activeShiftRows } = await clientAdmin
+        .from("shifts")
+        .select("restaurant_id")
+        .eq("employee_id", user.id)
+        .eq("state", "activo");
 
-      const [{ data: restaurantLinks }, { data: scheduledRestaurantRows }, { data: activeShiftRows }] = await Promise.all([
-        clientAdmin
-          .from("restaurant_employees")
-          .select("restaurant_id")
-          .eq("user_id", user.id),
-        clientAdmin
-          .from("scheduled_shifts")
-          .select("restaurant_id")
-          .eq("employee_id", user.id)
-          .in("status", ["scheduled", "started"])
-          .gte("scheduled_end", nowIso),
-        clientAdmin
-          .from("shifts")
-          .select("restaurant_id")
-          .eq("employee_id", user.id)
-          .eq("state", "activo"),
-      ]);
-
-      const employeeRestaurantIds = [
+      const activeVisitRestaurantIds = [
         ...new Set(
-          [...(restaurantLinks ?? []), ...(scheduledRestaurantRows ?? []), ...(activeShiftRows ?? [])]
+          (activeShiftRows ?? [])
             .map((row) => Number(row.restaurant_id))
             .filter((n) => Number.isFinite(n) && n > 0)
         ),
@@ -1268,9 +1258,9 @@ serve(async (req: Request) => {
         .order("updated_at", { ascending: false })
         .limit(payload.limit);
 
-      if (employeeRestaurantIds.length > 0) {
+      if (activeVisitRestaurantIds.length > 0) {
         query = query.or(
-          `assigned_employee_id.eq.${user.id},and(task_scope.eq.restaurant,restaurant_id.in.(${employeeRestaurantIds.join(",")}))`
+          `assigned_employee_id.eq.${user.id},and(task_scope.eq.restaurant,restaurant_id.in.(${activeVisitRestaurantIds.join(",")}))`
         );
       } else {
         query = query.eq("assigned_employee_id", user.id);
