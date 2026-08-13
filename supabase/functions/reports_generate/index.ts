@@ -705,7 +705,8 @@ async function buildSingleDayPdfWithEvidence(params: {
   const tblRows: [string, string, string, string][] = [
     ["Restaurante", pdfSafeText(params.restaurantLabel), "Periodo", `${params.periodStart} a ${params.periodEnd}`],
     ["Generado", formatDateTime(params.generatedAt), "Total de Turnos", String(params.totalShifts)],
-    ["Horas Trabajadas", formatDuration(params.totalHours), "Horas Programadas", formatDuration(params.totalScheduledHours)],
+    // "Horas Programadas" removed with the visit migration -- there's no schedule.
+    ["Horas Trabajadas", formatDuration(params.totalHours), "", ""],
   ];
   for (let i = 0; i < tblRows.length; i++) {
     const rowY = tblTop - i * cellH;
@@ -2071,7 +2072,7 @@ serve(async (req: Request) => {
       `Generado: ${formatDateTime(generatedAt)}`,
       `Total turnos: ${rows.length}`,
       `Horas trabajadas: ${formatDuration(totalHours)}`,
-      `Horas programadas: ${formatDuration(totalScheduledHours)}`,
+      // "Horas programadas" removed with the visit migration -- there's no schedule.
     ];
 
     const maxLinesPerPage = Math.max(25, Math.floor((pdfPageHeight - 60) / pdfLineHeight));
