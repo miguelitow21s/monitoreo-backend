@@ -116,6 +116,14 @@ serve(async (req: Request) => {
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 50, window_seconds: 60 });
 
+    // DEPRECATED (visit migration): site access no longer depends on assigning a
+    // contractor to a site -- anyone with an active visit (geofence) can work
+    // there. The write actions stay live until the app retires its assignment UI,
+    // then we 410 them. Logged so we can see when the last caller goes away.
+    if (payload.action === "assign_employee" || payload.action === "unassign_employee") {
+      console.warn(JSON.stringify({ deprecated_endpoint: endpoint, action: payload.action, actor: user.id, request_id }));
+    }
+
     if (payload.action === "assign_employee") {
       roleGuard(user, ["super_admin", "supervisora"]);
       await ensureEmployeeUser(payload.employee_id);

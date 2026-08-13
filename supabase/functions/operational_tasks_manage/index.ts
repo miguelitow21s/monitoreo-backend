@@ -230,53 +230,6 @@ async function ensureSupervisorRestaurantAccess(supervisorId: string, restaurant
   }
 }
 
-async function ensureEmployeeRestaurantAccess(employeeId: string, restaurantId: number) {
-  const { data: link } = await clientAdmin
-    .from("restaurant_employees")
-    .select("restaurant_id")
-    .eq("user_id", employeeId)
-    .eq("restaurant_id", restaurantId)
-    .maybeSingle();
-
-  if (link) {
-    return;
-  }
-
-  const { data: scheduledShift } = await clientAdmin
-    .from("scheduled_shifts")
-    .select("id")
-    .eq("employee_id", employeeId)
-    .eq("restaurant_id", restaurantId)
-    .in("status", ["scheduled", "started"])
-    .gte("scheduled_end", new Date().toISOString())
-    .limit(1)
-    .maybeSingle();
-
-  if (scheduledShift) {
-    return;
-  }
-
-  const { data: activeShift } = await clientAdmin
-    .from("shifts")
-    .select("id")
-    .eq("employee_id", employeeId)
-    .eq("restaurant_id", restaurantId)
-    .eq("state", "activo")
-    .limit(1)
-    .maybeSingle();
-
-  if (activeShift) {
-    return;
-  }
-
-  throw {
-    code: 403,
-    message: "No tienes acceso a tareas de este restaurante",
-    category: "PERMISSION",
-    details: { diagnostic_code: "RESTAURANT_FORBIDDEN" },
-  };
-}
-
 async function ensureActiveShiftAtRestaurant(employeeId: string, restaurantId: number) {
   const { data: activeShift } = await clientAdmin
     .from("shifts")

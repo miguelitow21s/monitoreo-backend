@@ -349,19 +349,8 @@ serve(async (req: Request) => {
 
       const canStartShift = !active_shift;
 
-      const assignedAtByRestaurantId = new Map(
-        (linksRes.data ?? []).map((row) => [Number(row.restaurant_id), row.created_at])
-      );
-      const scheduledAtByRestaurantId = new Map(
-        (scheduleRes.data ?? []).map((row) => [Number(row.restaurant_id), row.scheduled_start])
-      );
-
-      const assigned_restaurants = restaurantIds.map((restaurantId) => ({
-        restaurant_id: restaurantId,
-        assigned_at: assignedAtByRestaurantId.get(restaurantId) ?? scheduledAtByRestaurantId.get(restaurantId) ?? null,
-        access_source: assignedAtByRestaurantId.has(restaurantId) ? "assignment" : "schedule",
-        restaurant: restaurantsById.get(restaurantId) ?? null,
-      }));
+      // assigned_restaurants[] was removed with the visit migration -- the app uses
+      // visitable_restaurants[] now, and site access no longer depends on assignment.
 
       const scheduled_shifts = (scheduleRes.data ?? []).map((row) => {
         const restaurantTz = safeTimezone(
@@ -473,8 +462,7 @@ serve(async (req: Request) => {
       const allPendingTasks = [...(tasksRes.data ?? []), ...restaurantOnlyTasks].slice(0, payload.pending_tasks_limit);
 
       // Every active site the contractor can walk into and start a visit, with the
-      // geofence data the app needs to pick the nearest one by GPS. Superset of
-      // `today_shifts`/`assigned_restaurants`, which stay for backward compatibility.
+      // geofence data the app needs to pick the nearest one by GPS.
       const visitable_restaurants = (visitableRes.data ?? []).map((r) => ({
         ...(toGeoRestaurant(r as Record<string, unknown>) ?? {}),
         address_line: (r as { address_line?: string | null }).address_line ?? null,
@@ -483,7 +471,6 @@ serve(async (req: Request) => {
       const successData = {
         active_shift,
         can_start_shift: canStartShift,
-        assigned_restaurants,
         visitable_restaurants,
         scheduled_shifts,
         today_shifts,
