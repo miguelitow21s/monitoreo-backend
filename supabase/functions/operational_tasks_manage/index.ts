@@ -821,12 +821,9 @@ serve(async (req: Request) => {
       }
 
       if (user.role === "empleado") {
-        if (task.task_scope === "restaurant") {
-          await ensureEmployeeRestaurantAccess(user.id, task.restaurant_id as number);
-          await ensureActiveShiftAtRestaurant(user.id, task.restaurant_id as number);
-        } else if (String(task.assigned_employee_id) !== user.id) {
-          throw { code: 403, message: "Solo el empleado asignado puede iniciar la tarea", category: "PERMISSION" };
-        }
+        // Site-task model: any contractor with an active visit at the site can
+        // operate it -- presence, not assignment.
+        await ensureActiveShiftAtRestaurant(user.id, task.restaurant_id as number);
       }
 
       if (user.role === "supervisora") {
@@ -877,12 +874,9 @@ serve(async (req: Request) => {
       }
 
       if (user.role === "empleado") {
-        if (task.task_scope === "restaurant") {
-          await ensureEmployeeRestaurantAccess(user.id, task.restaurant_id as number);
-          await ensureActiveShiftAtRestaurant(user.id, task.restaurant_id as number);
-        } else if (String(task.assigned_employee_id) !== user.id) {
-          throw { code: 403, message: "Solo el empleado asignado puede cerrar la tarea", category: "PERMISSION" };
-        }
+        // Site-task model: any contractor with an active visit at the site can
+        // operate it -- presence, not assignment.
+        await ensureActiveShiftAtRestaurant(user.id, task.restaurant_id as number);
       }
 
       if (user.role === "supervisora") {
