@@ -117,12 +117,18 @@ serve(async (req: Request) => {
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 50, window_seconds: 60 });
 
-    // DEPRECATED (visit migration): inspectors have global site access now, so
-    // assigning a supervisor to a site has no effect on permissions. Kept live
-    // until the app retires its assignment UI, then we 410 it. Logged to see when
-    // the last caller goes away.
+    // DISCONTINUED (visit migration, final cut): inspectors have global site
+    // access now, so assigning a supervisor to a site has no effect. The frontend
+    // removed these two callers -> 410 Gone. The list actions (list_by_supervisor,
+    // etc.) stay live: the admin still reads them.
     if (payload.action === "assign" || payload.action === "unassign") {
-      console.warn(JSON.stringify({ deprecated_endpoint: endpoint, action: payload.action, actor: user.id, request_id }));
+      console.warn(JSON.stringify({ discontinued_endpoint: endpoint, action: payload.action, actor: user.id, request_id }));
+      throw {
+        code: 410,
+        error_code: "SITE_ASSIGNMENT_DISCONTINUED",
+        message: "La asignacion de inspectores a sitios fue reemplazada por acceso global y ya no esta disponible",
+        category: "BUSINESS",
+      };
     }
 
     if (payload.action === "assign") {

@@ -101,6 +101,19 @@ serve(async (req: Request) => {
     const { user, clientUser } = await authGuard(req);
     userId = user.id;
     userRole = user.role;
+
+    // DISCONTINUED (visit migration, final cut). Site access no longer depends on
+    // assigning contractors to sites -- anyone with an active visit (geofence) can
+    // work there. The frontend removed every caller, so the whole endpoint now
+    // fails closed with 410 Gone. Action code below is kept but unreachable.
+    console.warn(JSON.stringify({ discontinued_endpoint: endpoint, actor: user.id, request_id }));
+    throw {
+      code: 410,
+      error_code: "SITE_ASSIGNMENT_DISCONTINUED",
+      message: "La asignacion de contratistas a sitios fue reemplazada por visitas ad-hoc y ya no esta disponible",
+      category: "BUSINESS",
+    };
+
     await requireAcceptedActiveLegalTerm(user.id);
 
     const parsedPayload = await parseBody(req, payloadSchema);
@@ -115,14 +128,6 @@ serve(async (req: Request) => {
     }
 
     await rateLimiter({ user_id: user.id, ip, endpoint, limit: 50, window_seconds: 60 });
-
-    // DEPRECATED (visit migration): site access no longer depends on assigning a
-    // contractor to a site -- anyone with an active visit (geofence) can work
-    // there. The write actions stay live until the app retires its assignment UI,
-    // then we 410 them. Logged so we can see when the last caller goes away.
-    if (payload.action === "assign_employee" || payload.action === "unassign_employee") {
-      console.warn(JSON.stringify({ deprecated_endpoint: endpoint, action: payload.action, actor: user.id, request_id }));
-    }
 
     if (payload.action === "assign_employee") {
       roleGuard(user, ["super_admin", "supervisora"]);
