@@ -2,7 +2,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import * as XLSX from "https://esm.sh/xlsx@0.18.5";
 import { z } from "npm:zod@3.23.8";
-import { PDFDocument, StandardFonts, rgb } from "npm:pdf-lib@1.17.1";
+import { PDFDocument, StandardFonts, rgb, PDFString } from "npm:pdf-lib@1.17.1";
 import { authGuard } from "../_shared/authGuard.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
@@ -538,6 +538,14 @@ async function buildSingleDayPdfWithEvidence(params: {
   totalHours: number;
   totalScheduledHours: number;
   evidenceRows: EvidenceForExport[];
+  siteTasks?: Array<{
+    title: string;
+    restaurant_name: string;
+    completed_by: string;
+    completed_at_display: string;
+    notes: string;
+    evidences: Array<{ signed_url: string; is_video: boolean }>;
+  }>;
 }): Promise<Uint8Array> {
   const pdfDoc = await PDFDocument.create();
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -608,7 +616,19 @@ async function buildSingleDayPdfWithEvidence(params: {
     return `${base}...`;
   };
 
-  const totalPageCount = 1 + params.evidenceRows.length;
+  // Page budget: summary + one page per Antes/Despues evidence + the site-tasks
+  // section (a cover page, then per task an intro page plus one page for each
+  // extra photo beyond the first). Slightly over-counts if an image fails to
+  // embed, which is fine for a page number.
+  const sectionTaskPages =
+    (params.siteTasks ?? []).length > 0
+      ? 1 +
+        (params.siteTasks ?? []).reduce((acc, t) => {
+          const photos = t.evidences.filter((e) => !e.is_video).length;
+          return acc + 1 + Math.max(0, photos - 1);
+        }, 0)
+      : 0;
+  const totalPageCount = 1 + params.evidenceRows.length + sectionTaskPages;
   let currentPageNum = 0;
 
   const drawPageHeader = (page: any, pw: number, ph: number) => {
@@ -856,6 +876,163 @@ async function buildSingleDayPdfWithEvidence(params: {
       font,
       color: rgb(0, 0, 0),
     });
+  }
+
+  // --- "Tareas Especiales Completadas" section (client request) ---
+  // A clearly-titled block at the very end: per task its name, contractor, local
+  // time and notes; each photo embedded; each VIDEO as a clickable link that
+  // opens the signed URL from the PDF.
+  const siteTasks = params.siteTasks ?? [];
+  if (siteTasks.length > 0) {
+    const sW = 595;
+    const sH = 842;
+    const sMargin = 40;
+
+    const fitLine = (text: string, size: number, f: any = font, maxW = sW - 2 * sMargin) => {
+      let t = pdfSafeText(text);
+      while (t.length > 0 && f.widthOfTextAtSize(t, size) > maxW) t = t.slice(0, -1);
+      return t;
+    };
+
+    const wrapText = (text: string, size: number, maxW: number, maxLines = 6): string[] => {
+      const words = pdfSafeText(text).split(/\s+/).filter(Boolean);
+      const lines: string[] = [];
+      let cur = "";
+      for (const wd of words) {
+        const test = cur ? `${cur} ${wd}` : wd;
+        if (font.widthOfTextAtSize(test, size) > maxW && cur) {
+          lines.push(cur);
+          cur = wd;
+        } else {
+          cur = test;
+        }
+      }
+      if (cur) lines.push(cur);
+      return lines.slice(0, maxLines);
+    };
+
+    // Clickable link: draws underlined blue text and overlays a URI Link annotation.
+    const addLink = (page: any, text: string, x: number, y: number, size: number, url: string) => {
+      const safe = pdfSafeText(text);
+      const w = font.widthOfTextAtSize(safe, size);
+      page.drawText(safe, { x, y, size, font, color: rgb(0.06, 0.35, 0.75) });
+      page.drawLine({ start: { x, y: y - 2 }, end: { x: x + w, y: y - 2 }, thickness: 0.6, color: rgb(0.06, 0.35, 0.75) });
+      const annot = pdfDoc.context.obj({
+        Type: "Annot",
+        Subtype: "Link",
+        Rect: [x, y - 3, x + w, y + size + 1],
+        Border: [0, 0, 0],
+        A: { Type: "Action", S: "URI", URI: PDFString.of(url) },
+      });
+      page.node.addAnnot(pdfDoc.context.register(annot));
+    };
+
+    const embedImage = async (url: string): Promise<any> => {
+      try {
+        const resp = await fetch(url);
+        if (!resp.ok) return null;
+        const ct = (resp.headers.get("content-type") ?? "").toLowerCase();
+        const b = new Uint8Array(await resp.arrayBuffer());
+        if (ct.includes("png")) return await pdfDoc.embedPng(b);
+        try {
+          return await pdfDoc.embedJpg(b);
+        } catch {
+          return await pdfDoc.embedPng(b);
+        }
+      } catch {
+        return null;
+      }
+    };
+
+    // Section cover.
+    let page = pdfDoc.addPage([sW, sH]);
+    currentPageNum++;
+    drawPageHeader(page, sW, sH);
+    const bannerY = sH - 130;
+    page.drawRectangle({ x: sMargin, y: bannerY - 6, width: sW - 2 * sMargin, height: 34, color: rgb(0.05, 0.05, 0.05) });
+    const bannerTxt = "TAREAS ESPECIALES COMPLETADAS";
+    page.drawText(bannerTxt, { x: (sW - bold.widthOfTextAtSize(bannerTxt, 14)) / 2, y: bannerY + 3, size: 14, font: bold, color: rgb(1, 1, 1) });
+    page.drawText(fitLine(`Total: ${siteTasks.length} tarea(s) completada(s) durante el periodo.`, 10), {
+      x: sMargin, y: bannerY - 26, size: 10, font, color: rgb(0.3, 0.3, 0.3),
+    });
+    drawPageFooter(page, sW);
+
+    const MAX_TASK_PHOTOS = 60;
+    let photosEmbedded = 0;
+
+    for (const task of siteTasks) {
+      page = pdfDoc.addPage([sW, sH]);
+      currentPageNum++;
+      drawPageHeader(page, sW, sH);
+      let ty = sH - 128;
+
+      page.drawText(fitLine(`Tarea: ${task.title}`, 14, bold), { x: sMargin, y: ty, size: 14, font: bold, color: rgb(0.1, 0.1, 0.1) });
+      ty -= 22;
+      for (const line of [
+        `Sitio: ${task.restaurant_name || "-"}`,
+        `Contratista: ${task.completed_by || "-"}`,
+        `Fecha/Hora: ${task.completed_at_display || "-"}`,
+      ]) {
+        page.drawText(fitLine(line, 10), { x: sMargin, y: ty, size: 10, font, color: rgb(0.25, 0.25, 0.25) });
+        ty -= 16;
+      }
+
+      page.drawText("Observaciones:", { x: sMargin, y: ty, size: 10, font: bold, color: rgb(0.2, 0.2, 0.2) });
+      ty -= 15;
+      for (const wline of wrapText(task.notes || "Sin observaciones.", 10, sW - 2 * sMargin)) {
+        page.drawText(wline, { x: sMargin, y: ty, size: 10, font, color: rgb(0.25, 0.25, 0.25) });
+        ty -= 14;
+      }
+      ty -= 8;
+
+      const videos = task.evidences.filter((e) => e.is_video);
+      const photos = task.evidences.filter((e) => !e.is_video);
+
+      if (videos.length > 0) {
+        page.drawText("Videos de evidencia:", { x: sMargin, y: ty, size: 10, font: bold, color: rgb(0.2, 0.2, 0.2) });
+        ty -= 16;
+        videos.forEach((v, i) => {
+          addLink(page, `Ver video de evidencia ${i + 1}`, sMargin + 6, ty, 11, v.signed_url);
+          ty -= 18;
+        });
+        ty -= 4;
+      }
+
+      // First photo shares the task's page if there's room; the rest get a page each.
+      let startIdx = 0;
+      if (photos.length > 0 && ty > 330 && photosEmbedded < MAX_TASK_PHOTOS) {
+        const img = await embedImage(photos[0].signed_url);
+        if (img) {
+          const maxW = sW - 2 * sMargin;
+          const maxH = ty - 80;
+          const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+          const w = img.width * scale;
+          const h = img.height * scale;
+          page.drawImage(img, { x: (sW - w) / 2, y: ty - h - 8, width: w, height: h });
+          photosEmbedded++;
+          startIdx = 1;
+        }
+      }
+      drawPageFooter(page, sW);
+
+      for (let i = startIdx; i < photos.length; i++) {
+        if (photosEmbedded >= MAX_TASK_PHOTOS) break;
+        const img = await embedImage(photos[i].signed_url);
+        if (!img) continue;
+        const p = pdfDoc.addPage([sW, sH]);
+        currentPageNum++;
+        drawPageHeader(p, sW, sH);
+        p.drawText(fitLine(`Tarea: ${task.title} - Foto ${i + 1}`, 11, bold), { x: sMargin, y: sH - 128, size: 11, font: bold, color: rgb(0.1, 0.1, 0.1) });
+        const maxW = sW - 2 * sMargin;
+        const maxH = 560;
+        const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+        const w = img.width * scale;
+        const h = img.height * scale;
+        p.drawImage(img, { x: (sW - w) / 2, y: sH - 150 - h, width: w, height: h });
+        drawPageFooter(p, sW);
+        photosEmbedded++;
+      }
+    }
   }
 
   const bytes = await pdfDoc.save();
@@ -2140,38 +2317,36 @@ serve(async (req: Request) => {
       );
     }
 
-    // Each task evidence file gets its own documented page in the single-day PDF,
-    // using the same layout as shift photos. Videos can't be embedded, so the
-    // renderer falls back to printing the signed URL (label marks them as video).
+    // Completed site tasks get their own titled section at the END of the PDF
+    // (rendered below) -- name, contractor, local time, notes, embedded photos and
+    // a clickable link for each video -- instead of being mixed into the
+    // Antes/Despues evidence pages. Deduped by task id across matched shifts.
+    const siteTasksForPdf: Array<{
+      title: string;
+      restaurant_name: string;
+      completed_by: string;
+      completed_at_display: string;
+      notes: string;
+      evidences: Array<{ signed_url: string; is_video: boolean }>;
+    }> = [];
     if (includeEvidenceUrls) {
+      const seenTaskIds = new Set<number>();
       for (const row of rows as Array<Record<string, unknown>>) {
         const tasks = (row.site_tasks as Array<Record<string, unknown>> | undefined) ?? [];
         for (const t of tasks) {
-          const evidences = (t.evidences as Array<Record<string, unknown>> | undefined) ?? [];
-          evidences.forEach((ev, idx) => {
-            const url = String(ev.signed_url ?? "");
-            if (!url) return;
-            const label = `Tarea: ${String(t.title ?? "")}${ev.is_video ? " (video)" : ""}`.trim();
-            const completedAt = (t.completed_at as string | null) ?? null;
-            const restaurantName = String(row.restaurant_name ?? "");
-            const doneBy = String(t.completed_by_name ?? "");
-            evidenceRowsForExport.push({
-              shift_id: Number(row.shift_id),
-              phase: "Tarea",
-              index: idx + 1,
-              path: String(ev.path ?? ""),
-              signed_url: url,
-              captured_at: completedAt,
-              zone: label,
-              restaurant_name: restaurantName,
-              employee_name: doneBy,
-              watermark_text: buildEvidenceWatermarkText({
-                captured_at: completedAt,
-                zone: label,
-                restaurant_name: restaurantName,
-                employee_name: doneBy,
-              }),
-            });
+          const taskId = Number(t.task_id ?? t.id ?? NaN);
+          if (Number.isFinite(taskId) && seenTaskIds.has(taskId)) continue;
+          if (Number.isFinite(taskId)) seenTaskIds.add(taskId);
+          const evidences = ((t.evidences as Array<Record<string, unknown>> | undefined) ?? [])
+            .map((ev) => ({ signed_url: String(ev.signed_url ?? ""), is_video: ev.is_video === true }))
+            .filter((ev) => ev.signed_url);
+          siteTasksForPdf.push({
+            title: String(t.title ?? "").trim() || `Tarea #${Number.isFinite(taskId) ? taskId : ""}`.trim(),
+            restaurant_name: String(row.restaurant_name ?? ""),
+            completed_by: String(t.completed_by_name ?? ""),
+            completed_at_display: formatDateTime((t.completed_at as string | null) ?? null),
+            notes: String(t.notes ?? "").trim(),
+            evidences,
           });
         }
       }
@@ -2243,6 +2418,7 @@ serve(async (req: Request) => {
             totalHours,
             totalScheduledHours,
             evidenceRows: evidenceRowsForExport,
+            siteTasks: siteTasksForPdf,
           })
         : buildPagedPdf(pages, {
             pageWidth: pdfPageWidth,
