@@ -92,8 +92,8 @@ const defaultColumns = [
 
 const columnLabel: Record<string, string> = {
   shift_id: "Turno",
-  employee_id: "Empleado ID",
-  employee_name: "Empleado",
+  employee_id: "Contratista ID",
+  employee_name: "Contratista",
   supervisor_name: "Supervisora",
   restaurant_id: "Restaurante ID",
   restaurant_name: "Restaurante",
@@ -378,7 +378,7 @@ function buildXlsxWorkbook(
       "Capturada",
       "Zona",
       "Restaurante",
-      "Empleado",
+      "Contratista",
       "Trazabilidad",
     ];
     const evidenceData: Array<Array<string | number | { f: string }>> = [evidenceHeader];
@@ -526,7 +526,7 @@ function buildEvidenceWatermarkText(evidence: {
   employee_name: string;
 }) {
   const captured = evidence.captured_at ? formatDateTime(evidence.captured_at) : "Fecha/hora no disponible";
-  return `Fecha/Hora: ${captured} | Zona: ${evidence.zone} | Restaurante: ${evidence.restaurant_name} | Empleado: ${evidence.employee_name}`;
+  return `Fecha/Hora: ${captured} | Zona: ${evidence.zone} | Restaurante: ${evidence.restaurant_name} | Contratista: ${evidence.employee_name}`;
 }
 
 async function buildSingleDayPdfWithEvidence(params: {
@@ -644,9 +644,9 @@ async function buildSingleDayPdfWithEvidence(params: {
     page.drawText(cL2, { x: cx - font.widthOfTextAtSize(cL2, 8) / 2, y: ph - 29, size: 8, font, color: rgb(0.45, 0.45, 0.45) });
     page.drawText(cL3, { x: cx - font.widthOfTextAtSize(cL3, 8) / 2, y: ph - 41, size: 8, font, color: rgb(0.45, 0.45, 0.45) });
 
-    // Subtitle "Sistema de Control de Empleados" + divider
+    // Subtitle "Sistema de Control de Contratistas" + divider
     const divY = ph - logoMaxH - 16;
-    page.drawText("Sistema de Control de Empleados", { x: 24, y: divY + 6, size: 7.5, font, color: rgb(0.55, 0.55, 0.55) });
+    page.drawText("Sistema de Control de Contratistas", { x: 24, y: divY + 6, size: 7.5, font, color: rgb(0.55, 0.55, 0.55) });
     page.drawLine({ start: { x: 24, y: divY }, end: { x: pw - 24, y: divY }, thickness: 0.5, color: rgb(0.75, 0.75, 0.75) });
   };
 
@@ -849,7 +849,7 @@ async function buildSingleDayPdfWithEvidence(params: {
       font,
       color: rgb(0, 0, 0),
     });
-    page.drawText(fit(`Empleado: ${ev.employee_name}`), {
+    page.drawText(fit(`Contratista: ${ev.employee_name}`), {
       x: overlayX + 6,
       y: overlayY + overlayH - 55,
       size: 9,

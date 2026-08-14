@@ -133,6 +133,11 @@ const listSupervisionAction = z.object({
   limit: z.number().int().min(1).max(500).default(100),
 });
 
+const listEvidencesAction = z.object({
+  action: z.literal("list_evidences"),
+  task_id: z.number().int().positive(),
+});
+
 const payloadSchema = z.discriminatedUnion("action", [
   createAction,
   updateAction,
@@ -145,6 +150,7 @@ const payloadSchema = z.discriminatedUnion("action", [
   completeAction,
   listMyOpenAction,
   listSupervisionAction,
+  listEvidencesAction,
 ]);
 
 async function sha256Hex(blob: Blob) {
@@ -1265,6 +1271,76 @@ serve(async (req: Request) => {
       const successPayload = { success: true, data: { items }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "list_evidences") {
+      // Task-detail view for admins/inspectors: the evidence a contractor attached
+      // when completing a site task, with signed links (2h TTL).
+      roleGuard(user, ["supervisora", "super_admin"]);
+
+      const { data: task, error: taskError } = await clientAdmin
+        .from("operational_tasks")
+        .select("id, title, restaurant_id, resolved_by, resolved_at, resolution_notes, evidence_items, evidence_path, evidence_mime_type")
+        .eq("id", payload.task_id)
+        .maybeSingle();
+      if (taskError) {
+        throw { code: 409, message: "No se pudo consultar la tarea", category: "BUSINESS", details: taskError };
+      }
+      if (!task) {
+        throw { code: 404, error_code: "TASK_NOT_FOUND", message: "Tarea no encontrada", category: "BUSINESS" };
+      }
+
+      const [{ data: rest }, { data: doneBy }] = await Promise.all([
+        clientAdmin.from("restaurants").select("name").eq("id", Number(task.restaurant_id)).maybeSingle(),
+        task.resolved_by
+          ? clientAdmin.from("users").select("full_name, email").eq("id", task.resolved_by).maybeSingle()
+          : Promise.resolve({ data: null }),
+      ]);
+
+      // evidence_items[] is the source of truth; fall back to the legacy single.
+      const rawItems: Array<{ path?: string; mime_type?: string }> =
+        Array.isArray(task.evidence_items) && task.evidence_items.length > 0
+          ? (task.evidence_items as Array<{ path?: string; mime_type?: string }>)
+          : task.evidence_path
+            ? [{ path: task.evidence_path as string, mime_type: (task.evidence_mime_type as string | null) ?? undefined }]
+            : [];
+
+      // JSON manifests aren't viewable -- drop them.
+      const viewable = rawItems.filter((it) => it.path && it.mime_type !== "application/json");
+      const paths = viewable.map((it) => it.path as string);
+
+      const signedByPath = new Map<string, string>();
+      if (paths.length > 0) {
+        const { data: signed } = await clientAdmin.storage.from(evidenceBucket).createSignedUrls(paths, 7200);
+        (signed ?? []).forEach((s, i) => {
+          if (s && s.signedUrl && !s.error) signedByPath.set(paths[i], s.signedUrl);
+        });
+      }
+
+      const evidences = viewable
+        .map((it) => ({
+          signed_url: signedByPath.get(it.path as string) ?? null,
+          mime_type: it.mime_type ?? null,
+          is_video: typeof it.mime_type === "string" && it.mime_type.toLowerCase().startsWith("video/"),
+        }))
+        .filter((e) => e.signed_url);
+
+      const result = {
+        task_id: Number(task.id),
+        title: (task.title as string | null) ?? null,
+        restaurant_name: (rest as { name?: string } | null)?.name ?? `#${task.restaurant_id}`,
+        completed_by:
+          (doneBy as { full_name?: string } | null)?.full_name ??
+          (doneBy as { email?: string } | null)?.email ??
+          null,
+        completed_at: (task.resolved_at as string | null) ?? null,
+        notes: (task.resolution_notes as string | null) ?? null,
+        evidences,
+      };
+
+      const successPayload = { success: true, data: result, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, result, null, request_id);
     }
 
     roleGuard(user, ["supervisora", "super_admin"]);
