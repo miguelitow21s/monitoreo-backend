@@ -837,44 +837,47 @@ async function buildSingleDayPdfWithEvidence(params: {
     }
 
     const overlayPadding = 8;
-    const overlayMinH = 58;
-    const overlayH = Math.min(84, Math.max(overlayMinH, frameH * 0.22));
-    const overlayX = frameX + overlayPadding;
-    const overlayW = Math.max(120, frameW - overlayPadding * 2);
-    const overlayY = frameY + overlayPadding;
     const fit = (rawTxt: string, max = 88) => {
       const txt = pdfSafeText(rawTxt); // WinAnsi-safe before drawing
       return txt.length > max ? `${txt.slice(0, max - 3)}...` : txt;
     };
 
-    page.drawRectangle({ x: overlayX, y: overlayY, width: overlayW, height: overlayH, color: rgb(1, 1, 1), opacity: 0.6 });
-    page.drawText(fit(`Fecha/Hora: ${ev.captured_at ? formatDateTime(ev.captured_at) : "No disponible"}`), {
-      x: overlayX + 6,
-      y: overlayY + overlayH - 16,
-      size: 9,
-      font,
-      color: rgb(0, 0, 0),
+    // Info card sized to its content and anchored bottom-left, instead of a
+    // full-width grey band with the text crammed onto one side.
+    const overlayLines = [
+      `Fecha/Hora: ${ev.captured_at ? formatDateTime(ev.captured_at) : "No disponible"}`,
+      `Zona: ${ev.zone}`,
+      `Restaurante: ${ev.restaurant_name}`,
+      `Contratista: ${ev.employee_name}`,
+    ].map((l) => fit(l));
+
+    const overlayFontSize = 9;
+    const overlayLineH = 13;
+    const overlayTextPad = 8;
+    const contentW = Math.max(...overlayLines.map((l) => font.widthOfTextAtSize(l, overlayFontSize)));
+    const overlayW = Math.min(frameW - overlayPadding * 2, contentW + overlayTextPad * 2);
+    const overlayH = overlayLines.length * overlayLineH + overlayTextPad * 2 - 2;
+    const overlayX = frameX + overlayPadding;
+    const overlayY = frameY + overlayPadding;
+
+    page.drawRectangle({
+      x: overlayX,
+      y: overlayY,
+      width: overlayW,
+      height: overlayH,
+      color: rgb(1, 1, 1),
+      opacity: 0.72,
+      borderColor: rgb(0.75, 0.75, 0.75),
+      borderWidth: 0.5,
     });
-    page.drawText(fit(`Zona: ${ev.zone}`), {
-      x: overlayX + 6,
-      y: overlayY + overlayH - 29,
-      size: 9,
-      font,
-      color: rgb(0, 0, 0),
-    });
-    page.drawText(fit(`Restaurante: ${ev.restaurant_name}`), {
-      x: overlayX + 6,
-      y: overlayY + overlayH - 42,
-      size: 9,
-      font,
-      color: rgb(0, 0, 0),
-    });
-    page.drawText(fit(`Contratista: ${ev.employee_name}`), {
-      x: overlayX + 6,
-      y: overlayY + overlayH - 55,
-      size: 9,
-      font,
-      color: rgb(0, 0, 0),
+    overlayLines.forEach((line, i) => {
+      page.drawText(line, {
+        x: overlayX + overlayTextPad,
+        y: overlayY + overlayH - overlayTextPad - overlayFontSize - i * overlayLineH,
+        size: overlayFontSize,
+        font,
+        color: rgb(0.1, 0.1, 0.1),
+      });
     });
   }
 
