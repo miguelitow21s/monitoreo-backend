@@ -181,6 +181,11 @@ serve(async (req: Request) => {
       roleGuard(user, ["super_admin", "supervisora"]);
     } else if (payload.action === "reset_password") {
       roleGuard(user, ["super_admin"]);
+    } else if (payload.action === "list") {
+      // A supervisora (quality inspector) needs the contractor directory now that
+      // site assignment is gone. It's a read; the handler forces role=empleado for
+      // them, so they can list contractors but never admins/supervisors.
+      roleGuard(user, ["super_admin", "supervisora"]);
     } else {
       roleGuard(user, ["super_admin"]);
     }
@@ -464,7 +469,10 @@ serve(async (req: Request) => {
       .select("id, first_name, last_name, full_name, email, phone_number, role, is_active")
       .order("email", { ascending: true });
 
-    if (payload.role) query = query.eq("role", payload.role);
+    // A supervisora may only ever see contractors, regardless of the role they ask
+    // for; a super_admin sees whatever they filter by.
+    const effectiveRole = user.role === "supervisora" ? "empleado" : payload.role;
+    if (effectiveRole) query = query.eq("role", effectiveRole);
     if (payload.is_active !== undefined) query = query.eq("is_active", payload.is_active);
 
     const searchRaw = payload.search?.trim();
