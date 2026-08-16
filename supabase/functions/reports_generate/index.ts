@@ -625,7 +625,7 @@ async function buildSingleDayPdfWithEvidence(params: {
       ? 1 +
         (params.siteTasks ?? []).reduce((acc, t) => {
           const photos = t.evidences.filter((e) => !e.is_video).length;
-          return acc + 1 + Math.max(0, photos - 1);
+          return acc + 1 + photos; // intro page + one page per photo
         }, 0)
       : 0;
   const totalPageCount = 1 + params.evidenceRows.length + sectionTaskPages;
@@ -1001,37 +1001,34 @@ async function buildSingleDayPdfWithEvidence(params: {
         ty -= 4;
       }
 
-      // First photo shares the task's page if there's room; the rest get a page each.
-      let startIdx = 0;
-      if (photos.length > 0 && ty > 330 && photosEmbedded < MAX_TASK_PHOTOS) {
-        const img = await embedImage(photos[0].signed_url);
-        if (img) {
-          const maxW = sW - 2 * sMargin;
-          const maxH = ty - 80;
-          const scale = Math.min(maxW / img.width, maxH / img.height, 1);
-          const w = img.width * scale;
-          const h = img.height * scale;
-          page.drawImage(img, { x: (sW - w) / 2, y: ty - h - 8, width: w, height: h });
-          photosEmbedded++;
-          startIdx = 1;
-        }
-      }
       drawPageFooter(page, sW);
 
-      for (let i = startIdx; i < photos.length; i++) {
+      // Each photo on its own page with one consistent framed layout -- the same
+      // tidy treatment as the Antes/Despues evidence, so nothing shares the
+      // metadata page (that crammed the first photo and made it overflow).
+      const photoFrameTop = sH - 148; // just under the task caption
+      const photoFrameBottom = 72; // just above the footer
+      const photoMaxW = sW - 2 * sMargin;
+      const photoMaxH = photoFrameTop - photoFrameBottom;
+      for (let i = 0; i < photos.length; i++) {
         if (photosEmbedded >= MAX_TASK_PHOTOS) break;
         const img = await embedImage(photos[i].signed_url);
         if (!img) continue;
         const p = pdfDoc.addPage([sW, sH]);
         currentPageNum++;
         drawPageHeader(p, sW, sH);
-        p.drawText(fitLine(`Tarea: ${task.title} - Foto ${i + 1}`, 11, bold), { x: sMargin, y: sH - 128, size: 11, font: bold, color: rgb(0.1, 0.1, 0.1) });
-        const maxW = sW - 2 * sMargin;
-        const maxH = 560;
-        const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+        p.drawText(fitLine(`Tarea: ${task.title} - Foto ${i + 1} de ${photos.length}`, 11, bold), {
+          x: sMargin,
+          y: sH - 128,
+          size: 11,
+          font: bold,
+          color: rgb(0.1, 0.1, 0.1),
+        });
+        const scale = Math.min(photoMaxW / img.width, photoMaxH / img.height, 1);
         const w = img.width * scale;
         const h = img.height * scale;
-        p.drawImage(img, { x: (sW - w) / 2, y: sH - 150 - h, width: w, height: h });
+        // Centered in the frame; top-anchored so pages line up regardless of ratio.
+        p.drawImage(img, { x: (sW - w) / 2, y: photoFrameTop - h, width: w, height: h });
         drawPageFooter(p, sW);
         photosEmbedded++;
       }
