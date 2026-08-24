@@ -486,6 +486,7 @@ type EvidenceForExport = {
   restaurant_name: string;
   employee_name: string;
   watermark_text: string;
+  observations?: string | null;
 };
 
 function normalizeZone(meta: Record<string, unknown>) {
@@ -845,8 +846,39 @@ async function buildSingleDayPdfWithEvidence(params: {
       frameW = fallbackPageW - pageMargin * 2;
       frameH = fallbackPageH - frameY - headerBlockHeight - pageMargin;
       page.drawRectangle({ x: frameX, y: frameY, width: frameW, height: frameH, borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 1 });
-      page.drawText("No se pudo incrustar la imagen. URL firmada:", { x: frameX + 10, y: frameY + frameH - 30, size: 10, font });
-      page.drawText(pdfSafeText(ev.signed_url).slice(0, 95), { x: frameX + 10, y: frameY + frameH - 48, size: 8, font, color: rgb(0.2, 0.2, 0.2) });
+      // A video (or any non-embeddable file) can't be shown as an image, so give a
+      // CLICKABLE link to view/download it instead of a dead URL string.
+      page.drawText("Evidencia en video (no se puede incrustar en el PDF).", { x: frameX + 10, y: frameY + frameH - 30, size: 11, font: bold, color: rgb(0.1, 0.1, 0.1) });
+      const linkText = "Ver / descargar la evidencia";
+      const linkX = frameX + 10;
+      const linkY = frameY + frameH - 54;
+      const linkSize = 12;
+      const linkW = font.widthOfTextAtSize(linkText, linkSize);
+      page.drawText(linkText, { x: linkX, y: linkY, size: linkSize, font, color: rgb(0.06, 0.35, 0.75) });
+      page.drawLine({ start: { x: linkX, y: linkY - 2 }, end: { x: linkX + linkW, y: linkY - 2 }, thickness: 0.6, color: rgb(0.06, 0.35, 0.75) });
+      const vAnnot = pdfDoc.context.obj({
+        Type: "Annot",
+        Subtype: "Link",
+        Rect: [linkX, linkY - 3, linkX + linkW, linkY + linkSize + 1],
+        Border: [0, 0, 0],
+        A: { Type: "Action", S: "URI", URI: PDFString.of(ev.signed_url) },
+      });
+      page.node.addAnnot(pdfDoc.context.register(vAnnot));
+
+      // Traceability lines (there's no image to overlay a card on).
+      let mY = linkY - 26;
+      for (const line of [
+        `Fecha/Hora: ${ev.captured_at ? formatDateTime(ev.captured_at) : "No disponible"}`,
+        `Zona: ${ev.zone}`,
+        `Restaurante: ${ev.restaurant_name}`,
+        `Contratista: ${ev.employee_name}`,
+        ...(ev.observations && String(ev.observations).trim() ? [`Obs.: ${String(ev.observations).trim()}`] : []),
+      ]) {
+        page.drawText(fitTextByWidth(line, frameW - 20, 9.5), { x: frameX + 10, y: mY, size: 9.5, font, color: rgb(0.2, 0.2, 0.2) });
+        mY -= 15;
+      }
+      // imageDrawn stays false: this page is already complete, so the `continue`
+      // below skips the image-overlay code (which has no image to overlay here).
     }
 
     if (!imageDrawn) {
@@ -866,6 +898,8 @@ async function buildSingleDayPdfWithEvidence(params: {
       `Zona: ${ev.zone}`,
       `Restaurante: ${ev.restaurant_name}`,
       `Contratista: ${ev.employee_name}`,
+      // The contractor's end-of-visit comment, stamped with the evidence.
+      ...(ev.observations && String(ev.observations).trim() ? [`Obs.: ${String(ev.observations).trim()}`] : []),
     ].map((l) => fit(l));
 
     const overlayFontSize = 9;
@@ -2268,6 +2302,7 @@ serve(async (req: Request) => {
                 restaurant_name: String(evStart.restaurant_name ?? (row.restaurant_name ?? "N/A")),
                 employee_name: String(evStart.employee_name ?? (row.employee_name ?? "Sin nombre")),
                 watermark_text: String(evStart.watermark_text ?? ""),
+                observations: (row.observations as string | null) ?? (row.early_end_reason as string | null) ?? null,
               });
             }
 
@@ -2284,6 +2319,7 @@ serve(async (req: Request) => {
                 restaurant_name: String(evEnd.restaurant_name ?? (row.restaurant_name ?? "N/A")),
                 employee_name: String(evEnd.employee_name ?? (row.employee_name ?? "Sin nombre")),
                 watermark_text: String(evEnd.watermark_text ?? ""),
+                observations: (row.observations as string | null) ?? (row.early_end_reason as string | null) ?? null,
               });
             }
           }
