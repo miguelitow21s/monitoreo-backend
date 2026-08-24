@@ -138,6 +138,12 @@ const listEvidencesAction = z.object({
   task_id: z.number().int().positive(),
 });
 
+const listRecentCompletedAction = z.object({
+  action: z.literal("list_recent_completed"),
+  restaurant_id: z.number().int().positive().optional(),
+  limit: z.number().int().min(1).max(100).default(20),
+});
+
 const payloadSchema = z.discriminatedUnion("action", [
   createAction,
   updateAction,
@@ -151,6 +157,7 @@ const payloadSchema = z.discriminatedUnion("action", [
   listMyOpenAction,
   listSupervisionAction,
   listEvidencesAction,
+  listRecentCompletedAction,
 ]);
 
 async function sha256Hex(blob: Blob) {
@@ -1341,6 +1348,59 @@ serve(async (req: Request) => {
       const successPayload = { success: true, data: result, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, result, null, request_id);
+    }
+
+    if (payload.action === "list_recent_completed") {
+      // Feeds the admin/inspector "Tareas especiales completadas" card: the most
+      // recently completed site tasks, display-ready (contractor and site NAMES,
+      // local-ish time, evidence count) so the card doesn't get raw ids.
+      roleGuard(user, ["supervisora", "super_admin"]);
+
+      let q = clientAdmin
+        .from("operational_tasks")
+        .select("id, title, restaurant_id, resolved_by, resolved_at, resolution_notes, evidence_items, evidence_path, evidence_mime_type")
+        .eq("status", "completed")
+        .order("resolved_at", { ascending: false, nullsFirst: false })
+        .limit(payload.limit);
+      if (payload.restaurant_id) q = q.eq("restaurant_id", payload.restaurant_id);
+
+      const { data, error } = await q;
+      if (error) {
+        throw { code: 409, message: "No se pudieron listar tareas completadas", category: "BUSINESS", details: error };
+      }
+      const rows = data ?? [];
+
+      const rIds = [...new Set(rows.map((r) => Number(r.restaurant_id)).filter((n) => Number.isFinite(n)))];
+      const uIds = [...new Set(rows.map((r) => String(r.resolved_by)).filter(Boolean))];
+      const [restRes, userRes] = await Promise.all([
+        rIds.length ? clientAdmin.from("restaurants").select("id, name").in("id", rIds) : Promise.resolve({ data: [] }),
+        uIds.length ? clientAdmin.from("users").select("id, full_name, email").in("id", uIds) : Promise.resolve({ data: [] }),
+      ]);
+      const restMap = new Map((restRes.data ?? []).map((r) => [Number(r.id), r.name]));
+      const userMap = new Map((userRes.data ?? []).map((u) => [String(u.id), (u.full_name ?? u.email) as string | null]));
+
+      const items = rows.map((r) => {
+        const evItems = Array.isArray(r.evidence_items)
+          ? (r.evidence_items as Array<{ path?: string; mime_type?: string }>)
+          : r.evidence_path
+            ? [{ path: r.evidence_path as string, mime_type: (r.evidence_mime_type as string | null) ?? undefined }]
+            : [];
+        const evidenceCount = evItems.filter((e) => e.path && e.mime_type !== "application/json").length;
+        return {
+          task_id: Number(r.id),
+          title: (r.title as string | null) ?? null,
+          restaurant_id: r.restaurant_id,
+          restaurant_name: restMap.get(Number(r.restaurant_id)) ?? `#${r.restaurant_id}`,
+          completed_by: userMap.get(String(r.resolved_by)) ?? null,
+          completed_at: (r.resolved_at as string | null) ?? null,
+          notes: (r.resolution_notes as string | null) ?? null,
+          evidence_count: evidenceCount,
+        };
+      });
+
+      const successPayload = { success: true, data: { items }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
     }
 
     roleGuard(user, ["supervisora", "super_admin"]);
