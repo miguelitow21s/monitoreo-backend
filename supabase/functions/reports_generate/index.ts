@@ -718,15 +718,31 @@ async function buildSingleDayPdfWithEvidence(params: {
   const titleTxtW = bold.widthOfTextAtSize(titleTxt, 12);
   summaryPage.drawText(titleTxt, { x: (pageW - titleTxtW) / 2, y: bannerY + 11, size: 12, font: bold, color: rgb(1, 1, 1) });
 
+  // Real subjects of the report (what's stamped on the photo footers), not the
+  // search filter: "Restaurante: TODOS" was the query param, but the reader wants
+  // the actual site(s) and contractor(s) in the document. Derived from the
+  // evidence rows and the completed tasks.
+  const distinctRestaurants: string[] = [];
+  const distinctContractors: string[] = [];
+  const seenR = new Set<string>();
+  const seenC = new Set<string>();
+  const addR = (n?: string) => { const s = (n ?? "").trim(); if (s && !seenR.has(s)) { seenR.add(s); distinctRestaurants.push(s); } };
+  const addC = (n?: string) => { const s = (n ?? "").trim(); if (s && !seenC.has(s)) { seenC.add(s); distinctContractors.push(s); } };
+  for (const ev of params.evidenceRows) { addR(ev.restaurant_name); addC(ev.employee_name); }
+  for (const t of params.siteTasks ?? []) { addR(t.restaurant_name); addC(t.completed_by); }
+  const oneOrMany = (arr: string[], fallback: string) =>
+    arr.length === 0 ? fallback : arr.length === 1 ? arr[0] : `Varios (${arr.length}): ${arr.join(", ")}`;
+  const restauranteDisplay = oneOrMany(distinctRestaurants, pdfSafeText(params.restaurantLabel));
+  const contratistaDisplay = oneOrMany(distinctContractors, "-");
+
   // --- Data table (3 rows × 4 cols: label | value | label | value) ---
   const tblTop = bannerY - 10;
   const cellH = 32;
   const colW = tableW / 4;
   const tblRows: [string, string, string, string][] = [
-    ["Restaurante", pdfSafeText(params.restaurantLabel), "Periodo", `${params.periodStart} a ${params.periodEnd}`],
-    ["Generado", formatDateTime(params.generatedAt), "Total de Turnos", String(params.totalShifts)],
-    // "Horas Programadas" removed with the visit migration -- there's no schedule.
-    ["Horas Trabajadas", formatDuration(params.totalHours), "", ""],
+    ["Restaurante", restauranteDisplay, "Periodo", `${params.periodStart} a ${params.periodEnd}`],
+    ["Contratista", contratistaDisplay, "Total de Turnos", String(params.totalShifts)],
+    ["Generado", formatDateTime(params.generatedAt), "Horas Trabajadas", formatDuration(params.totalHours)],
   ];
   for (let i = 0; i < tblRows.length; i++) {
     const rowY = tblTop - i * cellH;
@@ -737,10 +753,11 @@ async function buildSingleDayPdfWithEvidence(params: {
     }
     const ty = rowY - cellH / 2 - 3;
     const [l1, v1, l2, v2] = tblRows[i];
+    const cellValW = colW - 12; // truncate values so a long list can't overflow the cell
     summaryPage.drawText(l1, { x: pageMarginX + 6, y: ty, size: 8.5, font: bold, color: rgb(0.2, 0.2, 0.2) });
-    summaryPage.drawText(v1, { x: pageMarginX + colW + 6, y: ty, size: 8.5, font, color: rgb(0.3, 0.3, 0.3) });
+    summaryPage.drawText(fitTextByWidth(v1, cellValW, 8.5), { x: pageMarginX + colW + 6, y: ty, size: 8.5, font, color: rgb(0.3, 0.3, 0.3) });
     summaryPage.drawText(l2, { x: pageMarginX + colW * 2 + 6, y: ty, size: 8.5, font: bold, color: rgb(0.2, 0.2, 0.2) });
-    summaryPage.drawText(v2, { x: pageMarginX + colW * 3 + 6, y: ty, size: 8.5, font, color: rgb(0.3, 0.3, 0.3) });
+    summaryPage.drawText(fitTextByWidth(v2, cellValW, 8.5), { x: pageMarginX + colW * 3 + 6, y: ty, size: 8.5, font, color: rgb(0.3, 0.3, 0.3) });
   }
 
   // Note
