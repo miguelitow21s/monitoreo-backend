@@ -1255,56 +1255,158 @@ async function buildAuditsPdf(
   const pageH = 842;
   const marginX = 40;
 
-  // Sanitize here so every string that reaches drawText is WinAnsi-safe.
-  const fit = (text: string, size: number, f = font, maxW = pageW - 2 * marginX) => {
+  // Same branding as the contractor report so both look identical.
+  let brandLogo: any = null;
+  try {
+    const src = WORKTRACE_LOGO_NEW_PNG_BASE64 || WORKTRACE_LOGO_PNG_BASE64;
+    brandLogo = await pdfDoc.embedPng(Uint8Array.from(atob(src), (ch) => ch.charCodeAt(0)));
+  } catch { brandLogo = null; }
+  let verifikLogo: any = null;
+  try { verifikLogo = await pdfDoc.embedPng(Uint8Array.from(atob(VERIFIK_LOGO_PNG_BASE64), (ch) => ch.charCodeAt(0))); } catch { verifikLogo = null; }
+  let r3Logo: any = null;
+  try { r3Logo = await pdfDoc.embedPng(Uint8Array.from(atob(R3_LOGO_PNG_BASE64), (ch) => ch.charCodeAt(0))); } catch { r3Logo = null; }
+
+  const fit = (text: string, size: number, f: any = font, maxW = pageW - 2 * marginX) => {
     let t = pdfSafeText(text);
     while (t.length > 0 && f.widthOfTextAtSize(t, size) > maxW) t = t.slice(0, -1);
     return t;
   };
 
-  // --- Summary + table pages ---
-  const totalEvidence = rows.reduce((acc, r) => acc + r.evidence_count, 0);
-  let page = pdfDoc.addPage([pageW, pageH]);
-  let y = pageH - 50;
-
-  page.drawRectangle({ x: marginX, y: y - 6, width: pageW - 2 * marginX, height: 30, color: rgb(0.05, 0.05, 0.05) });
-  page.drawText("REPORTE DE AUDITORIAS DE CALIDAD", { x: marginX + 10, y: y + 3, size: 13, font: bold, color: rgb(1, 1, 1) });
-  y -= 40;
-
-  for (const line of [
-    `Sitio: ${meta.restaurantLabel}`,
-    `Supervisor: ${meta.supervisorLabel}`,
-    `Periodo: ${meta.periodStart} a ${meta.periodEnd}`,
-    `Generado: ${formatDateTime(meta.generatedAt)}`,
-    `Total auditorias: ${rows.length}   |   Total evidencias: ${totalEvidence}`,
-  ]) {
-    page.drawText(fit(line, 10), { x: marginX, y, size: 10, font, color: rgb(0.2, 0.2, 0.2) });
-    y -= 16;
+  // Real subjects of the report (what's stamped on the photos), not the filter.
+  const distinctSites: string[] = [];
+  const distinctSupervisors: string[] = [];
+  const seenS = new Set<string>();
+  const seenSup = new Set<string>();
+  for (const r of rows) {
+    const s = (r.restaurant_name ?? "").trim();
+    if (s && !seenS.has(s)) { seenS.add(s); distinctSites.push(s); }
+    const sup = (r.supervisor_name ?? "").trim();
+    if (sup && !seenSup.has(sup)) { seenSup.add(sup); distinctSupervisors.push(sup); }
   }
-  y -= 8;
+  const oneOrMany = (arr: string[], fallback: string) =>
+    arr.length === 0 ? fallback : arr.length === 1 ? arr[0] : `Varios (${arr.length}): ${arr.join(", ")}`;
+  const siteDisplay = oneOrMany(distinctSites, pdfSafeText(meta.restaurantLabel));
+  const supervisorDisplay = oneOrMany(distinctSupervisors, pdfSafeText(meta.supervisorLabel));
 
-  // Table header
+  const totalEvidence = rows.reduce((acc, r) => acc + r.evidence_count, 0);
+  const photoCount = rows.reduce((acc, r) => acc + r.evidences.filter((e) => e.signed_url && !e.is_video).length, 0);
+  const totalPageCount = 1 + Math.max(0, Math.ceil(rows.length / 22)) + Math.min(60, photoCount);
+  let currentPageNum = 0;
+
+  const drawPageHeader = (page: any, pw: number, ph: number) => {
+    const logoTopY = ph - 8;
+    const logoMaxH = 48;
+    let r3RightX = 24;
+    if (r3Logo) {
+      const s = Math.min(90 / r3Logo.width, logoMaxH / r3Logo.height, 1);
+      const lw = r3Logo.width * s, lh = r3Logo.height * s;
+      page.drawImage(r3Logo, { x: 24, y: logoTopY - lh, width: lw, height: lh });
+      r3RightX = 24 + lw;
+    }
+    let wtLeftX = pw - 24;
+    if (brandLogo) {
+      const s = Math.min(140 / brandLogo.width, logoMaxH / brandLogo.height, 1);
+      const lw = brandLogo.width * s, lh = brandLogo.height * s;
+      page.drawImage(brandLogo, { x: pw - 24 - lw, y: logoTopY - lh, width: lw, height: lh });
+      wtLeftX = pw - 24 - lw;
+    }
+    const cx = (r3RightX + wtLeftX) / 2;
+    const cL1 = "R3 Service & Solutions Inc.";
+    const cL2 = "Montrose, CA 91020  |  818.795.7744";
+    const cL3 = "Danny@r3servicesol.com";
+    page.drawText(cL1, { x: cx - bold.widthOfTextAtSize(cL1, 9.5) / 2, y: ph - 16, size: 9.5, font: bold, color: rgb(0.15, 0.15, 0.15) });
+    page.drawText(cL2, { x: cx - font.widthOfTextAtSize(cL2, 8) / 2, y: ph - 29, size: 8, font, color: rgb(0.45, 0.45, 0.45) });
+    page.drawText(cL3, { x: cx - font.widthOfTextAtSize(cL3, 8) / 2, y: ph - 41, size: 8, font, color: rgb(0.45, 0.45, 0.45) });
+    const divY = ph - logoMaxH - 16;
+    page.drawText("Sistema de Control de Contratistas", { x: 24, y: divY + 6, size: 7.5, font, color: rgb(0.55, 0.55, 0.55) });
+    page.drawLine({ start: { x: 24, y: divY }, end: { x: pw - 24, y: divY }, thickness: 0.5, color: rgb(0.75, 0.75, 0.75) });
+  };
+
+  const drawPageFooter = (page: any, pw: number) => {
+    page.drawLine({ start: { x: 24, y: 58 }, end: { x: pw - 24, y: 58 }, thickness: 0.5, color: rgb(0.8, 0.8, 0.8) });
+    let infoX = 24;
+    if (verifikLogo) {
+      const s = Math.min(100 / verifikLogo.width, 40 / verifikLogo.height, 1);
+      const lw = verifikLogo.width * s, lh = verifikLogo.height * s;
+      page.drawImage(verifikLogo, { x: 24, y: 8, width: lw, height: lh });
+      infoX = 24 + lw + 8;
+      const logoCenterY = 8 + lh / 2;
+      page.drawText("VerifiK  —  Desarrollador de WorkTrace", { x: infoX, y: logoCenterY + 7, size: 8.5, font: bold, color: rgb(0.25, 0.25, 0.25) });
+      page.drawText("verifikhm@gmail.com  |  +57 324 397 7861  |  www.verifik.com", { x: infoX, y: logoCenterY - 6, size: 8, font, color: rgb(0.4, 0.4, 0.4) });
+    } else {
+      page.drawText("VerifiK  —  Desarrollador de WorkTrace", { x: infoX, y: 36, size: 8.5, font: bold, color: rgb(0.25, 0.25, 0.25) });
+      page.drawText("verifikhm@gmail.com  |  +57 324 397 7861  |  www.verifik.com", { x: infoX, y: 23, size: 8, font, color: rgb(0.4, 0.4, 0.4) });
+    }
+    const pageLabel = `Pag. ${currentPageNum} / ${totalPageCount}`;
+    const labelW = bold.widthOfTextAtSize(pageLabel, 9);
+    page.drawText(pageLabel, { x: pw - 24 - labelW, y: 32, size: 9, font: bold, color: rgb(0.3, 0.3, 0.3) });
+  };
+
+  // --- Summary page: same banner + data-table treatment as the contractor report ---
+  let page = pdfDoc.addPage([pageW, pageH]);
+  currentPageNum++;
+  drawPageHeader(page, pageW, pageH);
+  const headerDivY = pageH - 48 - 16;
+  const tableW = pageW - 2 * marginX;
+  const bannerH = 32;
+  const bannerY = headerDivY - bannerH - 22;
+  page.drawRectangle({ x: marginX, y: bannerY, width: tableW, height: bannerH, color: rgb(0.05, 0.05, 0.05) });
+  const titleTxt = "REPORTE DE AUDITORIAS DE CALIDAD";
+  page.drawText(titleTxt, { x: (pageW - bold.widthOfTextAtSize(titleTxt, 12)) / 2, y: bannerY + 11, size: 12, font: bold, color: rgb(1, 1, 1) });
+
+  const tblTop = bannerY - 10;
+  const cellH = 32;
+  const colW = tableW / 4;
+  const tblRows: [string, string, string, string][] = [
+    ["Sitio", siteDisplay, "Periodo", `${meta.periodStart} a ${meta.periodEnd}`],
+    ["Supervisor", supervisorDisplay, "Total auditorias", String(rows.length)],
+    ["Generado", formatDateTime(meta.generatedAt), "Total evidencias", String(totalEvidence)],
+  ];
+  for (let i = 0; i < tblRows.length; i++) {
+    const rowY = tblTop - i * cellH;
+    const bg = i % 2 === 0 ? rgb(0.94, 0.94, 0.94) : rgb(1, 1, 1);
+    page.drawRectangle({ x: marginX, y: rowY - cellH, width: tableW, height: cellH, color: bg, borderColor: rgb(0.76, 0.76, 0.76), borderWidth: 0.5 });
+    for (let c = 1; c < 4; c++) {
+      page.drawLine({ start: { x: marginX + colW * c, y: rowY }, end: { x: marginX + colW * c, y: rowY - cellH }, thickness: 0.5, color: rgb(0.76, 0.76, 0.76) });
+    }
+    const ty = rowY - cellH / 2 - 3;
+    const [l1, v1, l2, v2] = tblRows[i];
+    const cellValW = colW - 12;
+    page.drawText(l1, { x: marginX + 6, y: ty, size: 8.5, font: bold, color: rgb(0.2, 0.2, 0.2) });
+    page.drawText(fit(v1, 8.5, font, cellValW), { x: marginX + colW + 6, y: ty, size: 8.5, font, color: rgb(0.3, 0.3, 0.3) });
+    page.drawText(l2, { x: marginX + colW * 2 + 6, y: ty, size: 8.5, font: bold, color: rgb(0.2, 0.2, 0.2) });
+    page.drawText(fit(v2, 8.5, font, cellValW), { x: marginX + colW * 3 + 6, y: ty, size: 8.5, font, color: rgb(0.3, 0.3, 0.3) });
+  }
+  page.drawText("Las siguientes paginas incluyen el listado y las fotos de cada auditoria con datos de trazabilidad.", {
+    x: marginX, y: tblTop - tblRows.length * cellH - 22, size: 9.5, font, color: rgb(0.25, 0.25, 0.25),
+  });
+  drawPageFooter(page, pageW);
+
+  // --- Listing table: row per audit, on its own branded page(s) ---
   const cols = [
     { label: "Fecha", x: marginX, w: 62 },
-    { label: "Hora", x: marginX + 62, w: 42 },
-    { label: "Sitio", x: marginX + 104, w: 96 },
-    { label: "Supervisor", x: marginX + 200, w: 104 },
-    { label: "Fase", x: marginX + 304, w: 44 },
-    { label: "Obs.", x: marginX + 348, w: 130 },
-    { label: "Fotos", x: marginX + 478, w: 36 },
+    { label: "Hora", x: marginX + 62, w: 46 },
+    { label: "Sitio", x: marginX + 108, w: 92 },
+    { label: "Supervisor", x: marginX + 200, w: 100 },
+    { label: "Fase", x: marginX + 300, w: 44 },
+    { label: "Obs.", x: marginX + 344, w: 132 },
+    { label: "Fotos", x: marginX + 476, w: 38 },
   ];
-  const drawTableHeader = () => {
-    page.drawRectangle({ x: marginX, y: y - 4, width: pageW - 2 * marginX, height: 18, color: rgb(0.9, 0.9, 0.9) });
-    for (const c of cols) page.drawText(c.label, { x: c.x + 3, y, size: 8.5, font: bold, color: rgb(0.15, 0.15, 0.15) });
-    y -= 20;
+  let ty = 0;
+  const newTablePage = () => {
+    page = pdfDoc.addPage([pageW, pageH]);
+    currentPageNum++;
+    drawPageHeader(page, pageW, pageH);
+    ty = headerDivY - 28;
+    page.drawRectangle({ x: marginX, y: ty - 4, width: tableW, height: 18, color: rgb(0.9, 0.9, 0.9) });
+    for (const c of cols) page.drawText(c.label, { x: c.x + 3, y: ty, size: 8.5, font: bold, color: rgb(0.15, 0.15, 0.15) });
+    ty -= 20;
   };
-  drawTableHeader();
-
+  newTablePage();
   for (const r of rows) {
-    if (y < 60) {
-      page = pdfDoc.addPage([pageW, pageH]);
-      y = pageH - 50;
-      drawTableHeader();
+    if (ty < 80) {
+      drawPageFooter(page, pageW);
+      newTablePage();
     }
     const cells = [
       r.local_date,
@@ -1315,57 +1417,70 @@ async function buildAuditsPdf(
       fit(r.observations || "-", 8, font, cols[5].w - 6),
       String(r.evidence_count),
     ];
-    // pdfSafeText again on the raw cells (local_time carries the U+202F from Intl).
-    cells.forEach((val, i) => page.drawText(pdfSafeText(val), { x: cols[i].x + 3, y, size: 8, font, color: rgb(0.2, 0.2, 0.2) }));
-    y -= 14;
+    cells.forEach((val, i) => page.drawText(pdfSafeText(val), { x: cols[i].x + 3, y: ty, size: 8, font, color: rgb(0.2, 0.2, 0.2) }));
+    ty -= 14;
   }
+  drawPageFooter(page, pageW);
 
-  // --- One documented page per photo, embedding the image with a metadata caption.
-  // Bounded so a wide date range can't blow the edge-function memory/time budget.
+  // --- One branded page per photo: framed image + info card overlay (audit labels) ---
   const MAX_EMBEDDED_PHOTOS = 60;
   let embedded = 0;
   for (const r of rows) {
     for (const ev of r.evidences) {
       if (embedded >= MAX_EMBEDDED_PHOTOS) break;
       if (!ev.signed_url || ev.is_video) continue;
+      let img: any = null;
       try {
         const resp = await fetch(ev.signed_url);
         if (!resp.ok) continue;
         const bytes = new Uint8Array(await resp.arrayBuffer());
         const mime = (ev.mime_type ?? "").toLowerCase();
-        let img: any = null;
         if (mime.includes("png")) img = await pdfDoc.embedPng(bytes);
-        else {
-          try { img = await pdfDoc.embedJpg(bytes); } catch { img = await pdfDoc.embedPng(bytes); }
-        }
-        if (!img) continue;
+        else { try { img = await pdfDoc.embedJpg(bytes); } catch { img = await pdfDoc.embedPng(bytes); } }
+      } catch { img = null; }
+      if (!img) continue;
 
-        const p = pdfDoc.addPage([pageW, pageH]);
-        p.drawText("EVIDENCIA DE AUDITORIA", { x: marginX, y: pageH - 45, size: 12, font: bold, color: rgb(0.1, 0.1, 0.1) });
+      const p = pdfDoc.addPage([pageW, pageH]);
+      currentPageNum++;
+      drawPageHeader(p, pageW, pageH);
 
-        const maxW = pageW - 2 * marginX;
-        const maxH = 520;
-        const scale = Math.min(maxW / img.width, maxH / img.height, 1);
-        const w = img.width * scale;
-        const h = img.height * scale;
-        p.drawImage(img, { x: (pageW - w) / 2, y: pageH - 70 - h, width: w, height: h });
+      const titleRaw = `AUDITORIA - ${auditPhaseLabel(r.phase)}`;
+      const titleFit = fit(titleRaw, 14, bold);
+      p.drawText(titleFit, { x: (pageW - bold.widthOfTextAtSize(titleFit, 14)) / 2, y: headerDivY - 26, size: 14, font: bold, color: rgb(0.1, 0.1, 0.1) });
 
-        let capY = pageH - 70 - h - 24;
-        for (const line of [
-          `Sitio: ${r.restaurant_name}`,
-          `Supervisor: ${r.supervisor_name}`,
-          `Fecha/Hora (sitio): ${r.local_date} ${r.local_time} (${r.timezone})`,
-          `Fase: ${auditPhaseLabel(r.phase)}`,
-          r.observations ? `Observaciones: ${r.observations}` : "",
-        ]) {
-          if (!line) continue;
-          p.drawText(fit(line, 9), { x: marginX, y: capY, size: 9, font, color: rgb(0.2, 0.2, 0.2) });
-          capY -= 14;
-        }
-        embedded += 1;
-      } catch {
-        // Skip an unreadable photo rather than fail the whole report.
-      }
+      const frameX = marginX;
+      const frameTop = headerDivY - 46;
+      const frameBottom = 72;
+      const maxW = pageW - 2 * marginX;
+      const maxH = frameTop - frameBottom;
+      const scale = Math.min(maxW / img.width, maxH / img.height, 1);
+      const w = img.width * scale;
+      const h = img.height * scale;
+      const imgY = frameTop - h;
+      p.drawImage(img, { x: (pageW - w) / 2, y: imgY, width: w, height: h });
+
+      // Content-sized info card anchored bottom-left of the image, same style as
+      // the contractor report footers.
+      const cardLines = [
+        `Fecha/Hora: ${r.local_date} ${r.local_time} (${r.timezone})`,
+        `Fase: ${auditPhaseLabel(r.phase)}`,
+        `Sitio: ${r.restaurant_name}`,
+        `Supervisor: ${r.supervisor_name}`,
+        ...(r.observations ? [`Observaciones: ${r.observations}`] : []),
+      ].map((l) => fit(l, 9, font, maxW - 16));
+      const cardPad = 8;
+      const cardLineH = 13;
+      const cardW = Math.min(maxW, Math.max(...cardLines.map((l) => font.widthOfTextAtSize(l, 9))) + cardPad * 2);
+      const cardH = cardLines.length * cardLineH + cardPad * 2 - 2;
+      const cardX = frameX + 8;
+      const cardY = Math.max(frameBottom + 2, imgY + 8);
+      p.drawRectangle({ x: cardX, y: cardY, width: cardW, height: cardH, color: rgb(1, 1, 1), opacity: 0.72, borderColor: rgb(0.75, 0.75, 0.75), borderWidth: 0.5 });
+      cardLines.forEach((line, i) => {
+        p.drawText(line, { x: cardX + cardPad, y: cardY + cardH - cardPad - 9 - i * cardLineH, size: 9, font, color: rgb(0.1, 0.1, 0.1) });
+      });
+
+      drawPageFooter(p, pageW);
+      embedded += 1;
     }
     if (embedded >= MAX_EMBEDDED_PHOTOS) break;
   }
