@@ -43,7 +43,7 @@ serve(async (req: Request) => {
 
   try {
     requireMethod(req, ["POST"]);
-    const { user, clientUser } = await authGuard(req);
+    const { user } = await authGuard(req);
     userId = user.id;
     userRole = user.role;
     await requireAcceptedActiveLegalTerm(user.id);
@@ -75,12 +75,16 @@ serve(async (req: Request) => {
 
     if (payload.action === "summary_by_shift") {
       const [startCountRes, endCountRes] = await Promise.all([
-        clientUser
+        // Read via service role: access to this shift is already authorized
+        // above (empleado -> own shift; supervisora -> ensureSupervisorShiftAccess;
+        // super_admin). shift_photos has RLS deny-all for the authenticated role,
+        // so a clientUser read returns 0 -- same pattern as shifts_end/reports.
+        clientAdmin
           .from("shift_photos")
           .select("id", { count: "exact", head: true })
           .eq("shift_id", payload.shift_id)
           .eq("type", "inicio"),
-        clientUser
+        clientAdmin
           .from("shift_photos")
           .select("id", { count: "exact", head: true })
           .eq("shift_id", payload.shift_id)
@@ -123,7 +127,9 @@ serve(async (req: Request) => {
       return response(true, successPayload.data, null, request_id);
     }
 
-    let query = clientUser
+    // Service role: access to this shift is authorized above; shift_photos RLS is
+    // deny-all for authenticated, so clientUser would return an empty list.
+    let query = clientAdmin
       .from("shift_photos")
       .select("id, shift_id, type, storage_path, captured_at, lat, lng, created_at")
       .eq("shift_id", payload.shift_id)
