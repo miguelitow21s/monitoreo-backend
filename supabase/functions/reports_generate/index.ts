@@ -2153,6 +2153,12 @@ serve(async (req: Request) => {
       const matched = taskRowsRaw.filter((t) => {
         if (Number(t.shift_id) === sid) return true; // linked directly at shift start
         if (Number(t.restaurant_id) !== Number(shift.restaurant_id)) return false;
+        // Window fallback for tasks with no direct shift link: only attribute the
+        // task to THIS visit if the same contractor resolved it during their own
+        // window. Without the resolver check, a task completed by contractor B is
+        // wrongly attributed to contractor A whenever their visits to the same site
+        // overlap in time (concurrent contractors -> duplicated/misattributed rows).
+        if (String(t.resolved_by) !== String(shift.employee_id)) return false;
         if (!t.resolved_at || startedAt == null) return false;
         const doneAt = new Date(String(t.resolved_at)).getTime();
         return doneAt >= startedAt && (endedAt == null || doneAt <= endedAt);
