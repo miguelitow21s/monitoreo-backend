@@ -131,7 +131,11 @@ serve(async (req) => {
       await geoValidatorByRestaurant(clientUser, restaurant_id, lat, lng, { settings });
     }
 
-    const { data, error } = await clientUser
+    // Write via service role: geofence/role/no-active-shift authz is fully
+    // enforced above in code, and the row is always the actor's own
+    // (employee_id = user.id). Direct-PostgREST writes to `shifts` are locked
+    // down (migration 062) so the Edge geofence can't be bypassed.
+    const { data, error } = await clientAdmin
       .from("shifts")
       .insert({
         employee_id: user.id,

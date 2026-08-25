@@ -193,7 +193,10 @@ serve(async (req) => {
       };
     }
 
-    const { data, error } = await clientUser
+    // Write via service role: the row is scoped below to the actor's own active
+    // shift (.eq id/employee_id/state). Direct-PostgREST writes to `shifts` are
+    // locked down (migration 062).
+    const { data, error } = await clientAdmin
       .from("shifts")
       .update({
         end_time: new Date().toISOString(),

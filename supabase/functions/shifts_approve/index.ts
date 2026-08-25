@@ -1,6 +1,7 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { z } from "npm:zod@3.23.8";
 import { authGuard } from "../_shared/authGuard.ts";
+import { clientAdmin } from "../_shared/supabaseClient.ts";
 import { roleGuard } from "../_shared/roleGuard.ts";
 import { requireAcceptedActiveLegalTerm } from "../_shared/legalGuard.ts";
 import { ensureShiftFinalized } from "../_shared/stateValidator.ts";
@@ -66,7 +67,10 @@ serve(async (req) => {
 
     await ensureShiftFinalized(clientUser, shift_id);
 
-    const { data, error } = await clientUser
+    // Write via service role: roleGuard + ensureSupervisorShiftAccess above,
+    // plus .eq(id).eq(state,'finalizado') below, scope this to the right shift.
+    // Direct-PostgREST writes to `shifts` are locked down (migration 062).
+    const { data, error } = await clientAdmin
       .from("shifts")
       .update({
         state: "aprobado",
