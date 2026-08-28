@@ -1364,11 +1364,22 @@ serve(async (req: Request) => {
         .limit(payload.limit);
       if (payload.restaurant_id) q = q.eq("restaurant_id", payload.restaurant_id);
 
-      const { data, error } = await q;
+      // How many special tasks are still open, for the alert badge ("N pendientes").
+      let pendingQ = clientAdmin
+        .from("operational_tasks")
+        .select("id", { count: "exact", head: true })
+        .in("status", ["pending", "in_progress"]);
+      if (payload.restaurant_id) pendingQ = pendingQ.eq("restaurant_id", payload.restaurant_id);
+
+      const [{ data, error }, pendingRes] = await Promise.all([q, pendingQ]);
       if (error) {
         throw { code: 409, message: "No se pudieron listar tareas completadas", category: "BUSINESS", details: error };
       }
+      if (pendingRes.error) {
+        throw { code: 409, message: "No se pudo contar tareas pendientes", category: "BUSINESS", details: pendingRes.error };
+      }
       const rows = data ?? [];
+      const pendingCount = pendingRes.count ?? 0;
 
       const rIds = [...new Set(rows.map((r) => Number(r.restaurant_id)).filter((n) => Number.isFinite(n)))];
       const uIds = [...new Set(rows.map((r) => String(r.resolved_by)).filter(Boolean))];
@@ -1398,7 +1409,7 @@ serve(async (req: Request) => {
         };
       });
 
-      const successPayload = { success: true, data: { items }, error: null, request_id };
+      const successPayload = { success: true, data: { items, pending_count: pendingCount }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
