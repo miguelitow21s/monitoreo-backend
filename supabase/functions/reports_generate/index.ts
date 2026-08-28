@@ -802,20 +802,26 @@ async function buildSingleDayPdfWithEvidence(params: {
     summaryPage.drawText("Observaciones del contratista", {
       x: pageMarginX, y: obsY, size: 11, font: bold, color: rgb(0.1, 0.1, 0.1),
     });
-    obsY -= 18;
-    const single = obsEntries.length === 1;
+    obsY -= 16;
     let linesDrawn = 0;
     const maxLines = 22; // keep the block on the cover page
     for (const e of obsEntries) {
       if (linesDrawn >= maxLines) break;
-      const body = single ? e.text : `${e.contractor || "Contratista"}: ${e.text}`;
-      for (const wline of wrapToWidth(body, 9.5, tableW - 4)) {
-        if (linesDrawn >= maxLines) { summaryPage.drawText("[...]", { x: pageMarginX, y: obsY, size: 9.5, font, color: rgb(0.4, 0.4, 0.4) }); break; }
-        summaryPage.drawText(wline, { x: pageMarginX, y: obsY, size: 9.5, font, color: rgb(0.2, 0.2, 0.2) });
+      // Name the contractor who left the observation -- the report is
+      // contractor-specific, so the reader sees WHO did it, not just the site.
+      const nameLabel = e.contractor || "Contratista";
+      summaryPage.drawText(fitTextByWidth(nameLabel, tableW - 4, 9.5), {
+        x: pageMarginX, y: obsY, size: 9.5, font: bold, color: rgb(0.1, 0.1, 0.1),
+      });
+      obsY -= 14;
+      linesDrawn++;
+      for (const wline of wrapToWidth(e.text, 9.5, tableW - 14)) {
+        if (linesDrawn >= maxLines) { summaryPage.drawText("[...]", { x: pageMarginX + 10, y: obsY, size: 9.5, font, color: rgb(0.4, 0.4, 0.4) }); break; }
+        summaryPage.drawText(wline, { x: pageMarginX + 10, y: obsY, size: 9.5, font, color: rgb(0.2, 0.2, 0.2) });
         obsY -= 14;
         linesDrawn++;
       }
-      obsY -= 4; // small gap between contractors
+      obsY -= 6; // small gap between contractors
     }
   }
   currentPageNum = 1;
