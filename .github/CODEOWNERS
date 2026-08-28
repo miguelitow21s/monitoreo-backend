@@ -1,0 +1,9 @@
+# CODEOWNERS de WorkTrace (backend)
+#
+# Regla: TODO cambio en cualquier archivo del repo requiere
+# review y aprobación de @miguelitow21s antes de mergear a main.
+# Combinado con branch protection (required reviewers + reviews
+# from Code Owners), esto asegura que ningún commit llegue a main
+# sin pasar por Miguel.
+
+*   @miguelitow21s
