@@ -539,6 +539,14 @@ async function buildSingleDayPdfWithEvidence(params: {
   totalHours: number;
   totalScheduledHours: number;
   evidenceRows: EvidenceForExport[];
+  // Authoritative per-shift summary (from the shifts themselves), used to derive
+  // the cover's real subjects and to show each contractor's observations even
+  // when a shift has no photos.
+  shiftsSummary?: Array<{
+    restaurant_name: string;
+    contractor_name: string;
+    observations: string | null;
+  }>;
   siteTasks?: Array<{
     title: string;
     restaurant_name: string;
@@ -729,6 +737,10 @@ async function buildSingleDayPdfWithEvidence(params: {
   const seenC = new Set<string>();
   const addR = (n?: string) => { const s = (n ?? "").trim(); if (s && !seenR.has(s)) { seenR.add(s); distinctRestaurants.push(s); } };
   const addC = (n?: string) => { const s = (n ?? "").trim(); if (s && !seenC.has(s)) { seenC.add(s); distinctContractors.push(s); } };
+  // Shifts are the authoritative source: they exist even when a shift has no
+  // photos, so the cover never falls back to the "TODOS" search label when the
+  // report actually covers one site/contractor.
+  for (const s of params.shiftsSummary ?? []) { addR(s.restaurant_name); addC(s.contractor_name); }
   for (const ev of params.evidenceRows) { addR(ev.restaurant_name); addC(ev.employee_name); }
   for (const t of params.siteTasks ?? []) { addR(t.restaurant_name); addC(t.completed_by); }
   const oneOrMany = (arr: string[], fallback: string) =>
@@ -762,9 +774,56 @@ async function buildSingleDayPdfWithEvidence(params: {
   }
 
   // Note
+  const noteY = tblTop - tblRows.length * cellH - 22;
   summaryPage.drawText("Las siguientes paginas incluyen fotos Antes/Despues con datos de trazabilidad.", {
-    x: pageMarginX, y: tblTop - tblRows.length * cellH - 22, size: 9.5, font, color: rgb(0.25, 0.25, 0.25),
+    x: pageMarginX, y: noteY, size: 9.5, font, color: rgb(0.25, 0.25, 0.25),
   });
+
+  // Contractor observations block: the text the contractor typed when ending the
+  // visit ("Observaciones"). Shown on the cover so it's legible even for shifts
+  // with no photos -- not only stamped small on each photo.
+  const wrapToWidth = (text: string, size: number, maxW: number): string[] => {
+    const words = pdfSafeText(text).split(/\s+/).filter(Boolean);
+    const lines: string[] = [];
+    let cur = "";
+    for (const w of words) {
+      const trial = cur ? `${cur} ${w}` : w;
+      if (font.widthOfTextAtSize(trial, size) > maxW && cur) { lines.push(cur); cur = w; }
+      else cur = trial;
+    }
+    if (cur) lines.push(cur);
+    return lines;
+  };
+  const obsEntries = (params.shiftsSummary ?? [])
+    .map((s) => ({ contractor: (s.contractor_name ?? "").trim(), text: (s.observations ?? "").trim() }))
+    .filter((e) => e.text.length > 0);
+  if (obsEntries.length > 0) {
+    let obsY = noteY - 26;
+    summaryPage.drawText("Observaciones del contratista", {
+      x: pageMarginX, y: obsY, size: 11, font: bold, color: rgb(0.1, 0.1, 0.1),
+    });
+    obsY -= 16;
+    let linesDrawn = 0;
+    const maxLines = 22; // keep the block on the cover page
+    for (const e of obsEntries) {
+      if (linesDrawn >= maxLines) break;
+      // Name the contractor who left the observation -- the report is
+      // contractor-specific, so the reader sees WHO did it, not just the site.
+      const nameLabel = e.contractor || "Contratista";
+      summaryPage.drawText(fitTextByWidth(nameLabel, tableW - 4, 9.5), {
+        x: pageMarginX, y: obsY, size: 9.5, font: bold, color: rgb(0.1, 0.1, 0.1),
+      });
+      obsY -= 14;
+      linesDrawn++;
+      for (const wline of wrapToWidth(e.text, 9.5, tableW - 14)) {
+        if (linesDrawn >= maxLines) { summaryPage.drawText("[...]", { x: pageMarginX + 10, y: obsY, size: 9.5, font, color: rgb(0.4, 0.4, 0.4) }); break; }
+        summaryPage.drawText(wline, { x: pageMarginX + 10, y: obsY, size: 9.5, font, color: rgb(0.2, 0.2, 0.2) });
+        obsY -= 14;
+        linesDrawn++;
+      }
+      obsY -= 6; // small gap between contractors
+    }
+  }
   currentPageNum = 1;
   drawPageFooter(summaryPage, pageW);
 
@@ -2592,6 +2651,13 @@ serve(async (req: Request) => {
             totalHours,
             totalScheduledHours,
             evidenceRows: evidenceRowsForExport,
+            shiftsSummary: rows.map((r) => ({
+              restaurant_name: String((r as Record<string, unknown>).restaurant_name ?? "").trim(),
+              contractor_name: String((r as Record<string, unknown>).employee_name ?? "").trim(),
+              observations: ((r as Record<string, unknown>).observations as string | null)
+                ?? ((r as Record<string, unknown>).early_end_reason as string | null)
+                ?? null,
+            })),
             siteTasks: siteTasksForPdf,
           })
         : buildPagedPdf(pages, {
