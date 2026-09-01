@@ -144,6 +144,12 @@ const listRecentCompletedAction = z.object({
   limit: z.number().int().min(1).max(100).default(20),
 });
 
+const listPendingAction = z.object({
+  action: z.literal("list_pending"),
+  restaurant_id: z.number().int().positive().optional(),
+  limit: z.number().int().min(1).max(200).default(50),
+});
+
 const payloadSchema = z.discriminatedUnion("action", [
   createAction,
   updateAction,
@@ -158,6 +164,7 @@ const payloadSchema = z.discriminatedUnion("action", [
   listSupervisionAction,
   listEvidencesAction,
   listRecentCompletedAction,
+  listPendingAction,
 ]);
 
 async function sha256Hex(blob: Blob) {
@@ -1410,6 +1417,73 @@ serve(async (req: Request) => {
       });
 
       const successPayload = { success: true, data: { items, pending_count: pendingCount }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "list_pending") {
+      // Unified "faltantes" feed for the alert: open tasks (pending + in_progress)
+      // as a display-ready list PLUS an exact total for the badge, in one call.
+      roleGuard(user, ["supervisora", "super_admin"]);
+
+      let q = clientAdmin
+        .from("operational_tasks")
+        .select("id, title, restaurant_id, task_scope, assigned_employee_id, created_by, priority, status, due_at, created_at, requires_evidence, evidence_type")
+        .in("status", ["pending", "in_progress"])
+        .order("due_at", { ascending: true, nullsFirst: false })
+        .order("created_at", { ascending: false })
+        .limit(payload.limit);
+      if (payload.restaurant_id) q = q.eq("restaurant_id", payload.restaurant_id);
+
+      // Exact total (independent of `limit`) for the badge.
+      let countQ = clientAdmin
+        .from("operational_tasks")
+        .select("id", { count: "exact", head: true })
+        .in("status", ["pending", "in_progress"]);
+      if (payload.restaurant_id) countQ = countQ.eq("restaurant_id", payload.restaurant_id);
+
+      const [{ data, error }, countRes] = await Promise.all([q, countQ]);
+      if (error) {
+        throw { code: 409, message: "No se pudieron listar tareas pendientes", category: "BUSINESS", details: error };
+      }
+      if (countRes.error) {
+        throw { code: 409, message: "No se pudo contar tareas pendientes", category: "BUSINESS", details: countRes.error };
+      }
+      const rows = data ?? [];
+
+      const rIds = [...new Set(rows.map((r) => Number(r.restaurant_id)).filter((n) => Number.isFinite(n)))];
+      const uIds = [
+        ...new Set(
+          [
+            ...rows.map((r) => String(r.assigned_employee_id ?? "")),
+            ...rows.map((r) => String(r.created_by ?? "")),
+          ].filter(Boolean)
+        ),
+      ];
+      const [restRes, userRes] = await Promise.all([
+        rIds.length ? clientAdmin.from("restaurants").select("id, name").in("id", rIds) : Promise.resolve({ data: [] }),
+        uIds.length ? clientAdmin.from("users").select("id, full_name, email").in("id", uIds) : Promise.resolve({ data: [] }),
+      ]);
+      const restMap = new Map((restRes.data ?? []).map((r) => [Number(r.id), r.name]));
+      const userMap = new Map((userRes.data ?? []).map((u) => [String(u.id), (u.full_name ?? u.email) as string | null]));
+
+      const items = rows.map((r) => ({
+        task_id: Number(r.id),
+        title: (r.title as string | null) ?? null,
+        restaurant_id: r.restaurant_id,
+        restaurant_name: restMap.get(Number(r.restaurant_id)) ?? `#${r.restaurant_id}`,
+        task_scope: (r.task_scope as string | null) ?? null,
+        status: r.status,
+        priority: (r.priority as string | null) ?? null,
+        due_at: (r.due_at as string | null) ?? null,
+        created_at: (r.created_at as string | null) ?? null,
+        created_by_name: r.created_by ? (userMap.get(String(r.created_by)) ?? null) : null,
+        assigned_to_name: r.assigned_employee_id ? (userMap.get(String(r.assigned_employee_id)) ?? null) : null,
+        requires_evidence: r.requires_evidence === true,
+        evidence_type: (r.evidence_type as string | null) ?? null,
+      }));
+
+      const successPayload = { success: true, data: { items, pending_count: countRes.count ?? 0 }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
