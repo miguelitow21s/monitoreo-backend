@@ -65,7 +65,11 @@ const registerAction = z.object({
   evidence_hash: z.string().min(16).max(200).optional(),
   evidence_mime_type: imageMimeSchema.optional(),
   evidence_size_bytes: z.coerce.number().int().positive().max(50000000).optional(),
-  evidences: z.array(evidenceItemSchema).min(1).max(20).optional(),
+  // A full audit stamps one photo per subarea (Cocina/Comedor/Banos/Fachadas...)
+  // plus free observation attachments, so 20 was too tight. 50 covers today's
+  // worst case (~25-30) with headroom; the download+hash below runs with bounded
+  // concurrency so the wall-clock stays low. (Images only, 8 MB each.)
+  evidences: z.array(evidenceItemSchema).min(1).max(50).optional(),
   notes: z.string().trim().max(1000).optional().nullable(),
 });
 
@@ -680,7 +684,12 @@ serve(async (req: Request) => {
         label: string | null;
       }> = [];
 
-      for (const evidence of evidences) {
+      // Download + sniff + hash each evidence. This is the real cost of a large
+      // audit, so run it with bounded concurrency (files are images <= 8 MB, so a
+      // handful in flight keeps memory small while cutting wall-clock ~Nx).
+      // Results are written back by index to preserve order (primaryEvidence is
+      // the first one).
+      const normalizeOne = async (evidence: typeof evidences[number]) => {
         assertSupervisorPath(evidence.path, payload.phase);
         const { data: fileBlob, error: downloadError } = await clientAdmin.storage.from(evidenceBucket).download(evidence.path);
         if (downloadError || !fileBlob) {
@@ -697,14 +706,28 @@ serve(async (req: Request) => {
         }
 
         const sha256 = await sha256Hex(fileBlob);
-        normalizedEvidences.push({
+        return {
           storage_path: evidence.path,
           sha256,
           mime_type: sniffedMime,
           size_bytes: fileBlob.size,
           label: evidence.label ?? null,
-        });
-      }
+        };
+      };
+
+      normalizedEvidences.length = evidences.length;
+      const EVIDENCE_CONCURRENCY = 6;
+      let nextEvidenceIdx = 0;
+      const evidenceWorker = async () => {
+        while (true) {
+          const i = nextEvidenceIdx++;
+          if (i >= evidences.length) break;
+          normalizedEvidences[i] = await normalizeOne(evidences[i]);
+        }
+      };
+      await Promise.all(
+        Array.from({ length: Math.min(EVIDENCE_CONCURRENCY, evidences.length) }, () => evidenceWorker()),
+      );
 
       const primaryEvidence = normalizedEvidences[0] ?? null;
 
