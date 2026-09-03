@@ -18,13 +18,27 @@ import { geoValidatorByRestaurant } from "../_shared/geoValidator.ts";
 
 const endpoint = "supervisor_presence_manage";
 const evidenceBucket = "shift-evidence";
-const evidenceMaxBytes = 8 * 1024 * 1024;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;   // 8 MB
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024;  // 50 MB (short inspector clip of a reported issue)
 // Signed-URL lifetime for reads, matched to the rest of the API (2h). The admin
 // opens these on demand when expanding an audit card.
 const evidenceUrlTtlSeconds = 7200;
-const allowedMimeValues = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"] as const;
-const allowedMime = new Set<string>(allowedMimeValues);
-const imageMimeSchema = z.enum(allowedMimeValues);
+const allowedImageMimeValues = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"] as const;
+// iOS native camera returns .mov (video/quicktime) or .mp4. The DB stores the
+// SNIFFED mime, so these three are what land in storage and the CHECK constraint
+// (migration 065). A client may also LABEL a .mov as the non-standard "video/mov"
+// -- accepted at the schema, but the magic-byte sniff resolves it to quicktime.
+const allowedVideoMimeValues = ["video/mp4", "video/quicktime", "video/webm"] as const;
+const acceptedDeclaredMimeValues = [...allowedImageMimeValues, ...allowedVideoMimeValues, "video/mov"] as const;
+// Set used by the magic-byte sniff to accept a file: the real detected mimes.
+const allowedMime = new Set<string>([...allowedImageMimeValues, ...allowedVideoMimeValues]);
+const mediaMimeSchema = z.enum(acceptedDeclaredMimeValues);
+function isVideoMime(mime: string): boolean {
+  return (allowedVideoMimeValues as readonly string[]).includes(mime) || mime === "video/mov";
+}
+function maxBytesForMime(mime: string): number {
+  return isVideoMime(mime) ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+}
 
 async function ensureBucketExists(name: string) {
   const { data, error } = await clientAdmin.storage.getBucket(name);
@@ -49,7 +63,7 @@ const evidenceItemSchema = z
     path: z.string().min(5).max(500),
     label: z.string().trim().min(1).max(200).optional(),
     hash: z.string().min(16).max(200).optional(),
-    mime_type: imageMimeSchema.optional(),
+    mime_type: mediaMimeSchema.optional(),
     size_bytes: z.coerce.number().int().positive().max(50_000_000).optional(),
   })
   .strict();
@@ -63,7 +77,7 @@ const registerAction = z.object({
   accuracy: z.coerce.number().min(0).max(10000).optional(),
   evidence_path: z.string().min(5).max(500).optional(),
   evidence_hash: z.string().min(16).max(200).optional(),
-  evidence_mime_type: imageMimeSchema.optional(),
+  evidence_mime_type: mediaMimeSchema.optional(),
   evidence_size_bytes: z.coerce.number().int().positive().max(50000000).optional(),
   // A full audit stamps one photo per subarea (Cocina/Comedor/Banos/Fachadas...)
   // plus free observation attachments, so 20 was too tight. 50 covers today's
@@ -76,7 +90,7 @@ const registerAction = z.object({
 const requestEvidenceUploadAction = z.object({
   action: z.literal("request_evidence_upload"),
   phase: z.enum(["start", "end"]),
-  mime_type: imageMimeSchema.default("image/jpeg"),
+  mime_type: mediaMimeSchema.default("image/jpeg"),
 });
 
 const finalizeEvidenceUploadAction = z.object({
@@ -119,6 +133,9 @@ function mimeToExtension(mimeType: string) {
   if (mimeType === "image/webp") return "webp";
   if (mimeType === "image/heic") return "heic";
   if (mimeType === "image/heif") return "heif";
+  if (mimeType === "video/mp4") return "mp4";
+  if (mimeType === "video/quicktime" || mimeType === "video/mov") return "mov";
+  if (mimeType === "video/webm") return "webm";
   return "bin";
 }
 
@@ -158,10 +175,19 @@ async function detectMimeByMagic(blob: Blob): Promise<string> {
     head[11] === 0x50;
   if (isWebp) return "image/webp";
 
+  // WebM / Matroska: EBML header 1A 45 DF A3.
+  if (head.length >= 4 && head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) {
+    return "video/webm";
+  }
+
   const brand = String.fromCharCode(...head.slice(8, 12)).toLowerCase();
   if (head.length >= 12 && String.fromCharCode(...head.slice(4, 8)) === "ftyp") {
+    // ISO-BMFF container: brand tells still-image (HEIC/HEIF) from video (MOV/MP4).
     if (["heic", "heix", "hevc", "hevx"].includes(brand)) return "image/heic";
     if (["mif1", "msf1", "heif"].includes(brand)) return "image/heif";
+    if (brand.startsWith("qt")) return "video/quicktime"; // iOS .mov brand "qt  "
+    // Everything else with an ftyp box is a QuickTime/MP4-family video.
+    return "video/mp4";
   }
 
   return "application/octet-stream";
@@ -470,7 +496,7 @@ serve(async (req: Request) => {
           bucket: evidenceBucket,
           path,
           allowed_mime: [...allowedMime],
-          max_bytes: evidenceMaxBytes,
+          max_bytes: maxBytesForMime(payload.mime_type),
         },
         error: null,
         request_id,
@@ -487,13 +513,12 @@ serve(async (req: Request) => {
         throw { code: 422, message: "Archivo no disponible en storage", category: "VALIDATION", details: downloadError };
       }
 
-      if (fileBlob.size <= 0 || fileBlob.size > evidenceMaxBytes) {
-        throw { code: 422, message: "Tamano de archivo invalido", category: "VALIDATION", details: { size: fileBlob.size } };
-      }
-
       const sniffedMime = await detectMimeByMagic(fileBlob);
       if (!allowedMime.has(sniffedMime)) {
         throw { code: 422, message: "MIME no permitido", category: "VALIDATION", details: { sniffedMime } };
+      }
+      if (fileBlob.size <= 0 || fileBlob.size > maxBytesForMime(sniffedMime)) {
+        throw { code: 422, message: "Tamano de archivo invalido", category: "VALIDATION", details: { size: fileBlob.size, mime: sniffedMime } };
       }
 
       const sha256 = await sha256Hex(fileBlob);
@@ -700,13 +725,12 @@ serve(async (req: Request) => {
           throw { code: 422, message: "Evidencia no disponible en storage", category: "VALIDATION", details: downloadError };
         }
 
-        if (fileBlob.size <= 0 || fileBlob.size > evidenceMaxBytes) {
-          throw { code: 422, message: "Tamano de evidencia invalido", category: "VALIDATION", details: { size: fileBlob.size } };
-        }
-
         const sniffedMime = await detectMimeByMagic(fileBlob);
         if (!allowedMime.has(sniffedMime)) {
           throw { code: 422, message: "MIME no permitido", category: "VALIDATION", details: { sniffedMime } };
+        }
+        if (fileBlob.size <= 0 || fileBlob.size > maxBytesForMime(sniffedMime)) {
+          throw { code: 422, message: "Tamano de evidencia invalido", category: "VALIDATION", details: { size: fileBlob.size, mime: sniffedMime } };
         }
 
         const sha256 = await sha256Hex(fileBlob);
@@ -720,7 +744,14 @@ serve(async (req: Request) => {
       };
 
       normalizedEvidences.length = evidences.length;
-      const EVIDENCE_CONCURRENCY = 6;
+      // Videos are large (up to 50 MB) and each is fully loaded into memory to
+      // hash it, so drop the fan-out when the batch contains any video to bound
+      // peak memory; image-only audits keep the higher concurrency.
+      const batchHasVideo = evidences.some((e) => {
+        const m = (e.mime_type ?? "").toLowerCase();
+        return m.startsWith("video/") || /\.(mp4|mov|m4v|webm)$/i.test(e.path);
+      });
+      const EVIDENCE_CONCURRENCY = batchHasVideo ? 2 : 6;
       let nextEvidenceIdx = 0;
       const evidenceWorker = async () => {
         while (true) {
