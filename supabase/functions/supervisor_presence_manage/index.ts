@@ -334,7 +334,11 @@ serve(async (req: Request) => {
       return replayIdempotentResponse(claim.stored, request_id);
     }
 
-    await rateLimiter({ user_id: user.id, ip, endpoint, limit: 40, window_seconds: 60 });
+    // Shared across every action on this endpoint. A full audit signs one upload
+    // URL per photo (request_evidence_upload) and may finalize each, then calls
+    // register once -- so a 50-evidence audit is ~50-100 requests in one window.
+    // 40/60s would 429 mid-audit; 150/60s covers the worst case with headroom.
+    await rateLimiter({ user_id: user.id, ip, endpoint, limit: 150, window_seconds: 60 });
     const settings = await getSystemSettings(clientAdmin);
 
     const fetchEvidences = async (supabase: typeof clientAdmin, presenceIds: Array<number | string>) => {
