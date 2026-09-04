@@ -55,7 +55,10 @@ const createAction = z.object({
   due_at: z.string().datetime().optional().nullable(),
   requires_evidence: z.boolean().optional(),
   evidence_type: z.enum(["photo", "video", "any"]).optional(),
+  // Instruction reference the inspector attaches (video OR image). The DB column
+  // stays instructions_video_path; instructions_media_path is the preferred alias.
   instructions_video_path: z.string().trim().max(500).optional().nullable(),
+  instructions_media_path: z.string().trim().max(500).optional().nullable(),
   origin_page: z.string().trim().max(100).optional(),
 });
 
@@ -106,7 +109,7 @@ const requestEvidenceUploadAction = z.object({
 const requestInstructionsUploadAction = z.object({
   action: z.literal("request_instructions_upload"),
   restaurant_id: z.number().int().positive(),
-  content_type: z.enum(allowedVideoMimeValues).default("video/mp4"),
+  content_type: z.enum(allowedEvidenceMimeValues).default("video/mp4"),
   filename: z.string().trim().max(200).optional(),
 });
 
@@ -312,16 +315,18 @@ serve(async (req: Request) => {
       // arbitrary storage object; it must have the exact shape produced by
       // request_instructions_upload and (for restaurant scope) match the
       // restaurant it's being attached to (audit B2).
-      if (payload.instructions_video_path) {
-        const ivp = payload.instructions_video_path;
-        const m = /^task-instructions\/(\d+)\/[0-9a-fA-F-]{36}\.(mp4|mov|webm)$/.exec(ivp);
+      // Accept either field name; instructions_media_path is preferred. Video OR
+      // image extensions are allowed (the inspector may attach a reference photo).
+      const instructionsPath = payload.instructions_media_path ?? payload.instructions_video_path ?? null;
+      if (instructionsPath) {
+        const m = /^task-instructions\/(\d+)\/[0-9a-fA-F-]{36}\.(mp4|mov|webm|jpg|jpeg|png|webp|heic|heif)$/.exec(instructionsPath);
         if (!m || (payload.restaurant_id && Number(m[1]) !== Number(payload.restaurant_id))) {
           throw {
             code: 422,
-            error_code: "INSTRUCTIONS_VIDEO_PATH_INVALID",
-            message: "Ruta de video de instrucciones invalida",
+            error_code: "INSTRUCTIONS_MEDIA_PATH_INVALID",
+            message: "Ruta de media de instrucciones invalida",
             category: "VALIDATION",
-            details: { instructions_video_path: ivp },
+            details: { instructions_media_path: instructionsPath },
           };
         }
       }
@@ -374,7 +379,7 @@ serve(async (req: Request) => {
             due_at: payload.due_at ?? null,
             requires_evidence: payload.requires_evidence ?? true,
             evidence_type: payload.evidence_type ?? "photo",
-            instructions_video_path: payload.instructions_video_path ?? null,
+            instructions_video_path: instructionsPath,
             created_at: nowIso,
             updated_at: nowIso,
           })
@@ -512,7 +517,7 @@ serve(async (req: Request) => {
             due_at: payload.due_at ?? null,
             requires_evidence: payload.requires_evidence ?? true,
             evidence_type: payload.evidence_type ?? "photo",
-            instructions_video_path: payload.instructions_video_path ?? null,
+            instructions_video_path: instructionsPath,
             created_at: nowIso,
             updated_at: nowIso,
           })
@@ -1026,8 +1031,8 @@ serve(async (req: Request) => {
           upload: data,
           bucket: evidenceBucket,
           content_type: payload.content_type,
-          allowed_mime: [...allowedVideoMimeValues],
-          max_bytes: MAX_VIDEO_BYTES,
+          allowed_mime: [...allowedEvidenceMimeValues],
+          max_bytes: isVideoMime(payload.content_type) ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES,
         },
         error: null,
         request_id,
@@ -1275,6 +1280,9 @@ serve(async (req: Request) => {
           ...row,
           task_id: row.id,
           instructions_video_url: row.instructions_video_path ? (signedByPath.get(row.instructions_video_path) ?? null) : null,
+          // Same signed URL under a media-neutral name (the instruction may be an image).
+          instructions_media_url: row.instructions_video_path ? (signedByPath.get(row.instructions_video_path) ?? null) : null,
+          instructions_media_path: row.instructions_video_path ?? null,
           evidence_urls: evidencePathList
             .map((p) => signedByPath.get(p))
             .filter((u): u is string => typeof u === "string"),
