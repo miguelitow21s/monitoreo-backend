@@ -59,6 +59,7 @@ $functions = @(
   'admin_dashboard_metrics',
   'restaurant_staff_manage',
   'supervisor_presence_manage',
+  'supervision_drafts_cleanup',
   'system_settings_manage',
   'admin_user_phone_remove',
   'profile_phone_change_request',
