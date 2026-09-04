@@ -827,7 +827,29 @@ async function buildSingleDayPdfWithEvidence(params: {
   currentPageNum = 1;
   drawPageFooter(summaryPage, pageW);
 
-  for (const ev of params.evidenceRows) {
+  const prefetchEvidenceBytes = async (e: EvidenceForExport): Promise<{ bytes: Uint8Array | null; contentType: string }> => {
+    if (!e.signed_url) return { bytes: null, contentType: "" };
+    try {
+      const resp = await fetch(e.signed_url);
+      if (!resp.ok) return { bytes: null, contentType: "" };
+      const contentType = (resp.headers.get("content-type") ?? "").toLowerCase();
+      if (contentType.startsWith("video/")) {
+        // Videos can't be embedded; don't download the (up to 50 MB) body.
+        try { await resp.body?.cancel(); } catch { /* ignore */ }
+        return { bytes: null, contentType };
+      }
+      return { bytes: new Uint8Array(await resp.arrayBuffer()), contentType };
+    } catch { return { bytes: null, contentType: "" }; }
+  };
+  // Download images in bounded parallel chunks (memory ~= one chunk) instead of N
+  // sequential fetches; embedding stays sequential on the single pdfDoc.
+  const IMG_FETCH_CONCURRENCY = 6;
+  for (let ci = 0; ci < params.evidenceRows.length; ci += IMG_FETCH_CONCURRENCY) {
+    const chunk = params.evidenceRows.slice(ci, ci + IMG_FETCH_CONCURRENCY);
+    const prefetched = await Promise.all(chunk.map((e) => prefetchEvidenceBytes(e)));
+    for (let ki = 0; ki < chunk.length; ki++) {
+    const ev = chunk[ki];
+    const pre = prefetched[ki];
     currentPageNum++;
     const pageMargin = 24;
     const bottomPadding = 72;
@@ -842,25 +864,14 @@ async function buildSingleDayPdfWithEvidence(params: {
     const titleRaw = `${zoneLabel} - ${phaseLabel}`;
 
     let embedded: unknown = null;
-    try {
-      const resp = await fetch(ev.signed_url);
-      if (resp.ok) {
-        const contentType = (resp.headers.get("content-type") ?? "").toLowerCase();
-        if (contentType.startsWith("video/")) {
-          // A video can't be embedded -- don't download the (up to 50 MB) body,
-          // just release it and let the fallback draw the clickable link.
-          try { await resp.body?.cancel(); } catch { /* ignore */ }
-        } else {
-          const bytes = new Uint8Array(await resp.arrayBuffer());
-          if (contentType.includes("png")) {
-            embedded = await pdfDoc.embedPng(bytes);
-          } else {
-            embedded = await pdfDoc.embedJpg(bytes);
-          }
-        }
+    if (pre.bytes) {
+      try {
+        embedded = pre.contentType.includes("png")
+          ? await pdfDoc.embedPng(pre.bytes)
+          : await pdfDoc.embedJpg(pre.bytes);
+      } catch {
+        embedded = null;
       }
-    } catch {
-      embedded = null;
     }
 
     let page;
@@ -995,6 +1006,7 @@ async function buildSingleDayPdfWithEvidence(params: {
         color: rgb(0.1, 0.1, 0.1),
       });
     });
+    }
   }
 
   // --- "Tareas Especiales Completadas" section (client request) ---
