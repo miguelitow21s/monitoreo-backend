@@ -754,8 +754,8 @@ async function buildSingleDayPdfWithEvidence(params: {
   const colW = tableW / 4;
   const tblRows: [string, string, string, string][] = [
     ["Restaurante", restauranteDisplay, "Periodo", `${params.periodStart} a ${params.periodEnd}`],
-    ["Contratista", contratistaDisplay, "Total de Turnos", String(params.totalShifts)],
-    ["Generado", formatDateTime(params.generatedAt), "Horas Trabajadas", formatDuration(params.totalHours)],
+    ["Contratista", contratistaDisplay, "Total de Servicios", String(params.totalShifts)],
+    ["Generado", formatDateTime(params.generatedAt), "Horas del Servicio", formatDuration(params.totalHours)],
   ];
   for (let i = 0; i < tblRows.length; i++) {
     const rowY = tblTop - i * cellH;
@@ -2509,8 +2509,8 @@ serve(async (req: Request) => {
       `Reporte restaurante: ${restaurantLabel}`,
       `Periodo: ${period_start} a ${period_end}`,
       `Generado: ${formatDateTime(generatedAt)}`,
-      `Total turnos: ${rows.length}`,
-      `Horas trabajadas: ${formatDuration(totalHours)}`,
+      `Total servicios: ${rows.length}`,
+      `Horas del servicio: ${formatDuration(totalHours)}`,
       // "Horas programadas" removed with the visit migration -- there's no schedule.
     ];
 
