@@ -1388,8 +1388,9 @@ async function buildAuditsPdf(
   const supervisorDisplay = oneOrMany(distinctSupervisors, pdfSafeText(meta.supervisorLabel));
 
   const totalEvidence = rows.reduce((acc, r) => acc + r.evidence_count, 0);
-  const photoCount = rows.reduce((acc, r) => acc + r.evidences.filter((e) => e.signed_url && !e.is_video).length, 0);
-  const totalPageCount = 1 + Math.max(0, Math.ceil(rows.length / 22)) + Math.min(60, photoCount);
+  // Every evidence with a link gets a page: photos embed, videos become a link page.
+  const mediaCount = rows.reduce((acc, r) => acc + r.evidences.filter((e) => e.signed_url).length, 0);
+  const totalPageCount = 1 + Math.max(0, Math.ceil(rows.length / 22)) + Math.min(60, mediaCount);
   let currentPageNum = 0;
 
   const drawPageHeader = (page: any, pw: number, ph: number) => {
@@ -1527,7 +1528,56 @@ async function buildAuditsPdf(
   for (const r of rows) {
     for (const ev of r.evidences) {
       if (embedded >= MAX_EMBEDDED_PHOTOS) break;
-      if (!ev.signed_url || ev.is_video) continue;
+      if (!ev.signed_url) continue;
+
+      // A video can't be embedded -> a branded page with a clickable
+      // "Ver / descargar" link plus the same audit info card, instead of skipping it.
+      if (ev.is_video) {
+        const p = pdfDoc.addPage([pageW, pageH]);
+        currentPageNum++;
+        drawPageHeader(p, pageW, pageH);
+        const vTitle = fit(`AUDITORIA - ${auditPhaseLabel(r.phase)}`, 14, bold);
+        p.drawText(vTitle, { x: (pageW - bold.widthOfTextAtSize(vTitle, 14)) / 2, y: headerDivY - 26, size: 14, font: bold, color: rgb(0.1, 0.1, 0.1) });
+
+        const fX = marginX;
+        const fTop = headerDivY - 46;
+        const fBottom = 72;
+        const fW = pageW - 2 * marginX;
+        const fH = fTop - fBottom;
+        p.drawRectangle({ x: fX, y: fBottom, width: fW, height: fH, borderColor: rgb(0.7, 0.7, 0.7), borderWidth: 1 });
+        p.drawText("Evidencia en video (no se puede incrustar en el PDF).", { x: fX + 12, y: fTop - 24, size: 11, font: bold, color: rgb(0.1, 0.1, 0.1) });
+        const linkText = "Ver / descargar la evidencia";
+        const linkX = fX + 12;
+        const linkY = fTop - 48;
+        const linkSize = 12;
+        const linkW = font.widthOfTextAtSize(linkText, linkSize);
+        p.drawText(linkText, { x: linkX, y: linkY, size: linkSize, font, color: rgb(0.06, 0.35, 0.75) });
+        p.drawLine({ start: { x: linkX, y: linkY - 2 }, end: { x: linkX + linkW, y: linkY - 2 }, thickness: 0.6, color: rgb(0.06, 0.35, 0.75) });
+        const vAnnot = pdfDoc.context.obj({
+          Type: "Annot",
+          Subtype: "Link",
+          Rect: [linkX, linkY - 3, linkX + linkW, linkY + linkSize + 1],
+          Border: [0, 0, 0],
+          A: { Type: "Action", S: "URI", URI: PDFString.of(ev.signed_url) },
+        });
+        p.node.addAnnot(pdfDoc.context.register(vAnnot));
+
+        let mY = linkY - 26;
+        for (const line of [
+          `Fecha/Hora: ${r.local_date} ${r.local_time} (${r.timezone})`,
+          `Fase: ${auditPhaseLabel(r.phase)}`,
+          `Sitio: ${r.restaurant_name}`,
+          `Supervisor: ${r.supervisor_name}`,
+          ...(r.observations ? [`Observaciones: ${r.observations}`] : []),
+        ]) {
+          p.drawText(fit(line, 9.5, font, fW - 24), { x: fX + 12, y: mY, size: 9.5, font, color: rgb(0.2, 0.2, 0.2) });
+          mY -= 15;
+        }
+        drawPageFooter(p, pageW);
+        embedded += 1;
+        continue;
+      }
+
       let img: any = null;
       try {
         const resp = await fetch(ev.signed_url);
