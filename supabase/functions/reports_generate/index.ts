@@ -846,11 +846,17 @@ async function buildSingleDayPdfWithEvidence(params: {
       const resp = await fetch(ev.signed_url);
       if (resp.ok) {
         const contentType = (resp.headers.get("content-type") ?? "").toLowerCase();
-        const bytes = new Uint8Array(await resp.arrayBuffer());
-        if (contentType.includes("png")) {
-          embedded = await pdfDoc.embedPng(bytes);
+        if (contentType.startsWith("video/")) {
+          // A video can't be embedded -- don't download the (up to 50 MB) body,
+          // just release it and let the fallback draw the clickable link.
+          try { await resp.body?.cancel(); } catch { /* ignore */ }
         } else {
-          embedded = await pdfDoc.embedJpg(bytes);
+          const bytes = new Uint8Array(await resp.arrayBuffer());
+          if (contentType.includes("png")) {
+            embedded = await pdfDoc.embedPng(bytes);
+          } else {
+            embedded = await pdfDoc.embedJpg(bytes);
+          }
         }
       }
     } catch {
@@ -2389,6 +2395,29 @@ serve(async (req: Request) => {
             }
           }
         }
+
+        // Observation attachments (photos AND videos the contractor adds next to
+        // the "Observaciones" text) as their own pages. Photos embed as images;
+        // videos fall through to the clickable "Ver / descargar" link -- same as
+        // any non-embeddable evidence -- so observation videos are no longer lost.
+        const observationEvidences = (row.observation_evidences as Array<Record<string, unknown>> | undefined) ?? [];
+        observationEvidences
+          .filter((ev) => typeof ev.signed_url === "string" && (ev.signed_url as string).length > 0)
+          .forEach((ev, idx) => {
+            evidenceRowsForExport.push({
+              shift_id: Number(row.shift_id),
+              phase: "Observación",
+              index: idx + 1,
+              path: String(ev.path ?? ""),
+              signed_url: String(ev.signed_url),
+              captured_at: (ev.captured_at as string | null) ?? null,
+              zone: String(ev.zone ?? "Adjunto de observación"),
+              restaurant_name: String(ev.restaurant_name ?? (row.restaurant_name ?? "N/A")),
+              employee_name: String(ev.employee_name ?? (row.employee_name ?? "Sin nombre")),
+              watermark_text: String(ev.watermark_text ?? ""),
+              observations: (row.observations as string | null) ?? (row.early_end_reason as string | null) ?? null,
+            });
+          });
       }
     }
 
