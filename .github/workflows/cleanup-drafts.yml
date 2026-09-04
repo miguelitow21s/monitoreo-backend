@@ -1,0 +1,40 @@
+name: Cleanup abandoned supervision drafts
+
+# Removes inspector audit drafts left open >24h (started, never finalized) and
+# their evidence blobs in Storage. Authenticates with CRON_DISPATCH_SECRET (no
+# user session), which supervision_drafts_cleanup validates in constant time and
+# only honours when the secret is configured on the Supabase side.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: cleanup-drafts
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    environment: prod
+    steps:
+      - name: Cleanup abandoned drafts + orphan blobs
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
+          CRON_DISPATCH_SECRET: ${{ secrets.CRON_DISPATCH_SECRET }}
+        run: |
+          set -euo pipefail
+          BASE="${SUPABASE_URL%/}"
+          if [ -z "${CRON_DISPATCH_SECRET:-}" ]; then
+            echo "CRON_DISPATCH_SECRET is not set in the prod environment"; exit 1
+          fi
+          HTTP=$(curl -sS -o /tmp/resp -w "%{http_code}" -X POST "$BASE/functions/v1/supervision_drafts_cleanup" \
+            -H "apikey: $SUPABASE_ANON_KEY" \
+            -H "x-cron-secret: $CRON_DISPATCH_SECRET" \
+            -H "Content-Type: application/json" \
+            -d '{"older_than_hours":24,"limit":200}')
+          echo "HTTP $HTTP"; cat /tmp/resp
+          [ "$HTTP" = "200" ]
