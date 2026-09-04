@@ -20,8 +20,20 @@ import { getSystemSettings } from "../_shared/systemSettings.ts";
 
 const endpoint = "evidence_upload";
 const bucket = "shift-evidence";
-const maxBytes = 8 * 1024 * 1024;
-const allowedMime = new Set(["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"]);
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;   // 8 MB
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024;  // 50 MB (short clip in observations, etc.)
+const allowedImageMimeValues = ["image/jpeg", "image/png", "image/webp", "image/heic", "image/heif"] as const;
+const allowedVideoMimeValues = ["video/mp4", "video/quicktime", "video/webm"] as const;
+// Accepted at request time (the client may label a .mov as the non-standard video/mov).
+const acceptedDeclaredMimeValues = [...allowedImageMimeValues, ...allowedVideoMimeValues, "video/mov"] as const;
+// Real mimes the sniff produces / stores.
+const allowedMime = new Set<string>([...allowedImageMimeValues, ...allowedVideoMimeValues]);
+function isVideoMime(mime: string): boolean {
+  return (allowedVideoMimeValues as readonly string[]).includes(mime) || mime === "video/mov";
+}
+function maxBytesForMime(mime: string): number {
+  return isVideoMime(mime) ? MAX_VIDEO_BYTES : MAX_IMAGE_BYTES;
+}
 
 async function ensureBucketExists(name: string) {
   const { data, error } = await clientAdmin.storage.getBucket(name);
@@ -45,6 +57,8 @@ const requestUploadSchema = z.object({
   action: z.literal("request_upload"),
   shift_id: commonSchemas.shiftId,
   type: commonSchemas.photoType,
+  // Optional hint so the returned max_bytes matches image (8 MB) vs video (50 MB).
+  content_type: z.enum(acceptedDeclaredMimeValues).optional(),
 });
 
 const finalizeUploadSchema = z.object({
@@ -97,10 +111,17 @@ async function detectMimeByMagic(blob: Blob): Promise<string> {
     head[11] === 0x50;
   if (isWebp) return "image/webp";
 
+  // WebM / Matroska: EBML header 1A 45 DF A3.
+  if (head.length >= 4 && head[0] === 0x1a && head[1] === 0x45 && head[2] === 0xdf && head[3] === 0xa3) {
+    return "video/webm";
+  }
+
   if (head.length >= 12 && String.fromCharCode(...head.slice(4, 8)) === "ftyp") {
     const brand = String.fromCharCode(...head.slice(8, 12)).toLowerCase();
     if (["heic", "heix", "hevc", "hevx"].includes(brand)) return "image/heic";
     if (["mif1", "msf1", "heif"].includes(brand)) return "image/heif";
+    if (brand.startsWith("qt")) return "video/quicktime"; // iOS .mov
+    return "video/mp4"; // any other ftyp box is a QuickTime/MP4-family video
   }
 
   return "application/octet-stream";
@@ -174,7 +195,7 @@ serve(async (req) => {
           upload: data,
           bucket,
           path,
-          max_bytes: maxBytes,
+          max_bytes: payload.content_type ? maxBytesForMime(payload.content_type) : MAX_VIDEO_BYTES,
           allowed_mime: [...allowedMime],
         },
         error: null,
@@ -206,13 +227,13 @@ serve(async (req) => {
       throw { code: 422, message: "Archivo no disponible en storage", category: "VALIDATION", details: downloadError };
     }
 
-    if (fileBlob.size <= 0 || fileBlob.size > maxBytes) {
-      throw { code: 422, message: "Tamano de archivo invalido", category: "VALIDATION", details: { size: fileBlob.size } };
-    }
-
     const sniffedMime = await detectMimeByMagic(fileBlob);
     if (!allowedMime.has(sniffedMime)) {
       throw { code: 422, message: "MIME no permitido", category: "VALIDATION", details: { sniffedMime } };
+    }
+
+    if (fileBlob.size <= 0 || fileBlob.size > maxBytesForMime(sniffedMime)) {
+      throw { code: 422, message: "Tamano de archivo invalido", category: "VALIDATION", details: { size: fileBlob.size, mime: sniffedMime } };
     }
 
     const sha256 = await sha256Hex(fileBlob);
