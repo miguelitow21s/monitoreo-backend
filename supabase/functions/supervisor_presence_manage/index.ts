@@ -98,6 +98,39 @@ const finalizeEvidenceUploadAction = z.object({
   path: z.string().min(5).max(500),
 });
 
+// --- Progressive upload (draft audit) ---
+// start -> create the audit as a DRAFT on arrival; returns supervision_id.
+const startAction = z.object({
+  action: z.literal("start"),
+  restaurant_id: z.coerce.number().int().positive(),
+  lat: z.coerce.number().min(-90).max(90),
+  lng: z.coerce.number().min(-180).max(180),
+  accuracy: z.coerce.number().min(0).max(10000).optional(),
+});
+// get_active_draft -> resume: return the inspector's open draft for a restaurant.
+const getActiveDraftAction = z.object({
+  action: z.literal("get_active_draft"),
+  restaurant_id: z.coerce.number().int().positive(),
+});
+// attach_evidence -> hang one already-uploaded file on the draft (validated+hashed
+// here, distributing the cost across the walk). mime_type/size_bytes are hints; the
+// backend re-sniffs and re-hashes authoritatively.
+const attachEvidenceAction = z.object({
+  action: z.literal("attach_evidence"),
+  presence_id: z.coerce.number().int().positive(),
+  path: z.string().min(5).max(500),
+  label: z.string().trim().min(1).max(200).optional(),
+  mime_type: mediaMimeSchema.optional(),
+  size_bytes: z.coerce.number().int().positive().max(50_000_000).optional(),
+  meta: z.record(z.any()).optional(),
+});
+// finalize -> draft becomes completed; only metadata (notes), no photos.
+const finalizeAction = z.object({
+  action: z.literal("finalize"),
+  presence_id: z.coerce.number().int().positive(),
+  notes: z.string().trim().max(1000).optional().nullable(),
+});
+
 const listMyAction = z.object({
   action: z.literal("list_my"),
   limit: z.number().int().min(1).max(200).default(20),
@@ -125,7 +158,14 @@ const payloadSchema = z.discriminatedUnion("action", [
   listTodayAction,
   requestEvidenceUploadAction,
   finalizeEvidenceUploadAction,
+  startAction,
+  getActiveDraftAction,
+  attachEvidenceAction,
+  finalizeAction,
 ]);
+
+// Same cap as the atomic register path.
+const MAX_SUPERVISION_EVIDENCES = 50;
 
 function mimeToExtension(mimeType: string) {
   if (mimeType === "image/jpeg") return "jpg";
@@ -535,6 +575,221 @@ serve(async (req: Request) => {
         request_id,
       };
 
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "start") {
+      // Create the audit as a DRAFT presence 'start'. The BEFORE INSERT trigger
+      // enforces the geofence (arrival). On a double-tap / resume, an open start
+      // already exists for today -> return that DRAFT's id instead of erroring.
+      const { data, error } = await clientAdmin
+        .from("supervisor_presence_logs")
+        .insert({
+          supervisor_id: user.id,
+          restaurant_id: payload.restaurant_id,
+          phase: "start",
+          status: "draft",
+          lat: payload.lat,
+          lng: payload.lng,
+          recorded_at: new Date().toISOString(),
+        })
+        .select("id")
+        .single();
+
+      if (error || !data?.id) {
+        const norm = String(
+          (error as { message?: string; details?: string; hint?: string })?.message ??
+            (error as { details?: string })?.details ??
+            (error as { hint?: string })?.hint ??
+            "",
+        ).toLowerCase();
+        if (norm.includes("ya existe un start abierto")) {
+          const existing = await findOpenStartPresenceForUtcDay(clientAdmin, user.id, payload.restaurant_id);
+          if (existing?.id) {
+            const { data: exRow } = await clientAdmin
+              .from("supervisor_presence_logs")
+              .select("id, status")
+              .eq("id", existing.id)
+              .maybeSingle();
+            if (exRow?.status === "draft") {
+              const successPayload = { success: true, data: { supervision_id: exRow.id, presence_id: exRow.id, already_exists: true }, error: null, request_id };
+              await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+              return response(true, successPayload.data, null, request_id);
+            }
+            throw { code: 409, error_code: "SUPERVISION_ALREADY_COMPLETED_TODAY", message: "Ya finalizaste una auditoria de este sitio hoy", category: "BUSINESS" };
+          }
+        }
+        throw mapPresenceInsertError(error);
+      }
+
+      const successPayload = { success: true, data: { supervision_id: data.id, presence_id: data.id, already_exists: false }, error: null, request_id };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "get_active_draft") {
+      // Resume support: return the inspector's still-open draft for this restaurant.
+      const { data: draft, error } = await clientAdmin
+        .from("supervisor_presence_logs")
+        .select("id, restaurant_id, lat, lng, recorded_at, notes")
+        .eq("supervisor_id", user.id)
+        .eq("restaurant_id", payload.restaurant_id)
+        .eq("status", "draft")
+        .order("recorded_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (error) {
+        throw { code: 409, message: "No se pudo consultar el borrador de auditoria", category: "BUSINESS", details: error };
+      }
+      let evidence_count = 0;
+      if (draft?.id) {
+        const { count } = await clientAdmin
+          .from("supervisor_presence_evidences")
+          .select("id", { count: "exact", head: true })
+          .eq("presence_id", draft.id);
+        evidence_count = count ?? 0;
+      }
+      const successPayload = {
+        success: true,
+        data: {
+          draft: draft
+            ? { supervision_id: draft.id, presence_id: draft.id, restaurant_id: draft.restaurant_id, started_at: draft.recorded_at, notes: draft.notes ?? null, evidence_count }
+            : null,
+        },
+        error: null,
+        request_id,
+      };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "attach_evidence") {
+      // Hang one already-uploaded file on the draft. Ownership + draft-state are
+      // checked in code (writes go via service role since the table has no UPDATE
+      // RLS policy). mime/size are re-derived here authoritatively.
+      const { data: draft, error: draftErr } = await clientAdmin
+        .from("supervisor_presence_logs")
+        .select("id, supervisor_id, status")
+        .eq("id", payload.presence_id)
+        .maybeSingle();
+      if (draftErr) {
+        throw { code: 409, message: "No se pudo validar la auditoria", category: "BUSINESS", details: draftErr };
+      }
+      if (!draft) {
+        throw { code: 404, error_code: "SUPERVISION_NOT_FOUND", message: "Auditoria no encontrada", category: "BUSINESS" };
+      }
+      if (String(draft.supervisor_id) !== user.id && user.role !== "super_admin") {
+        throw { code: 403, error_code: "FORBIDDEN", message: "No puede adjuntar evidencia a una auditoria ajena", category: "PERMISSION" };
+      }
+      if (draft.status !== "draft") {
+        throw { code: 409, error_code: "SUPERVISION_NOT_DRAFT", message: "La auditoria ya fue finalizada", category: "BUSINESS" };
+      }
+
+      const { count: currentCount } = await clientAdmin
+        .from("supervisor_presence_evidences")
+        .select("id", { count: "exact", head: true })
+        .eq("presence_id", payload.presence_id);
+      if ((currentCount ?? 0) >= MAX_SUPERVISION_EVIDENCES) {
+        throw { code: 409, error_code: "EVIDENCE_LIMIT_REACHED", message: `Limite de ${MAX_SUPERVISION_EVIDENCES} evidencias alcanzado`, category: "BUSINESS", details: { limit: MAX_SUPERVISION_EVIDENCES } };
+      }
+
+      assertSupervisorPath(payload.path);
+      const { data: fileBlob, error: downloadError } = await clientAdmin.storage.from(evidenceBucket).download(payload.path);
+      if (downloadError || !fileBlob) {
+        throw { code: 422, message: "Evidencia no disponible en storage", category: "VALIDATION", details: downloadError };
+      }
+      const sniffedMime = await detectMimeByMagic(fileBlob);
+      if (!allowedMime.has(sniffedMime)) {
+        throw { code: 422, error_code: "MIME_NOT_ALLOWED", message: "MIME no permitido", category: "VALIDATION", details: { sniffedMime } };
+      }
+      if (fileBlob.size <= 0 || fileBlob.size > maxBytesForMime(sniffedMime)) {
+        throw { code: 422, error_code: "SIZE_INVALID", message: "Tamano de evidencia invalido", category: "VALIDATION", details: { size: fileBlob.size, mime: sniffedMime } };
+      }
+      const sha256 = await sha256Hex(fileBlob);
+
+      const { data: inserted, error: insErr } = await clientAdmin
+        .from("supervisor_presence_evidences")
+        .insert({
+          presence_id: payload.presence_id,
+          storage_path: payload.path,
+          sha256,
+          mime_type: sniffedMime,
+          size_bytes: fileBlob.size,
+          label: payload.label ?? null,
+          meta: payload.meta ?? null,
+          created_at: new Date().toISOString(),
+        })
+        .select("id")
+        .single();
+      if (insErr || !inserted?.id) {
+        throw { code: 409, message: "No se pudo adjuntar la evidencia", category: "BUSINESS", details: insErr };
+      }
+
+      const successPayload = {
+        success: true,
+        data: { evidence_id: inserted.id, presence_id: payload.presence_id, mime_type: sniffedMime, size_bytes: fileBlob.size, evidence_count: (currentCount ?? 0) + 1 },
+        error: null,
+        request_id,
+      };
+      await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+      return response(true, successPayload.data, null, request_id);
+    }
+
+    if (payload.action === "finalize") {
+      // Draft -> completed. Only metadata (notes); no photos (they arrived via
+      // attach_evidence). No geofence revalidation. Idempotent.
+      const { data: draft, error: draftErr } = await clientAdmin
+        .from("supervisor_presence_logs")
+        .select("id, supervisor_id, status")
+        .eq("id", payload.presence_id)
+        .maybeSingle();
+      if (draftErr) {
+        throw { code: 409, message: "No se pudo validar la auditoria", category: "BUSINESS", details: draftErr };
+      }
+      if (!draft) {
+        throw { code: 404, error_code: "SUPERVISION_NOT_FOUND", message: "Auditoria no encontrada", category: "BUSINESS" };
+      }
+      if (String(draft.supervisor_id) !== user.id && user.role !== "super_admin") {
+        throw { code: 403, error_code: "FORBIDDEN", message: "No puede finalizar una auditoria ajena", category: "PERMISSION" };
+      }
+      if (draft.status === "completed") {
+        const successPayload = { success: true, data: { supervision_id: draft.id, presence_id: draft.id, already_completed: true }, error: null, request_id };
+        await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+        return response(true, successPayload.data, null, request_id);
+      }
+
+      // Mirror the first attached evidence onto the log's primary columns (list
+      // views read these for the card thumbnail).
+      const { data: firstEv } = await clientAdmin
+        .from("supervisor_presence_evidences")
+        .select("storage_path, sha256, mime_type, size_bytes")
+        .eq("presence_id", draft.id)
+        .order("created_at", { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      const patch: Record<string, unknown> = { status: "completed" };
+      if (payload.notes !== undefined) patch.notes = payload.notes ?? null;
+      if (firstEv?.storage_path) {
+        patch.evidence_path = firstEv.storage_path;
+        patch.evidence_hash = firstEv.sha256;
+        patch.evidence_mime_type = firstEv.mime_type;
+        patch.evidence_size_bytes = firstEv.size_bytes;
+      }
+
+      const { error: updErr } = await clientAdmin
+        .from("supervisor_presence_logs")
+        .update(patch)
+        .eq("id", draft.id)
+        .eq("status", "draft");
+      if (updErr) {
+        throw { code: 409, message: "No se pudo finalizar la auditoria", category: "BUSINESS", details: updErr };
+      }
+
+      await safeWriteAudit({ user_id: user.id, action: "SUPERVISOR_PRESENCE_FINALIZE", context: { presence_id: draft.id }, request_id });
+
+      const successPayload = { success: true, data: { supervision_id: draft.id, presence_id: draft.id, already_completed: false }, error: null, request_id };
       await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
       return response(true, successPayload.data, null, request_id);
     }
