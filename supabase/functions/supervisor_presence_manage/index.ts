@@ -605,19 +605,23 @@ serve(async (req: Request) => {
             "",
         ).toLowerCase();
         if (norm.includes("ya existe un start abierto")) {
-          const existing = await findOpenStartPresenceForUtcDay(clientAdmin, user.id, payload.restaurant_id);
-          if (existing?.id) {
-            const { data: exRow } = await clientAdmin
-              .from("supervisor_presence_logs")
-              .select("id, status")
-              .eq("id", existing.id)
-              .maybeSingle();
-            if (exRow?.status === "draft") {
-              const successPayload = { success: true, data: { supervision_id: exRow.id, presence_id: exRow.id, already_exists: true }, error: null, request_id };
-              await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
-              return response(true, successPayload.data, null, request_id);
-            }
-            throw { code: 409, error_code: "SUPERVISION_ALREADY_COMPLETED_TODAY", message: "Ya finalizaste una auditoria de este sitio hoy", category: "BUSINESS" };
+          // Post-migration 067 the guard only fires when an OPEN DRAFT already
+          // exists (double-tap / re-entry) -> return that same draft so the app
+          // keeps attaching to it. A completed audit no longer blocks a new one,
+          // so inspectors can audit the same site again the same day.
+          const { data: openDraft } = await clientAdmin
+            .from("supervisor_presence_logs")
+            .select("id")
+            .eq("supervisor_id", user.id)
+            .eq("restaurant_id", payload.restaurant_id)
+            .eq("status", "draft")
+            .order("recorded_at", { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          if (openDraft?.id) {
+            const successPayload = { success: true, data: { supervision_id: openDraft.id, presence_id: openDraft.id, already_exists: true }, error: null, request_id };
+            await safeFinalizeIdempotency({ userId: user.id, endpoint, key: idempotencyKey, statusCode: 200, responseBody: successPayload });
+            return response(true, successPayload.data, null, request_id);
           }
         }
         throw mapPresenceInsertError(error);
